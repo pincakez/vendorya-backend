@@ -55,6 +55,8 @@ class Category(TimestampedModel):
         unique_together = ('store', 'name')
     
     def __str__(self):
+        if self.parent:
+            return f"{self.parent.name} > {self.name}"
         return self.name
 
 class Product(TimestampedModel):
