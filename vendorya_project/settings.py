@@ -46,7 +46,7 @@ INSTALLED_APPS = [
     'corsheaders',
 
     # Local Apps
-    'import_export'
+    'import_export',
     'core',
     'users',
     'inventory',
