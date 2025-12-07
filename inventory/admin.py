@@ -2,14 +2,14 @@ from django.contrib import admin
 from .models import Supplier, Category, Product
 
 class TenantAwareAdmin(admin.ModelAdmin):
-    """Base admin class to filter data by store (optional for superuser, mandatory for staff)."""
-    pass # We keep it simple for now as you are the superuser
+    pass
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('name', 'product_code', 'category', 'store', 'status', 'stock_quantity', 'price')
+    list_display = ('name', 'product_code', 'category', 'store', 'price', 'stock_quantity', 'profit')
     list_filter = ('status', 'category', 'store')
     search_fields = ('name', 'product_code')
+    readonly_fields = ('profit',)
 
 @admin.register(Supplier)
 class SupplierAdmin(admin.ModelAdmin):

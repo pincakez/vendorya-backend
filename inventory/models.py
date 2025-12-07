@@ -37,6 +37,8 @@ class Product(TimestampedModel):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='products')
+    
+    # Standard Fields
     name = models.CharField(_("Product Name"), max_length=255)
     product_code = models.CharField(max_length=50, blank=True, editable=False)
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products')
@@ -44,30 +46,35 @@ class Product(TimestampedModel):
     status = models.CharField(max_length=10, choices=ProductStatus.choices, default=ProductStatus.DRAFT)
     description = models.TextField(_("Description"), blank=True, null=True)
     
-    # Simple pricing fields for now (can be expanded later)
-    price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    stock_quantity = models.IntegerField(default=0)
+    # Money
+    wholesale_price = models.DecimalField(_("Wholesale Price"), max_digits=10, decimal_places=2, default=0.00)
+    price = models.DecimalField(_("Retail Price"), max_digits=10, decimal_places=2, default=0.00)
+    stock_quantity = models.IntegerField(_("In Stock"), default=0)
+
+    # THE MAGIC FIELD
+    attributes = models.JSONField(_("Custom Attributes"), default=dict, blank=True)
 
     class Meta:
         unique_together = ('store', 'product_code')
         ordering = ['name']
 
     def __str__(self):
-        return f"{self.name} [{self.product_code}]" if self.product_code else self.name
+        return f"{self.name} [{self.product_code}]"
+
+    @property
+    def profit(self):
+        return self.price - self.wholesale_price
 
     def save(self, *args, **kwargs):
-        # Auto-generate product code logic
         if not self.product_code:
             target_supplier = self.supplier or self.store.default_supplier
             if target_supplier:
                 prefix = target_supplier.code_prefix
                 queryset = Product.objects.filter(store=self.store, product_code__startswith=prefix)
                 if queryset.exists():
-                    # Extract number from code (e.g., "AA005" -> 5)
                     max_code = queryset.annotate(
                         code_num=Cast(models.Func(models.F('product_code'), models.Value(len(prefix) + 1), function='SUBSTRING'), output_field=IntegerField())
                     ).order_by('-code_num').first()
-                    
                     try:
                         last_number = int(max_code.product_code[len(prefix):])
                         new_number = last_number + 1
