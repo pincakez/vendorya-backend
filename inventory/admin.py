@@ -1,5 +1,11 @@
 from django.contrib import admin
-from .models import Supplier, Category, Product
+from .models import Supplier, Category, Product, AttributeDefinition # Add AttributeDefinition to import
+
+@admin.register(AttributeDefinition)
+class AttributeDefinitionAdmin(admin.ModelAdmin):
+    list_display = ('name', 'key', 'input_type', 'store')
+    list_filter = ('store', 'input_type')
+    readonly_fields = ('key',) # Key is auto-generated, don't let them mess it up
 
 class TenantAwareAdmin(admin.ModelAdmin):
     pass
