@@ -26,10 +26,8 @@ class AttributeDefinition(TimestampedModel):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='attribute_definitions')
-    
     name = models.CharField(_("Display Name"), max_length=50)
     key = models.SlugField(_("Code Name"), max_length=50)
-    
     input_type = models.CharField(max_length=20, choices=InputType.choices, default=InputType.TEXT)
     options = models.JSONField(default=list, blank=True) 
     is_active = models.BooleanField(default=True)
@@ -45,7 +43,7 @@ class AttributeDefinition(TimestampedModel):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.name} ({self.input_type})"
+        return self.name
 
 class Category(TimestampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -66,19 +64,17 @@ class Product(TimestampedModel):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='products')
-    
     name = models.CharField(_("Product Name"), max_length=255)
     product_code = models.CharField(max_length=50, blank=True, editable=False)
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products')
     supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=10, choices=ProductStatus.choices, default=ProductStatus.DRAFT)
     description = models.TextField(_("Description"), blank=True, null=True)
-    
     wholesale_price = models.DecimalField(_("Wholesale Price"), max_digits=10, decimal_places=2, default=0.00)
     price = models.DecimalField(_("Retail Price"), max_digits=10, decimal_places=2, default=0.00)
     stock_quantity = models.IntegerField(_("In Stock"), default=0)
 
-    attributes = models.JSONField(_("Custom Attributes"), default=dict, blank=True)
+    # REMOVED: attributes = JSONField...
 
     class Meta:
         unique_together = ('store', 'product_code')
@@ -110,3 +106,16 @@ class Product(TimestampedModel):
                     new_number = 1
                 self.product_code = f"{prefix}{new_number:03d}"
         super().save(*args, **kwargs)
+
+class ProductAttribute(models.Model):
+    """Links a Product to a specific Attribute Definition and stores the value."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='attributes')
+    definition = models.ForeignKey(AttributeDefinition, on_delete=models.PROTECT)
+    value = models.CharField(max_length=255)
+
+    class Meta:
+        unique_together = ('product', 'definition')
+
+    def __str__(self):
+        return f"{self.definition.name}: {self.value}"

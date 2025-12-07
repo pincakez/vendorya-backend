@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
-
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -133,6 +133,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -171,4 +172,44 @@ SIMPLE_JWT = {
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+}
+
+JAZZMIN_SETTINGS = {
+    # 1. Titles and Logos
+    "site_title": "Vendorya Admin",
+    "site_header": "Vendorya",
+    "site_brand": "vendorya",
+    "site_logo": "img/logo.png",  # Ensure file exists in staticfiles/img/
+    "login_logo": "img/logo.png",
+    "welcome_sign": "Welcome to Vendorya ERP",
+    "copyright": "Vendorya Ltd",
+    
+    # 2. User Avatar (Links to the 'photo' field in our User model)
+    "user_avatar": "photo",
+
+    # 3. Side Menu Icons (FontAwesome)
+    "icons": {
+        "auth": "fas fa-users-cog",
+        "users.User": "fas fa-user",
+        "users.Customer": "fas fa-users",
+        "core.Store": "fas fa-store",
+        "core.Branch": "fas fa-building",
+        "inventory.Product": "fas fa-box-open",
+        "inventory.Category": "fas fa-tags",
+        "inventory.Supplier": "fas fa-truck",
+        "inventory.AttributeDefinition": "fas fa-sliders-h",
+        "finance.SalesInvoice": "fas fa-file-invoice-dollar",
+        "auth.Group": "fas fa-users",
+        "core.Address": "fas fa-map-marker-alt",
+    },
+
+    # 4. UI Customizer (This adds a button to let you pick Dark Mode live)
+    "show_ui_builder": True,
+}
+
+JAZZMIN_UI_TWEAKS = {
+    "theme": "darkly",   # Dark Mode
+    "accent": "accent-warning", # Yellow/Orange Accent
+    "navbar": "navbar-dark",
+    "sidebar": "sidebar-dark-warning", # Dark sidebar with yellow active links
 }
