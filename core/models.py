@@ -24,9 +24,17 @@ class Store(TimestampedModel):
     plan = models.CharField(max_length=20, choices=SubscriptionPlan.choices, default=SubscriptionPlan.FREE)
     is_active = models.BooleanField(default=True)
     
-    # We use a string reference here to avoid circular imports with Inventory app
+    # Default Settings for Quick Actions
     default_supplier = models.ForeignKey(
         'inventory.Supplier',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+
+    default_category = models.ForeignKey(
+        'inventory.Category',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

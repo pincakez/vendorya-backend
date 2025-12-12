@@ -1,6 +1,22 @@
 from rest_framework import viewsets, permissions, filters
-from .models import Product, Category, Supplier
-from .serializers import ProductSerializer, CategorySerializer, SupplierSerializer
+from .models import Product, Category, Supplier, AttributeDefinition
+from .serializers import (
+    ProductSerializer, 
+    CategorySerializer, 
+    SupplierSerializer, 
+    AttributeDefinitionSerializer
+)
+
+class AttributeDefinitionViewSet(viewsets.ModelViewSet):
+    """API to manage the dynamic columns (definitions)."""
+    serializer_class = AttributeDefinitionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return AttributeDefinition.objects.filter(store=self.request.user.store)
+
+    def perform_create(self, serializer):
+        serializer.save(store=self.request.user.store)
 
 class ProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
@@ -10,8 +26,11 @@ class ProductViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'price', 'stock_quantity']
 
     def get_queryset(self):
-        # Filter products by the logged-in user's store
-        return Product.objects.filter(store=self.request.user.store)
+        # Optimization: prefetch attributes to avoid N+1 queries
+        # This loads all dynamic data in ONE database call instead of hundreds
+        return Product.objects.filter(
+            store=self.request.user.store
+        ).prefetch_related('attributes__definition', 'category', 'supplier')
 
     def perform_create(self, serializer):
         # Automatically assign the store when creating a product

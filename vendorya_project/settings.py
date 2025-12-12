@@ -185,6 +185,10 @@ JAZZMIN_SETTINGS = {
     "login_logo": "img/logo.png",
     "welcome_sign": "Welcome to Vendorya ERP",
     "copyright": "Vendorya Ltd",
+    "use_google_fonts_cdn": True,
+    "related_modal_active": False,
+    
+    
     
     # 2. User Avatar (Links to the 'photo' field in our User model)
     "user_avatar": "photo",
@@ -214,4 +218,5 @@ JAZZMIN_UI_TWEAKS = {
     "accent": "accent-warning", # Yellow/Orange Accent
     "navbar": "navbar-dark",
     "sidebar": "sidebar-dark-warning", # Dark sidebar with yellow active links
+
 }

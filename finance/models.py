@@ -4,6 +4,7 @@ from django.db import models
 from django.db.models import Sum
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
+from django.utils.translation import gettext_lazy as _  # <--- ADD THIS LINE
 from core.models import TimestampedModel, Store
 from inventory.models import Product
 from users.models import Customer
@@ -56,3 +57,25 @@ def update_invoice_totals(sender, instance, **kwargs):
     invoice.subtotal_amount = subtotal
     invoice.total_amount = (invoice.subtotal_amount + invoice.shipping_fee) - invoice.discount_amount
     invoice.save(update_fields=['subtotal_amount', 'total_amount'])
+    
+class Payment(TimestampedModel):
+    class PaymentType(models.TextChoices):
+        INCOME = 'INCOME', _('Income')
+        REFUND = 'REFUND', _('Refund')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='payments')
+    invoice = models.ForeignKey(SalesInvoice, on_delete=models.CASCADE, related_name='payments')
+    method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_date = models.DateTimeField(auto_now_add=True)
+    payment_type = models.CharField(max_length=10, choices=PaymentType.choices, default=PaymentType.INCOME)
+    reference_number = models.CharField(max_length=100, blank=True, null=True, help_text=_("Transaction ID or Check Number"))
+    notes = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.amount} - {self.method.name}"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Future: We can add logic here to update the Invoice status to "PAID" automatically

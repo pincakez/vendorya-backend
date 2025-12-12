@@ -68,15 +68,16 @@ class Product(TimestampedModel):
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='products')
     name = models.CharField(_("Product Name"), max_length=255)
     product_code = models.CharField(max_length=50, blank=True, editable=False)
-    category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products')
+    
+    # CHANGED: Made optional to support Quick Add (Safety Net)
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products', null=True, blank=True)
+    
     supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=10, choices=ProductStatus.choices, default=ProductStatus.DRAFT)
     description = models.TextField(_("Description"), blank=True, null=True)
     wholesale_price = models.DecimalField(_("Wholesale Price"), max_digits=10, decimal_places=2, default=0.00)
     price = models.DecimalField(_("Retail Price"), max_digits=10, decimal_places=2, default=0.00)
     stock_quantity = models.IntegerField(_("In Stock"), default=0)
-
-    # REMOVED: attributes = JSONField...
 
     class Meta:
         unique_together = ('store', 'product_code')
@@ -90,23 +91,37 @@ class Product(TimestampedModel):
         return self.price - self.wholesale_price
 
     def save(self, *args, **kwargs):
+        # Auto-generate Product Code
         if not self.product_code:
             target_supplier = self.supplier or self.store.default_supplier
+            
+            # FIXED: Fallback to 'GEN' if no supplier exists
             if target_supplier:
                 prefix = target_supplier.code_prefix
-                queryset = Product.objects.filter(store=self.store, product_code__startswith=prefix)
-                if queryset.exists():
-                    max_code = queryset.annotate(
-                        code_num=Cast(models.Func(models.F('product_code'), models.Value(len(prefix) + 1), function='SUBSTRING'), output_field=IntegerField())
-                    ).order_by('-code_num').first()
-                    try:
-                        last_number = int(max_code.product_code[len(prefix):])
+            else:
+                prefix = "GEN"
+
+            queryset = Product.objects.filter(store=self.store, product_code__startswith=prefix)
+            if queryset.exists():
+                max_code = queryset.annotate(
+                    code_num=Cast(models.Func(models.F('product_code'), models.Value(len(prefix) + 1), function='SUBSTRING'), output_field=IntegerField())
+                ).order_by('-code_num').first()
+                
+                try:
+                    # Safe extraction of number
+                    code_str = max_code.product_code[len(prefix):]
+                    if code_str.isdigit():
+                        last_number = int(code_str)
                         new_number = last_number + 1
-                    except (ValueError, AttributeError):
+                    else:
                         new_number = 1
-                else:
+                except (ValueError, AttributeError, IndexError):
                     new_number = 1
-                self.product_code = f"{prefix}{new_number:03d}"
+            else:
+                new_number = 1
+            
+            self.product_code = f"{prefix}{new_number:03d}"
+            
         super().save(*args, **kwargs)
 
 class ProductAttribute(models.Model):
