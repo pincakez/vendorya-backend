@@ -187,6 +187,7 @@ JAZZMIN_SETTINGS = {
     "copyright": "Vendorya Ltd",
     "use_google_fonts_cdn": True,
     "related_modal_active": False,
+    "related_modal_active": True,
     
     
     
@@ -220,3 +221,5 @@ JAZZMIN_UI_TWEAKS = {
     "sidebar": "sidebar-dark-warning", # Dark sidebar with yellow active links
 
 }
+
+X_FRAME_OPTIONS = 'SAMEORIGIN'

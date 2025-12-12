@@ -1,0 +1,26 @@
+/* 1. Make the outer shell huge */
+.modal-dialog {
+    max-width: 90vw !important; /* 90% of screen width */
+    width: 90vw !important;
+    margin: 2vh auto !important;
+}
+
+/* 2. Make the white/grey box fill the shell */
+.modal-content {
+    height: 90vh !important; /* 90% of screen height */
+}
+
+/* 3. Make the body fill the box */
+.modal-body {
+    height: 100% !important;
+    max-height: 100% !important;
+    padding: 0 !important;
+    overflow: hidden !important; /* Kill the double scrollbar */
+}
+
+/* 4. THE KEY FIX: Force the internal window (iframe) to expand */
+.modal-body iframe {
+    width: 100% !important;
+    height: 100% !important;
+    border: none !important;
+}
