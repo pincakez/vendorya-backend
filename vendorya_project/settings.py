@@ -185,10 +185,8 @@ JAZZMIN_SETTINGS = {
     "login_logo": "img/logo.png",
     "welcome_sign": "Welcome to Vendorya ERP",
     "copyright": "Vendorya Ltd",
-    "use_google_fonts_cdn": True,
-    "related_modal_active": False,
     "related_modal_active": True,
-    
+    "custom_css": "css/admin_fix.css",
     
     
     # 2. User Avatar (Links to the 'photo' field in our User model)
@@ -214,12 +212,38 @@ JAZZMIN_SETTINGS = {
     "show_ui_builder": True,
 }
 
+
 JAZZMIN_UI_TWEAKS = {
-    "theme": "darkly",   # Dark Mode
-    "accent": "accent-warning", # Yellow/Orange Accent
+    "navbar_small_text": False,
+    "footer_small_text": True,
+    "body_small_text": False,
+    "brand_small_text": False,
+    "brand_colour": "navbar-dark",
+    "accent": "accent-warning",
     "navbar": "navbar-dark",
-    "sidebar": "sidebar-dark-warning", # Dark sidebar with yellow active links
-
+    "no_navbar_border": False,
+    "navbar_fixed": True,
+    "layout_boxed": False,
+    "footer_fixed": True,
+    "sidebar_fixed": False,
+    "sidebar": "sidebar-dark-warning",
+    "sidebar_nav_small_text": False,
+    "sidebar_disable_expand": False,
+    "sidebar_nav_child_indent": False,
+    "sidebar_nav_compact_style": True,
+    "sidebar_nav_legacy_style": False,
+    "sidebar_nav_flat_style": True,
+    "theme": "darkly",
+    "dark_mode_theme": "darkly",
+    "button_classes": {
+        "primary": "btn-primary",
+        "secondary": "btn-secondary",
+        "info": "btn-outline-info",
+        "warning": "btn-warning",
+        "danger": "btn-danger",
+        "success": "btn-success"
+    },
+    "actions_sticky_top": False
 }
-
+    
 X_FRAME_OPTIONS = 'SAMEORIGIN'
