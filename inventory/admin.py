@@ -8,8 +8,8 @@ from .models import Supplier, Category, Product, AttributeDefinition, ProductAtt
 class ProductResource(resources.ModelResource):
     class Meta:
         model = Product
-        fields = ('id', 'product_code', 'name', 'price', 'wholesale_price', 'stock_quantity', 'category__name', 'supplier__name')
-
+        # ADDED 'store' so you can map products to the client
+        fields = ('id', 'store', 'product_code', 'name', 'price', 'wholesale_price', 'stock_quantity', 'category', 'supplier')
 # 2. INLINE ATTRIBUTES
 class ProductAttributeInline(admin.TabularInline):
     model = ProductAttribute
