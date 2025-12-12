@@ -8,7 +8,6 @@ from .models import Supplier, Category, Product, AttributeDefinition, ProductAtt
 class ProductResource(resources.ModelResource):
     class Meta:
         model = Product
-        # Define which columns to export
         fields = ('id', 'product_code', 'name', 'price', 'wholesale_price', 'stock_quantity', 'category__name', 'supplier__name')
 
 # 2. INLINE ATTRIBUTES
@@ -19,7 +18,7 @@ class ProductAttributeInline(admin.TabularInline):
 
 # 3. PRODUCT ADMIN
 @admin.register(Product)
-class ProductAdmin(ImportExportModelAdmin): # Inherit from ImportExport
+class ProductAdmin(ImportExportModelAdmin): 
     resource_class = ProductResource
     inlines = [ProductAttributeInline]
     
@@ -41,6 +40,9 @@ class ProductAdmin(ImportExportModelAdmin): # Inherit from ImportExport
 
     # CUSTOM COLUMN LOGIC
     def category_tooltip(self, obj):
+        if not obj.category:
+            return "-"  # Return a dash if no category
+            
         full_path = str(obj.category)
         short_name = obj.category.name
         return format_html('<span title="{}">{}</span>', full_path, short_name)
