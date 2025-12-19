@@ -1,24 +1,40 @@
 import uuid
 from django.db import models
-from django.db.models import IntegerField
-from django.db.models.functions import Cast
+from django.db.models import Sum
 from django.utils.translation import gettext_lazy as _
-from core.models import TimestampedModel, Store
+from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
 
-class Supplier(TimestampedModel):
+# --- 1. TAXATION ---
+class Tax(TimestampedModel, SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='taxes')
+    name = models.CharField(_("Tax Name"), max_length=50) # e.g., VAT 14%
+    rate = models.DecimalField(_("Rate %"), max_digits=5, decimal_places=2) # e.g., 14.00
+    
+    def __str__(self):
+        return f"{self.name} ({self.rate}%)"
+
+# --- 2. CORE INVENTORY ---
+class Supplier(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='suppliers')
     name = models.CharField(_("Supplier Name"), max_length=255)
     contact_info = models.TextField(_("Contact Info"), blank=True, null=True)
-    code_prefix = models.CharField(_("Supplier Code Prefix"), max_length=2, help_text=_("A unique 2-digit number for this supplier."))
+    code_prefix = models.CharField(max_length=5, default="SUP")
     
-    class Meta:
-        unique_together = [('store', 'name'), ('store', 'code_prefix')]
-
     def __str__(self):
         return self.name
 
-class AttributeDefinition(TimestampedModel):
+class Category(TimestampedModel, SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='categories')
+    name = models.CharField(_("Category Name"), max_length=150)
+    parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='subcategories')
+    
+    def __str__(self):
+        return f"{self.parent.name} > {self.name}" if self.parent else self.name
+
+class AttributeDefinition(TimestampedModel, SoftDeleteModel):
     class InputType(models.TextChoices):
         TEXT = 'TEXT', _('Free Text')
         SELECT = 'SELECT', _('Dropdown Menu')
@@ -30,109 +46,82 @@ class AttributeDefinition(TimestampedModel):
     key = models.SlugField(_("Code Name"), max_length=50)
     input_type = models.CharField(max_length=20, choices=InputType.choices, default=InputType.TEXT)
     options = models.JSONField(default=list, blank=True) 
-    is_active = models.BooleanField(default=True)
-
-    class Meta:
-        unique_together = ('store', 'key')
-        ordering = ['created_at']
-
-    def save(self, *args, **kwargs):
-        if not self.key:
-            from django.utils.text import slugify
-            self.key = f"attr_{slugify(self.name)}"
-        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
 
-class Category(TimestampedModel):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='categories')
-    name = models.CharField(_("Category Name"), max_length=150)
-    parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='subcategories')
-    
-    class Meta:
-        unique_together = ('store', 'name')
-    
-    def __str__(self):
-        if self.parent:
-            return f"{self.parent.name} > {self.name}"
-        return self.name
-
-class Product(TimestampedModel):
-    class ProductStatus(models.TextChoices):
-        DRAFT = 'DRAFT', _('Draft')
-        PUBLISHED = 'PUBLISHED', _('Published')
+# --- 3. PRODUCT & VARIANTS ---
+class Product(TimestampedModel, SoftDeleteModel):
+    class ProductType(models.TextChoices):
+        STANDARD = 'STANDARD', _('Standard Product')
+        SERVICE = 'SERVICE', _('Service (No Stock)')
+        BUNDLE = 'BUNDLE', _('Bundle/Kit')
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='products')
     name = models.CharField(_("Product Name"), max_length=255)
-    product_code = models.CharField(max_length=50, blank=True, editable=False)
+    product_type = models.CharField(max_length=20, choices=ProductType.choices, default=ProductType.STANDARD)
     
-    # CHANGED: Made optional to support Quick Add (Safety Net)
-    category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name='products', null=True, blank=True)
-    
+    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
-    status = models.CharField(max_length=10, choices=ProductStatus.choices, default=ProductStatus.DRAFT)
-    description = models.TextField(_("Description"), blank=True, null=True)
-    wholesale_price = models.DecimalField(_("Wholesale Price"), max_digits=10, decimal_places=2, default=0.00)
-    price = models.DecimalField(_("Retail Price"), max_digits=10, decimal_places=2, default=0.00)
-    stock_quantity = models.IntegerField(_("In Stock"), default=0)
-
-    class Meta:
-        unique_together = ('store', 'product_code')
-        ordering = ['name']
+    tax = models.ForeignKey(Tax, on_delete=models.SET_NULL, null=True, blank=True)
+    
+    description = models.TextField(blank=True, null=True)
+    unit = models.CharField(_("Unit"), max_length=20, default="pcs") # kg, m, box
+    
+    # Base info (can be overridden by variants)
+    base_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
     def __str__(self):
-        return f"{self.name} [{self.product_code}]"
+        return self.name
 
-    @property
-    def profit(self):
-        return self.price - self.wholesale_price
+class ProductVariant(TimestampedModel, SoftDeleteModel):
+    """The actual sellable SKU (e.g., Red Shirt Size L)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variants')
+    sku = models.CharField(_("SKU"), max_length=100, blank=True) # Unique ID
+    barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
+    
+    # Pricing
+    cost_price = models.DecimalField(_("Cost (Avg)"), max_digits=12, decimal_places=2, default=0.00)
+    sell_price = models.DecimalField(_("Sell Price"), max_digits=12, decimal_places=2, default=0.00)
+    
+    def __str__(self):
+        return f"{self.product.name} ({self.sku})"
 
     def save(self, *args, **kwargs):
-        # Auto-generate Product Code
-        if not self.product_code:
-            target_supplier = self.supplier or self.store.default_supplier
-            
-            # FIXED: Fallback to 'GEN' if no supplier exists
-            if target_supplier:
-                prefix = target_supplier.code_prefix
-            else:
-                prefix = "GEN"
-
-            queryset = Product.objects.filter(store=self.store, product_code__startswith=prefix)
-            if queryset.exists():
-                max_code = queryset.annotate(
-                    code_num=Cast(models.Func(models.F('product_code'), models.Value(len(prefix) + 1), function='SUBSTRING'), output_field=IntegerField())
-                ).order_by('-code_num').first()
-                
-                try:
-                    # Safe extraction of number
-                    code_str = max_code.product_code[len(prefix):]
-                    if code_str.isdigit():
-                        last_number = int(code_str)
-                        new_number = last_number + 1
-                    else:
-                        new_number = 1
-                except (ValueError, AttributeError, IndexError):
-                    new_number = 1
-            else:
-                new_number = 1
-            
-            self.product_code = f"{prefix}{new_number:03d}"
-            
+        if not self.sku:
+            # Simple auto-SKU generation
+            self.sku = str(uuid.uuid4())[:8].upper()
         super().save(*args, **kwargs)
 
 class ProductAttribute(models.Model):
-    """Links a Product to a specific Attribute Definition and stores the value."""
+    """Links a Variant to a specific Attribute (e.g., Variant A is Red)."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='attributes')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE, related_name='attributes')
     definition = models.ForeignKey(AttributeDefinition, on_delete=models.PROTECT)
     value = models.CharField(max_length=255)
 
     class Meta:
-        unique_together = ('product', 'definition')
+        unique_together = ('variant', 'definition')
+
+# --- 4. MULTI-WAREHOUSE STOCK ---
+class StockLevel(TimestampedModel):
+    """Tracks how many items are in a specific branch."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE, related_name='stock_levels')
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='stock_levels')
+    quantity = models.DecimalField(max_digits=12, decimal_places=3, default=0.000)
+    
+    class Meta:
+        unique_together = ('variant', 'branch')
 
     def __str__(self):
-        return f"{self.definition.name}: {self.value}"
+        return f"{self.branch.name}: {self.quantity}"
+
+# --- 5. BUNDLES ---
+class BundleItem(models.Model):
+    """Defines what is inside a Bundle (e.g., 1 Suit = 1 Jacket + 1 Pants)."""
+    bundle = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='bundle_contents')
+    component = models.ForeignKey(ProductVariant, on_delete=models.PROTECT) # The part inside
+    quantity = models.DecimalField(max_digits=10, decimal_places=3, default=1)

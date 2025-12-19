@@ -178,73 +178,119 @@ SIMPLE_JWT = {
 }
 
 JAZZMIN_SETTINGS = {
-    # 1. Titles and Logos
-    "site_title": "Vendorya Admin",
+    # UI Customizer
+    "site_title": "Vendorya ERP",
     "site_header": "Vendorya",
-    "site_brand": "vendorya",
-    "site_logo": "img/logo.png",  # Ensure file exists in staticfiles/img/
-    "login_logo": "img/logo.png",
+    "site_brand": "Vendorya",
     "welcome_sign": "Welcome to Vendorya ERP",
     "copyright": "Vendorya Ltd",
-    "related_modal_active": True,
-    "custom_css": "css/admin_fix.css",
-    
-    
-    # 2. User Avatar (Links to the 'photo' field in our User model)
-    "user_avatar": "photo",
+    "search_model": "users.Customer", # Global search looks for customers by default
 
-    # 3. Side Menu Icons (FontAwesome)
+    # Top Menu
+    "topmenu_links": [
+        {"name": "Dashboard", "url": "admin:index", "permissions": ["auth.view_user"]},
+        {"name": "POS (Coming Soon)", "url": "#", "new_window": True},
+        {"model": "users.User"},
+    ],
+
+    # User Menu
+    "usermenu_links": [
+        {"name": "Support", "url": "https://vendorya.com/support", "new_window": True},
+        {"model": "users.User"}
+    ],
+
+    # Side Menu
+    "show_sidebar": True,
+    "navigation_expanded": True,
+    "hide_apps": [],
+    "hide_models": ["inventory.ProductAttribute", "inventory.BundleItem"], # Hide technical tables
+
+    # Icons (FontAwesome)
     "icons": {
         "auth": "fas fa-users-cog",
-        "users.User": "fas fa-user",
-        "users.Customer": "fas fa-users",
+        "auth.user": "fas fa-user",
+        "auth.Group": "fas fa-users",
+        
+        # Core
         "core.Store": "fas fa-store",
         "core.Branch": "fas fa-building",
-        "inventory.Product": "fas fa-box-open",
-        "inventory.Category": "fas fa-tags",
-        "inventory.Supplier": "fas fa-truck",
-        "inventory.AttributeDefinition": "fas fa-sliders-h",
-        "finance.SalesInvoice": "fas fa-file-invoice-dollar",
-        "auth.Group": "fas fa-users",
         "core.Address": "fas fa-map-marker-alt",
+        
+        # Inventory
+        "inventory.Product": "fas fa-tshirt",
+        "inventory.ProductVariant": "fas fa-tags",
+        "inventory.StockLevel": "fas fa-boxes",
+        "inventory.Category": "fas fa-sitemap",
+        "inventory.Supplier": "fas fa-truck",
+        "inventory.Tax": "fas fa-percent",
+        "inventory.AttributeDefinition": "fas fa-list",
+        
+        # Finance
+        "finance.SalesInvoice": "fas fa-file-invoice-dollar",
+        "finance.Payment": "fas fa-money-bill-wave",
+        "finance.Expense": "fas fa-receipt",
+        "finance.ExpenseCategory": "fas fa-folder-open",
+        "finance.PaymentMethod": "fas fa-credit-card",
+        "finance.InvoiceSequence": "fas fa-sort-numeric-up",
+        
+        # Users
+        "users.Customer": "fas fa-user-tie",
+        "users.User": "fas fa-user-shield",
     },
 
-    # 4. UI Customizer (This adds a button to let you pick Dark Mode live)
-    "show_ui_builder": True,
-}
+    # Sidebar Order (The most important part)
+    "order_with_respect_to": [
+        # 1. Operations
+        "finance.SalesInvoice",
+        "finance.Payment",
+        "finance.Expense",
+        
+        # 2. Inventory Management
+        "inventory.Product",
+        "inventory.ProductVariant",
+        "inventory.StockLevel",
+        
+        # 3. CRM
+        "users.Customer",
+        "inventory.Supplier",
+        
+        # 4. Configuration
+        "core.Store",
+        "core.Branch",
+        "inventory.Category",
+        "inventory.Tax",
+        "finance.PaymentMethod",
+        
+        # 5. System
+        "auth.User",
+        "auth.Group",
+    ],
 
+    # UI Tweaks
+    "related_modal_active": True,
+    "custom_css": "css/admin_fix.css",
+    "show_ui_builder": False, # Turn off the builder button for production
+}
 
 JAZZMIN_UI_TWEAKS = {
     "navbar_small_text": False,
-    "footer_small_text": True,
+    "footer_small_text": False,
     "body_small_text": False,
     "brand_small_text": False,
-    "brand_colour": "navbar-dark",
-    "accent": "accent-warning",
+    "brand_colour": "navbar-primary",
+    "accent": "accent-primary",
     "navbar": "navbar-dark",
     "no_navbar_border": False,
     "navbar_fixed": True,
     "layout_boxed": False,
-    "footer_fixed": True,
-    "sidebar_fixed": False,
-    "sidebar": "sidebar-dark-warning",
+    "footer_fixed": False,
+    "sidebar_fixed": True,
+    "sidebar": "sidebar-dark-primary",
     "sidebar_nav_small_text": False,
     "sidebar_disable_expand": False,
-    "sidebar_nav_child_indent": False,
-    "sidebar_nav_compact_style": True,
-    "sidebar_nav_legacy_style": False,
-    "sidebar_nav_flat_style": True,
-    "theme": "darkly",
-    "dark_mode_theme": "darkly",
-    "button_classes": {
-        "primary": "btn-primary",
-        "secondary": "btn-secondary",
-        "info": "btn-outline-info",
-        "warning": "btn-warning",
-        "danger": "btn-danger",
-        "success": "btn-success"
-    },
-    "actions_sticky_top": False
+    "sidebar_nav_child_indent": True,
+    "sidebar_nav_compact_style": False,
+    "main_sidebar_color": None,
 }
     
 X_FRAME_OPTIONS = 'SAMEORIGIN'

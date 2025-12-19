@@ -1,81 +1,105 @@
 import uuid
 from decimal import Decimal
 from django.db import models
-from django.db.models import Sum
-from django.db.models.signals import post_save, post_delete
-from django.dispatch import receiver
-from django.utils.translation import gettext_lazy as _  # <--- ADD THIS LINE
-from core.models import TimestampedModel, Store
-from inventory.models import Product
+from django.db.models import Sum, Max
+from django.utils.translation import gettext_lazy as _
+from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
+from inventory.models import ProductVariant
 from users.models import Customer
 
-class PaymentMethod(TimestampedModel):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='payment_methods')
-    name = models.CharField(max_length=100)
+# --- 1. SEQUENCING ---
+class InvoiceSequence(models.Model):
+    """Tracks the last invoice number for each store."""
+    store = models.ForeignKey(Store, on_delete=models.CASCADE)
+    last_number = models.PositiveIntegerField(default=0)
+    
     class Meta:
-        unique_together = ('store', 'name')
+        unique_together = ('store',)
+
+# --- 2. EXPENSES ---
+class ExpenseCategory(TimestampedModel, SoftDeleteModel):
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='expense_categories')
+    name = models.CharField(max_length=100)
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL)
+
     def __str__(self):
         return self.name
 
-class BaseInvoice(TimestampedModel):
+class Expense(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    invoice_date = models.DateField()
-    subtotal_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, editable=False)
-    shipping_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, editable=False)
-    class Meta:
-        abstract = True
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='expenses')
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    category = models.ForeignKey(ExpenseCategory, on_delete=models.PROTECT)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    description = models.TextField(blank=True)
+    date = models.DateField()
 
-class BaseInvoiceItem(TimestampedModel):
+# --- 3. INVOICING ---
+class PaymentMethod(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # We link to Product directly for now (simplified from ProductVariant)
-    product = models.ForeignKey(Product, on_delete=models.PROTECT, null=True, blank=True)
-    description = models.CharField(max_length=255, default='')
-    quantity = models.DecimalField(max_digits=10, decimal_places=2)
-    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
-    total_price = models.DecimalField(max_digits=12, decimal_places=2, editable=False)
-    class Meta:
-        abstract = True
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='payment_methods')
+    name = models.CharField(max_length=100)
+    is_cash = models.BooleanField(default=False) # To identify Cash Drawer
+    
+    def __str__(self):
+        return self.name
+
+class SalesInvoice(TimestampedModel, SoftDeleteModel):
+    class Status(models.TextChoices):
+        DRAFT = 'DRAFT', _('Draft')
+        POSTED = 'POSTED', _('Posted') # Finalized
+        VOID = 'VOID', _('Voided')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='invoices')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT)
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='invoices')
+    
+    # The Readable Number (e.g., 1001)
+    invoice_number = models.PositiveIntegerField(editable=False, null=True)
+    
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
+    date = models.DateTimeField()
+    
+    # Totals
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    tax_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    discount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    grand_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    
     def save(self, *args, **kwargs):
-        self.total_price = self.quantity * self.unit_price
+        # Auto-Sequence on first save if POSTED
+        if self.status == self.Status.POSTED and not self.invoice_number:
+            seq, created = InvoiceSequence.objects.get_or_create(store=self.store)
+            seq.last_number += 1
+            seq.save()
+            self.invoice_number = seq.last_number
         super().save(*args, **kwargs)
 
-class SalesInvoice(BaseInvoice):
-    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='sales_invoices')
-    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='sales_invoices')
-
-class SalesInvoiceItem(BaseInvoiceItem):
-    invoice = models.ForeignKey(SalesInvoice, on_delete=models.CASCADE, related_name='items')
-
-# Signals for automatic calculation
-@receiver([post_save, post_delete], sender=SalesInvoiceItem)
-def update_invoice_totals(sender, instance, **kwargs):
-    invoice = instance.invoice
-    subtotal = invoice.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0.00')
-    invoice.subtotal_amount = subtotal
-    invoice.total_amount = (invoice.subtotal_amount + invoice.shipping_fee) - invoice.discount_amount
-    invoice.save(update_fields=['subtotal_amount', 'total_amount'])
-    
-class Payment(TimestampedModel):
-    class PaymentType(models.TextChoices):
-        INCOME = 'INCOME', _('Income')
-        REFUND = 'REFUND', _('Refund')
-
+class SalesInvoiceItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='payments')
+    invoice = models.ForeignKey(SalesInvoice, on_delete=models.CASCADE, related_name='items')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    
+    quantity = models.DecimalField(max_digits=10, decimal_places=3)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+
+    def save(self, *args, **kwargs):
+        self.total = (self.quantity * self.unit_price) + self.tax_amount
+        super().save(*args, **kwargs)
+
+class Payment(TimestampedModel, SoftDeleteModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     invoice = models.ForeignKey(SalesInvoice, on_delete=models.CASCADE, related_name='payments')
     method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    payment_date = models.DateTimeField(auto_now_add=True)
-    payment_type = models.CharField(max_length=10, choices=PaymentType.choices, default=PaymentType.INCOME)
-    reference_number = models.CharField(max_length=100, blank=True, null=True, help_text=_("Transaction ID or Check Number"))
-    notes = models.TextField(blank=True, null=True)
-
-    def __str__(self):
-        return f"{self.amount} - {self.method.name}"
-
+    
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        # Future: We can add logic here to update the Invoice status to "PAID" automatically
+        # Update Invoice Paid Amount
+        total_paid = self.invoice.payments.aggregate(sum=Sum('amount'))['sum'] or 0
+        self.invoice.paid_amount = total_paid
+        self.invoice.save()

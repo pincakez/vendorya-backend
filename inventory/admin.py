@@ -1,84 +1,43 @@
 from django.contrib import admin
-from django.utils.html import format_html
-from import_export.admin import ImportExportModelAdmin
-from import_export import resources
-from .models import Supplier, Category, Product, AttributeDefinition, ProductAttribute
+from .models import Supplier, Category, Product, ProductVariant, AttributeDefinition, ProductAttribute, StockLevel, Tax, BundleItem
 
-# 1. EXCEL RESOURCE CONFIGURATION
-class ProductResource(resources.ModelResource):
-    class Meta:
-        model = Product
-        # ADDED 'store' so you can map products to the client
-        fields = ('id', 'store', 'product_code', 'name', 'price', 'wholesale_price', 'stock_quantity', 'category', 'supplier')
-# 2. INLINE ATTRIBUTES
 class ProductAttributeInline(admin.TabularInline):
     model = ProductAttribute
     extra = 1
-    autocomplete_fields = ['definition']
 
-# 3. PRODUCT ADMIN
+class StockLevelInline(admin.TabularInline):
+    model = StockLevel
+    extra = 1
+
+class BundleItemInline(admin.TabularInline):
+    model = BundleItem
+    fk_name = 'bundle'
+    extra = 1
+
+class ProductVariantInline(admin.TabularInline):
+    model = ProductVariant
+    extra = 1
+    show_change_link = True
+
 @admin.register(Product)
-class ProductAdmin(ImportExportModelAdmin): 
-    resource_class = ProductResource
-    inlines = [ProductAttributeInline]
-    
-    # COLUMNS
-    list_display = (
-        'product_code',
-        'category_tooltip',
-        'name_tooltip',
-        'retail_price_col',
-        'wholesale_price_col',
-        'supplier',
-        'stock_quantity'
-    )
-    
-    # FILTERS & SEARCH
-    list_filter = ('store', 'status', 'category', 'supplier')
-    search_fields = ('name', 'product_code')
-    readonly_fields = ('profit',)
-
-    # CUSTOM COLUMN LOGIC
-    def category_tooltip(self, obj):
-        if not obj.category:
-            return "-"  # Return a dash if no category
-            
-        full_path = str(obj.category)
-        short_name = obj.category.name
-        return format_html('<span title="{}">{}</span>', full_path, short_name)
-    category_tooltip.short_description = 'Category'
-
-    def name_tooltip(self, obj):
-        attrs = obj.attributes.all()
-        if attrs:
-            tooltip_text = "\n".join([f"{a.definition.name}: {a.value}" for a in attrs])
-        else:
-            tooltip_text = "No attributes"
-        return format_html('<span title="{}">{}</span>', tooltip_text, obj.name)
-    name_tooltip.short_description = 'Product Name'
-
-    def retail_price_col(self, obj):
-        return obj.price
-    retail_price_col.short_description = 'R-Price'
-
-    def wholesale_price_col(self, obj):
-        return obj.wholesale_price
-    wholesale_price_col.short_description = 'W-Price'
-
-# 4. OTHER ADMINS
-@admin.register(Supplier)
-class SupplierAdmin(admin.ModelAdmin):
-    list_display = ('name', 'code_prefix', 'store')
-    search_fields = ('name', 'code_prefix')
-
-@admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'parent', 'store')
+class ProductAdmin(admin.ModelAdmin):
+    list_display = ('name', 'store', 'product_type', 'category', 'supplier')
+    list_filter = ('store', 'product_type', 'category')
     search_fields = ('name',)
+    inlines = [ProductVariantInline, BundleItemInline]
 
-@admin.register(AttributeDefinition)
-class AttributeDefinitionAdmin(admin.ModelAdmin):
-    list_display = ('name', 'key', 'input_type', 'store')
-    list_filter = ('store', 'input_type')
-    search_fields = ('name', 'key')
-    readonly_fields = ('key',)
+@admin.register(ProductVariant)
+class ProductVariantAdmin(admin.ModelAdmin):
+    list_display = ('product', 'sku', 'cost_price', 'sell_price')
+    search_fields = ('sku', 'product__name')
+    inlines = [ProductAttributeInline, StockLevelInline]
+
+@admin.register(StockLevel)
+class StockLevelAdmin(admin.ModelAdmin):
+    list_display = ('variant', 'branch', 'quantity')
+    list_filter = ('branch',)
+
+admin.site.register(Supplier)
+admin.site.register(Category)
+admin.site.register(AttributeDefinition)
+admin.site.register(Tax)
