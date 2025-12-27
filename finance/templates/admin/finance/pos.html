@@ -1,0 +1,130 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<div style="display: flex; gap: 20px; height: 80vh;">
+    
+    <!-- LEFT: Search & Results -->
+    <div style="flex: 1; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+        <h2>🛒 POS - {{ store.name }}</h2>
+        <input type="text" id="searchInput" placeholder="Scan Barcode or Type Name..." 
+               style="width: 100%; padding: 15px; font-size: 18px; border: 2px solid #007bff; border-radius: 5px; margin-bottom: 10px;">
+        
+        <div id="searchResults" style="margin-top: 10px;"></div>
+    </div>
+
+    <!-- RIGHT: Cart & Checkout -->
+    <div style="width: 400px; background: #f8f9fa; padding: 20px; border-radius: 8px; display: flex; flex-direction: column;">
+        <h3>Receipt</h3>
+        <div id="cartItems" style="flex: 1; overflow-y: auto; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd; padding: 10px 0;">
+            <p style="text-align: center; color: #999;">Cart is empty</p>
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <div style="display: flex; justify-content: space-between; font-size: 20px; font-weight: bold;">
+                <span>Total:</span>
+                <span id="cartTotal">0.00</span>
+            </div>
+            <button onclick="checkout()" style="width: 100%; background: #28a745; color: white; padding: 15px; border: none; border-radius: 5px; font-size: 18px; margin-top: 15px; cursor: pointer;">
+                ✅ Complete Sale
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let cart = [];
+    const searchInput = document.getElementById('searchInput');
+    const resultsDiv = document.getElementById('searchResults');
+    const cartDiv = document.getElementById('cartItems');
+    const totalSpan = document.getElementById('cartTotal');
+
+    // 1. Live Search
+    searchInput.addEventListener('input', function() {
+        const query = this.value;
+        if (query.length < 3) { resultsDiv.innerHTML = ''; return; }
+
+        fetch(`api/search/?q=${query}`)
+            .then(res => res.json())
+            .then(data => {
+                let html = '';
+                data.results.forEach(item => {
+                    html += `
+                    <div onclick='addToCart(${JSON.stringify(item)})' 
+                         style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; hover: background-color: #f0f0f0;">
+                        <span>${item.name}</span>
+                        <span style="font-weight: bold;">${item.price} EGP (Stock: ${item.stock})</span>
+                    </div>`;
+                });
+                resultsDiv.innerHTML = html;
+            });
+    });
+
+    // 2. Add to Cart
+    window.addToCart = function(item) {
+        const existing = cart.find(c => c.id === item.id);
+        if (existing) {
+            existing.qty++;
+        } else {
+            cart.push({...item, qty: 1});
+        }
+        renderCart();
+        searchInput.value = ''; // Clear search
+        searchInput.focus();
+        resultsDiv.innerHTML = '';
+    };
+
+    // 3. Render Cart
+    function renderCart() {
+        if (cart.length === 0) {
+            cartDiv.innerHTML = '<p style="text-align: center; color: #999;">Cart is empty</p>';
+            totalSpan.innerText = '0.00';
+            return;
+        }
+
+        let html = '<table style="width:100%">';
+        let total = 0;
+        cart.forEach((item, index) => {
+            const lineTotal = item.price * item.qty;
+            total += lineTotal;
+            html += `
+            <tr>
+                <td>${item.name}</td>
+                <td>x${item.qty}</td>
+                <td>${lineTotal.toFixed(2)}</td>
+                <td><button onclick="removeFromCart(${index})" style="color: red; border: none; background: none;">X</button></td>
+            </tr>`;
+        });
+        html += '</table>';
+        cartDiv.innerHTML = html;
+        totalSpan.innerText = total.toFixed(2);
+    }
+
+    window.removeFromCart = function(index) {
+        cart.splice(index, 1);
+        renderCart();
+    };
+
+    // 4. Checkout
+    window.checkout = function() {
+        if (cart.length === 0) return alert("Cart is empty!");
+
+        fetch('api/checkout/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            },
+            body: JSON.stringify({ items: cart })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) {
+                alert("Error: " + data.error);
+            } else {
+                alert("Sale Complete! Invoice #" + data.invoice_number);
+                cart = [];
+                renderCart();
+            }
+        });
+    };
+</script>
+{% endblock %}
