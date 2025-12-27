@@ -4,22 +4,34 @@ from django.utils.html import format_html
 from .models import Store, Address, Branch
 from .admin_views import store_global_search_view, store_global_search_api
 
+# --- BASE ADMIN CLASS (Hides Deleted Fields) ---
+class SoftDeleteAdmin(admin.ModelAdmin):
+    exclude = ('is_deleted', 'deleted_at')
+
 class AddressInline(admin.StackedInline):
     model = Address
     extra = 0
+    exclude = ('is_deleted', 'deleted_at')
 
 class BranchInline(admin.TabularInline):
     model = Branch
     extra = 0
+    exclude = ('is_deleted', 'deleted_at')
 
 @admin.register(Store)
-class StoreAdmin(admin.ModelAdmin):
+class StoreAdmin(SoftDeleteAdmin):
     list_display = ('name', 'owner', 'plan', 'is_active', 'search_dashboard_link')
     list_filter = ('plan', 'is_active')
     search_fields = ('name', 'owner__username')
     inlines = [AddressInline, BranchInline]
     
-    # 1. Add Custom URLs for the Search Page
+    # Hide technical fields
+    fields = (
+        'name', 'owner', 'plan', 'is_active', 'default_supplier', 
+        'default_category', 'default_language', 'currency_symbol'
+    )
+    readonly_fields = ('created_at', 'updated_at')
+
     def get_urls(self):
         urls = super().get_urls()
         custom_urls = [
@@ -28,7 +40,6 @@ class StoreAdmin(admin.ModelAdmin):
         ]
         return custom_urls + urls
 
-    # 2. Create the Button
     def search_dashboard_link(self, obj):
         url = reverse('admin:store_global_search', args=[obj.id])
         return format_html(
@@ -38,9 +49,9 @@ class StoreAdmin(admin.ModelAdmin):
     search_dashboard_link.short_description = "Actions"
 
 @admin.register(Address)
-class AddressAdmin(admin.ModelAdmin):
+class AddressAdmin(SoftDeleteAdmin):
     list_display = ('store', 'city', 'street_1')
 
 @admin.register(Branch)
-class BranchAdmin(admin.ModelAdmin):
+class BranchAdmin(SoftDeleteAdmin):
     list_display = ('name', 'store', 'is_main_branch')

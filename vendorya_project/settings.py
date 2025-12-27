@@ -125,7 +125,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Africa/Cairo'
 
 USE_I18N = True
 
@@ -184,7 +184,12 @@ JAZZMIN_SETTINGS = {
     "site_brand": "Vendorya",
     "welcome_sign": "Welcome to Vendorya ERP",
     "copyright": "Vendorya Ltd",
-    "search_model": "users.Customer", # Global search looks for customers by default
+    "search_model": "users.Customer",
+
+    # LOGOS (Added this part)
+    "site_logo": "img/logo.png",
+    "login_logo": "img/logo.png",
+    "site_logo_classes": "img-circle", # Makes it round (optional)
 
     # Top Menu
     "topmenu_links": [
@@ -195,7 +200,7 @@ JAZZMIN_SETTINGS = {
 
     # User Menu
     "usermenu_links": [
-        {"name": "Support", "url": "https://vendorya.com/support", "new_window": True},
+        {"name": "Support", "url": "#", "new_window": True},
         {"model": "users.User"}
     ],
 
@@ -203,20 +208,16 @@ JAZZMIN_SETTINGS = {
     "show_sidebar": True,
     "navigation_expanded": True,
     "hide_apps": [],
-    "hide_models": ["inventory.ProductAttribute", "inventory.BundleItem"], # Hide technical tables
+    "hide_models": ["inventory.ProductAttribute", "inventory.BundleItem"],
 
-    # Icons (FontAwesome)
+    # Icons
     "icons": {
         "auth": "fas fa-users-cog",
         "auth.user": "fas fa-user",
         "auth.Group": "fas fa-users",
-        
-        # Core
         "core.Store": "fas fa-store",
         "core.Branch": "fas fa-building",
         "core.Address": "fas fa-map-marker-alt",
-        
-        # Inventory
         "inventory.Product": "fas fa-tshirt",
         "inventory.ProductVariant": "fas fa-tags",
         "inventory.StockLevel": "fas fa-boxes",
@@ -224,44 +225,31 @@ JAZZMIN_SETTINGS = {
         "inventory.Supplier": "fas fa-truck",
         "inventory.Tax": "fas fa-percent",
         "inventory.AttributeDefinition": "fas fa-list",
-        
-        # Finance
         "finance.SalesInvoice": "fas fa-file-invoice-dollar",
         "finance.Payment": "fas fa-money-bill-wave",
         "finance.Expense": "fas fa-receipt",
         "finance.ExpenseCategory": "fas fa-folder-open",
         "finance.PaymentMethod": "fas fa-credit-card",
         "finance.InvoiceSequence": "fas fa-sort-numeric-up",
-        
-        # Users
         "users.Customer": "fas fa-user-tie",
         "users.User": "fas fa-user-shield",
     },
 
-    # Sidebar Order (The most important part)
+    # Sidebar Order
     "order_with_respect_to": [
-        # 1. Operations
         "finance.SalesInvoice",
         "finance.Payment",
         "finance.Expense",
-        
-        # 2. Inventory Management
         "inventory.Product",
         "inventory.ProductVariant",
         "inventory.StockLevel",
-        
-        # 3. CRM
         "users.Customer",
         "inventory.Supplier",
-        
-        # 4. Configuration
         "core.Store",
         "core.Branch",
         "inventory.Category",
         "inventory.Tax",
         "finance.PaymentMethod",
-        
-        # 5. System
         "auth.User",
         "auth.Group",
     ],
@@ -269,28 +257,7 @@ JAZZMIN_SETTINGS = {
     # UI Tweaks
     "related_modal_active": True,
     "custom_css": "css/admin_fix.css",
-    "show_ui_builder": False, # Turn off the builder button for production
-}
-
-JAZZMIN_UI_TWEAKS = {
-    "navbar_small_text": False,
-    "footer_small_text": False,
-    "body_small_text": False,
-    "brand_small_text": False,
-    "brand_colour": "navbar-primary",
-    "accent": "accent-primary",
-    "navbar": "navbar-dark",
-    "no_navbar_border": False,
-    "navbar_fixed": True,
-    "layout_boxed": False,
-    "footer_fixed": False,
-    "sidebar_fixed": True,
-    "sidebar": "sidebar-dark-primary",
-    "sidebar_nav_small_text": False,
-    "sidebar_disable_expand": False,
-    "sidebar_nav_child_indent": True,
-    "sidebar_nav_compact_style": False,
-    "main_sidebar_color": None,
+    "show_ui_builder": False,
 }
     
 X_FRAME_OPTIONS = 'SAMEORIGIN'

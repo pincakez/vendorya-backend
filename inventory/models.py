@@ -1,6 +1,6 @@
 import uuid
 from django.db import models
-from django.db.models import Sum
+from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
 
@@ -8,8 +8,8 @@ from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
 class Tax(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='taxes')
-    name = models.CharField(_("Tax Name"), max_length=50) # e.g., VAT 14%
-    rate = models.DecimalField(_("Rate %"), max_digits=5, decimal_places=2) # e.g., 14.00
+    name = models.CharField(_("Tax Name"), max_length=50)
+    rate = models.DecimalField(_("Rate %"), max_digits=5, decimal_places=2)
     
     def __str__(self):
         return f"{self.name} ({self.rate}%)"
@@ -20,10 +20,20 @@ class Supplier(TimestampedModel, SoftDeleteModel):
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='suppliers')
     name = models.CharField(_("Supplier Name"), max_length=255)
     contact_info = models.TextField(_("Contact Info"), blank=True, null=True)
-    code_prefix = models.CharField(max_length=5, default="SUP")
     
+    # FIXED: Strict 2-digit validation
+    code_prefix = models.CharField(
+        _("Supplier Code Prefix"), 
+        max_length=2, 
+        validators=[RegexValidator(r'^\d{2}$', 'Prefix must be exactly 2 digits (00-99).')],
+        help_text=_("Unique 2-digit ID for generating product codes.")
+    )
+    
+    class Meta:
+        unique_together = [('store', 'code_prefix')] # Ensure uniqueness per store
+
     def __str__(self):
-        return self.name
+        return f"{self.name} ({self.code_prefix})"
 
 class Category(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -67,22 +77,19 @@ class Product(TimestampedModel, SoftDeleteModel):
     tax = models.ForeignKey(Tax, on_delete=models.SET_NULL, null=True, blank=True)
     
     description = models.TextField(blank=True, null=True)
-    unit = models.CharField(_("Unit"), max_length=20, default="pcs") # kg, m, box
+    unit = models.CharField(_("Unit"), max_length=20, default="pcs")
     
-    # Base info (can be overridden by variants)
     base_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
     def __str__(self):
         return self.name
 
 class ProductVariant(TimestampedModel, SoftDeleteModel):
-    """The actual sellable SKU (e.g., Red Shirt Size L)."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variants')
-    sku = models.CharField(_("SKU"), max_length=100, blank=True) # Unique ID
+    sku = models.CharField(_("SKU"), max_length=100, blank=True)
     barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
     
-    # Pricing
     cost_price = models.DecimalField(_("Cost (Avg)"), max_digits=12, decimal_places=2, default=0.00)
     sell_price = models.DecimalField(_("Sell Price"), max_digits=12, decimal_places=2, default=0.00)
     
@@ -90,13 +97,29 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
         return f"{self.product.name} ({self.sku})"
 
     def save(self, *args, **kwargs):
-        if not self.sku:
-            # Simple auto-SKU generation
+        # Auto-Generate SKU: SupplierPrefix + 5 digits (e.g., 1300001)
+        if not self.sku and self.product.supplier:
+            prefix = self.product.supplier.code_prefix
+            # Find last SKU for this supplier to increment
+            last_variant = ProductVariant.objects.filter(
+                product__store=self.product.store, 
+                sku__startswith=prefix
+            ).order_by('sku').last()
+            
+            if last_variant and last_variant.sku[2:].isdigit():
+                next_num = int(last_variant.sku[2:]) + 1
+            else:
+                next_num = 1
+                
+            self.sku = f"{prefix}{next_num:03d}" # 13001
+            
+        elif not self.sku:
+            # Fallback if no supplier
             self.sku = str(uuid.uuid4())[:8].upper()
+            
         super().save(*args, **kwargs)
 
 class ProductAttribute(models.Model):
-    """Links a Variant to a specific Attribute (e.g., Variant A is Red)."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE, related_name='attributes')
     definition = models.ForeignKey(AttributeDefinition, on_delete=models.PROTECT)
@@ -107,7 +130,6 @@ class ProductAttribute(models.Model):
 
 # --- 4. MULTI-WAREHOUSE STOCK ---
 class StockLevel(TimestampedModel):
-    """Tracks how many items are in a specific branch."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE, related_name='stock_levels')
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='stock_levels')
@@ -121,7 +143,6 @@ class StockLevel(TimestampedModel):
 
 # --- 5. BUNDLES ---
 class BundleItem(models.Model):
-    """Defines what is inside a Bundle (e.g., 1 Suit = 1 Jacket + 1 Pants)."""
     bundle = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='bundle_contents')
-    component = models.ForeignKey(ProductVariant, on_delete=models.PROTECT) # The part inside
+    component = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=3, default=1)

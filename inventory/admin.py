@@ -1,4 +1,5 @@
 from django.contrib import admin
+from core.admin import SoftDeleteAdmin
 from .models import Supplier, Category, Product, ProductVariant, AttributeDefinition, ProductAttribute, StockLevel, Tax, BundleItem
 
 class ProductAttributeInline(admin.TabularInline):
@@ -18,26 +19,38 @@ class ProductVariantInline(admin.TabularInline):
     model = ProductVariant
     extra = 1
     show_change_link = True
+    exclude = ('is_deleted', 'deleted_at')
 
 @admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):
+class ProductAdmin(SoftDeleteAdmin):
     list_display = ('name', 'store', 'product_type', 'category', 'supplier')
     list_filter = ('store', 'product_type', 'category')
     search_fields = ('name',)
     inlines = [ProductVariantInline, BundleItemInline]
 
 @admin.register(ProductVariant)
-class ProductVariantAdmin(admin.ModelAdmin):
+class ProductVariantAdmin(SoftDeleteAdmin):
     list_display = ('product', 'sku', 'cost_price', 'sell_price')
     search_fields = ('sku', 'product__name')
     inlines = [ProductAttributeInline, StockLevelInline]
 
 @admin.register(StockLevel)
-class StockLevelAdmin(admin.ModelAdmin):
+class StockLevelAdmin(admin.ModelAdmin): # StockLevel is NOT SoftDelete (it's a quantity)
     list_display = ('variant', 'branch', 'quantity')
     list_filter = ('branch',)
 
-admin.site.register(Supplier)
-admin.site.register(Category)
-admin.site.register(AttributeDefinition)
-admin.site.register(Tax)
+@admin.register(Supplier)
+class SupplierAdmin(SoftDeleteAdmin):
+    list_display = ('name', 'code_prefix', 'store')
+
+@admin.register(Category)
+class CategoryAdmin(SoftDeleteAdmin):
+    list_display = ('name', 'parent', 'store')
+
+@admin.register(AttributeDefinition)
+class AttributeDefinitionAdmin(SoftDeleteAdmin):
+    list_display = ('name', 'key', 'input_type', 'store')
+
+@admin.register(Tax)
+class TaxAdmin(SoftDeleteAdmin):
+    list_display = ('name', 'rate', 'store')
