@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path, reverse
 from django.utils.html import format_html
-from .models import Store, Address, Branch
+from .models import Store, Address, Branch, ActivityLog
 from .admin_views import store_global_search_view, store_global_search_api
 
 # --- BASE ADMIN CLASS (Hides Deleted Fields) ---
@@ -55,3 +55,16 @@ class AddressAdmin(SoftDeleteAdmin):
 @admin.register(Branch)
 class BranchAdmin(SoftDeleteAdmin):
     list_display = ('name', 'store', 'is_main_branch')
+
+@admin.register(ActivityLog)
+class ActivityLogAdmin(admin.ModelAdmin):
+    list_display = ('timestamp', 'user', 'action', 'store', 'ip_address')
+    list_filter = ('timestamp', 'store')
+    search_fields = ('user__username', 'action', 'details')
+    readonly_fields = ('timestamp', 'user', 'action', 'details', 'ip_address', 'store')
+    
+    def has_add_permission(self, request):
+        return False # Logs are read-only
+    
+    def has_delete_permission(self, request, obj=None):
+        return False # Logs cannot be deleted

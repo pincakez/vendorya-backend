@@ -1,6 +1,9 @@
 from django.contrib import admin
 from core.admin import SoftDeleteAdmin
-from .models import Supplier, Category, Product, ProductVariant, AttributeDefinition, ProductAttribute, StockLevel, Tax, BundleItem
+from .models import (
+    Supplier, Category, Product, ProductVariant, AttributeDefinition, 
+    ProductAttribute, StockLevel, Tax, BundleItem, StockAdjustment
+)
 
 class ProductAttributeInline(admin.TabularInline):
     model = ProductAttribute
@@ -35,7 +38,7 @@ class ProductVariantAdmin(SoftDeleteAdmin):
     inlines = [ProductAttributeInline, StockLevelInline]
 
 @admin.register(StockLevel)
-class StockLevelAdmin(admin.ModelAdmin): # StockLevel is NOT SoftDelete (it's a quantity)
+class StockLevelAdmin(admin.ModelAdmin):
     list_display = ('variant', 'branch', 'quantity')
     list_filter = ('branch',)
 
@@ -54,3 +57,9 @@ class AttributeDefinitionAdmin(SoftDeleteAdmin):
 @admin.register(Tax)
 class TaxAdmin(SoftDeleteAdmin):
     list_display = ('name', 'rate', 'store')
+
+@admin.register(StockAdjustment)
+class StockAdjustmentAdmin(admin.ModelAdmin):
+    list_display = ('variant', 'branch', 'quantity_change', 'reason', 'adjusted_by', 'created_at')
+    list_filter = ('reason', 'branch', 'created_at')
+    search_fields = ('variant__sku', 'notes')

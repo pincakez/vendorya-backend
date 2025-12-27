@@ -91,3 +91,22 @@ class Branch(TimestampedModel, SoftDeleteModel):
 
     def __str__(self):
         return self.name
+
+# --- AUDIT LOGS ---
+class ActivityLog(models.Model):
+    """Tracks user actions for security and auditing."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='logs')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    
+    action = models.CharField(max_length=255) # e.g., "Created Invoice #1001"
+    details = models.JSONField(default=dict, blank=True) # e.g., {"total": 500, "items": 3}
+    
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return f"{self.user} - {self.action}"

@@ -1,6 +1,10 @@
 from django.contrib import admin
 from core.admin import SoftDeleteAdmin
-from .models import PaymentMethod, SalesInvoice, SalesInvoiceItem, Payment, InvoiceSequence, Expense, ExpenseCategory
+from .models import (
+    PaymentMethod, SalesInvoice, SalesInvoiceItem, Payment, 
+    InvoiceSequence, Expense, ExpenseCategory, WorkShift,
+    RefundInvoice, RefundItem
+)
 
 class SalesInvoiceItemInline(admin.TabularInline):
     model = SalesInvoiceItem
@@ -22,13 +26,29 @@ class SalesInvoiceAdmin(SoftDeleteAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(SoftDeleteAdmin):
-    list_display = ('amount', 'method', 'invoice', 'created_at')
+    list_display = ('amount', 'method', 'invoice', 'created_by', 'created_at')
     list_filter = ('method', 'created_at')
 
 @admin.register(Expense)
 class ExpenseAdmin(SoftDeleteAdmin):
     list_display = ('description', 'amount', 'category', 'branch', 'date')
     list_filter = ('branch', 'category')
+
+@admin.register(WorkShift)
+class WorkShiftAdmin(admin.ModelAdmin):
+    list_display = ('user', 'branch', 'start_time', 'status', 'difference')
+    list_filter = ('status', 'branch')
+    readonly_fields = ('difference', 'expected_cash', 'end_time')
+
+class RefundItemInline(admin.TabularInline):
+    model = RefundItem
+    extra = 1
+
+@admin.register(RefundInvoice)
+class RefundInvoiceAdmin(SoftDeleteAdmin):
+    list_display = ('refund_number', 'original_invoice', 'customer', 'total_refunded', 'date')
+    list_filter = ('store', 'date')
+    inlines = [RefundItemInline]
 
 admin.site.register(PaymentMethod, SoftDeleteAdmin)
 admin.site.register(InvoiceSequence)

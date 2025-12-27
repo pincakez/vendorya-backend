@@ -21,7 +21,6 @@ class Supplier(TimestampedModel, SoftDeleteModel):
     name = models.CharField(_("Supplier Name"), max_length=255)
     contact_info = models.TextField(_("Contact Info"), blank=True, null=True)
     
-    # FIXED: Strict 2-digit validation
     code_prefix = models.CharField(
         _("Supplier Code Prefix"), 
         max_length=2, 
@@ -30,7 +29,7 @@ class Supplier(TimestampedModel, SoftDeleteModel):
     )
     
     class Meta:
-        unique_together = [('store', 'code_prefix')] # Ensure uniqueness per store
+        unique_together = [('store', 'code_prefix')]
 
     def __str__(self):
         return f"{self.name} ({self.code_prefix})"
@@ -97,10 +96,9 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
         return f"{self.product.name} ({self.sku})"
 
     def save(self, *args, **kwargs):
-        # Auto-Generate SKU: SupplierPrefix + 5 digits (e.g., 1300001)
+        # Auto-Generate SKU: SupplierPrefix + 3 digits (e.g., 13001)
         if not self.sku and self.product.supplier:
             prefix = self.product.supplier.code_prefix
-            # Find last SKU for this supplier to increment
             last_variant = ProductVariant.objects.filter(
                 product__store=self.product.store, 
                 sku__startswith=prefix
@@ -111,10 +109,9 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
             else:
                 next_num = 1
                 
-            self.sku = f"{prefix}{next_num:03d}" # 13001
+            self.sku = f"{prefix}{next_num:03d}"
             
         elif not self.sku:
-            # Fallback if no supplier
             self.sku = str(uuid.uuid4())[:8].upper()
             
         super().save(*args, **kwargs)
@@ -146,3 +143,31 @@ class BundleItem(models.Model):
     bundle = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='bundle_contents')
     component = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=3, default=1)
+
+# --- 6. STOCK ADJUSTMENTS ---
+class StockAdjustment(TimestampedModel):
+    """Manual correction of stock (Theft, Damage, Gift)."""
+    class Reason(models.TextChoices):
+        THEFT = 'THEFT', _('Theft / Loss')
+        DAMAGE = 'DAMAGE', _('Damage')
+        COUNT_CORRECTION = 'CORRECTION', _('Count Correction')
+        GIFT = 'GIFT', _('Gift / Sample')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE)
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    
+    quantity_change = models.DecimalField(max_digits=10, decimal_places=3, help_text="Use negative for loss (e.g., -1), positive for gain.")
+    reason = models.CharField(max_length=20, choices=Reason.choices)
+    notes = models.TextField(blank=True)
+    
+    # Who did it?
+    adjusted_by = models.ForeignKey('users.User', on_delete=models.PROTECT)
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Update the actual StockLevel
+        stock, created = StockLevel.objects.get_or_create(variant=self.variant, branch=self.branch)
+        stock.quantity += self.quantity_change
+        stock.save()

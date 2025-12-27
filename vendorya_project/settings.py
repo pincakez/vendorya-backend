@@ -186,10 +186,10 @@ JAZZMIN_SETTINGS = {
     "copyright": "Vendorya Ltd",
     "search_model": "users.Customer",
 
-    # LOGOS (Added this part)
+    # LOGOS
     "site_logo": "img/logo.png",
     "login_logo": "img/logo.png",
-    "site_logo_classes": "img-circle", # Makes it round (optional)
+    "site_logo_classes": "img-circle",
 
     # Top Menu
     "topmenu_links": [
@@ -215,41 +215,66 @@ JAZZMIN_SETTINGS = {
         "auth": "fas fa-users-cog",
         "auth.user": "fas fa-user",
         "auth.Group": "fas fa-users",
+        
+        # Core
         "core.Store": "fas fa-store",
         "core.Branch": "fas fa-building",
         "core.Address": "fas fa-map-marker-alt",
+        "core.ActivityLog": "fas fa-history", # NEW
+        
+        # Inventory
         "inventory.Product": "fas fa-tshirt",
         "inventory.ProductVariant": "fas fa-tags",
         "inventory.StockLevel": "fas fa-boxes",
+        "inventory.StockAdjustment": "fas fa-wrench", # NEW
         "inventory.Category": "fas fa-sitemap",
         "inventory.Supplier": "fas fa-truck",
         "inventory.Tax": "fas fa-percent",
         "inventory.AttributeDefinition": "fas fa-list",
+        
+        # Finance
+        "finance.WorkShift": "fas fa-clock", # NEW
         "finance.SalesInvoice": "fas fa-file-invoice-dollar",
+        "finance.RefundInvoice": "fas fa-undo-alt", # NEW
         "finance.Payment": "fas fa-money-bill-wave",
         "finance.Expense": "fas fa-receipt",
         "finance.ExpenseCategory": "fas fa-folder-open",
         "finance.PaymentMethod": "fas fa-credit-card",
         "finance.InvoiceSequence": "fas fa-sort-numeric-up",
+        
+        # Users
         "users.Customer": "fas fa-user-tie",
         "users.User": "fas fa-user-shield",
     },
 
     # Sidebar Order
     "order_with_respect_to": [
+        # Operations
+        "finance.WorkShift",
         "finance.SalesInvoice",
+        "finance.RefundInvoice",
         "finance.Payment",
         "finance.Expense",
+        
+        # Inventory
         "inventory.Product",
         "inventory.ProductVariant",
         "inventory.StockLevel",
+        "inventory.StockAdjustment",
+        
+        # CRM
         "users.Customer",
         "inventory.Supplier",
+        
+        # Configuration
         "core.Store",
         "core.Branch",
         "inventory.Category",
         "inventory.Tax",
         "finance.PaymentMethod",
+        
+        # System
+        "core.ActivityLog",
         "auth.User",
         "auth.Group",
     ],
@@ -259,5 +284,4 @@ JAZZMIN_SETTINGS = {
     "custom_css": "css/admin_fix.css",
     "show_ui_builder": False,
 }
-    
 X_FRAME_OPTIONS = 'SAMEORIGIN'
