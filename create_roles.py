@@ -66,6 +66,7 @@ owner_perms.update({
     'User': ['add', 'change', 'delete', 'view'], # Manage staff
     'ActivityLog': ['view'], # See audit logs
     'Tax': ['add', 'change', 'delete', 'view'],
+    'AttributeDefinition': ['add', 'change', 'delete', 'view'],
 })
 
 # --- EXECUTE ---

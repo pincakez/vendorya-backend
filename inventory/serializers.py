@@ -1,11 +1,7 @@
 from rest_framework import serializers
-from .models import Product, Category, Supplier, AttributeDefinition, ProductAttribute
+from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, StockLevel
 
-class AttributeDefinitionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AttributeDefinition
-        fields = ['id', 'name', 'key', 'input_type', 'options']
-
+# --- BASIC SERIALIZERS ---
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
@@ -14,61 +10,72 @@ class CategorySerializer(serializers.ModelSerializer):
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
-        fields = ['id', 'name', 'contact_info']
+        fields = ['id', 'name', 'contact_info', 'code_prefix']
 
-class ProductSerializer(serializers.ModelSerializer):
+class AttributeDefinitionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AttributeDefinition
+        fields = ['id', 'name', 'key', 'input_type', 'options']
+
+# --- PRODUCT LIST SERIALIZER (Optimized for Table) ---
+class ProductListSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
     
-    # This field will hold our dynamic columns data
-    dynamic_attributes = serializers.SerializerMethodField()
-    
+    total_stock = serializers.SerializerMethodField()
+    price_display = serializers.SerializerMethodField()
+    profit_display = serializers.SerializerMethodField()
+    attributes_summary = serializers.SerializerMethodField()
+    default_variant_id = serializers.SerializerMethodField()
+
     class Meta:
         model = Product
         fields = [
-            'id', 'name', 'product_code', 'category', 'category_name',
-            'supplier', 'supplier_name', 'status', 'description',
-            'wholesale_price', 'price', 'stock_quantity', 'profit',
-            'dynamic_attributes', 'created_at'
+            'id', 'name', 'category_name', 'supplier_name',
+            'total_stock', 'price_display', 'profit_display', 'attributes_summary',
+            'default_variant_id',
+            'status' # Assuming Product has status field (SoftDeleteModel has is_deleted, maybe add status later)
         ]
-        read_only_fields = ['product_code', 'profit', 'created_at']
 
-    def get_dynamic_attributes(self, obj):
-        """
-        Converts related ProductAttribute rows into a simple dictionary.
-        Example output: { "season": "Spring", "gender": "Male" }
-        """
-        # We use the 'key' from the definition as the dictionary key
-        return {attr.definition.key: attr.value for attr in obj.attributes.all()}
+    def get_default_variant_id(self, obj):
+        v = obj.variants.first()
+        return v.id if v else None
 
-    def create(self, validated_data):
-        # Extract dynamic attributes from the request if present (for saving)
-        # Note: This requires the frontend to send 'dynamic_attributes' as a dict
-        dynamic_data = self.context['request'].data.get('dynamic_attributes', {})
-        product = super().create(validated_data)
-        
-        self._save_attributes(product, dynamic_data)
-        return product
+    def get_total_stock(self, obj):
+        total = 0
+        for variant in obj.variants.all():
+            for stock in variant.stock_levels.all():
+                total += stock.quantity
+        return total
 
-    def update(self, instance, validated_data):
-        dynamic_data = self.context['request'].data.get('dynamic_attributes', {})
-        product = super().update(instance, validated_data)
-        
-        self._save_attributes(product, dynamic_data)
-        return product
+    def get_price_display(self, obj):
+        variants = obj.variants.all()
+        if not variants:
+            return str(obj.base_price)
+        prices = [v.sell_price for v in variants]
+        min_p, max_p = min(prices), max(prices)
+        return str(min_p) if min_p == max_p else f"{min_p} - {max_p}"
 
-    def _save_attributes(self, product, dynamic_data):
-        """Helper to save dynamic attributes."""
-        if not dynamic_data:
-            return
+    def get_profit_display(self, obj):
+        variants = obj.variants.all()
+        if not variants:
+            return "0.00"
+        profits = [(v.sell_price - v.cost_price) for v in variants]
+        min_p, max_p = min(profits), max(profits)
+        return str(min_p) if min_p == max_p else f"{min_p} - {max_p}"
 
-        # Get all definitions for this store to validate keys
-        definitions = {d.key: d for d in AttributeDefinition.objects.filter(store=product.store)}
-        
-        for key, value in dynamic_data.items():
-            if key in definitions:
-                ProductAttribute.objects.update_or_create(
-                    product=product,
-                    definition=definitions[key],
-                    defaults={'value': str(value)}
-                )
+    def get_attributes_summary(self, obj):
+        summary = {}
+        for variant in obj.variants.all():
+            for attr in variant.attributes.all():
+                key = attr.definition.name
+                if key not in summary: summary[key] = set()
+                summary[key].add(attr.value)
+        return {k: ", ".join(sorted(v)) for k, v in summary.items()}
+
+# --- FULL PRODUCT SERIALIZER (For Add/Edit Page) ---
+# We will need this later for the "One-Page" form
+class ProductDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = '__all__'

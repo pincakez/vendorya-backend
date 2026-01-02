@@ -86,7 +86,12 @@ class Product(TimestampedModel, SoftDeleteModel):
 class ProductVariant(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variants')
-    sku = models.CharField(_("SKU"), max_length=100, blank=True)
+    sku = models.CharField(
+        _("SKU"), 
+        max_length=100, 
+        blank=True,
+        validators=[RegexValidator(r'^[0-9A-Za-z-]+$', 'SKU must be alphanumeric (A-Z, 0-9, -).')]
+    )
     barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
     
     cost_price = models.DecimalField(_("Cost (Avg)"), max_digits=12, decimal_places=2, default=0.00)

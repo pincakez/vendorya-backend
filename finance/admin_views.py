@@ -1,5 +1,5 @@
-from decimal import Decimal
 import json
+from decimal import Decimal
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import render, get_object_or_404
@@ -15,7 +15,6 @@ from users.models import Customer
 def pos_view(request, store_id):
     """Renders the Mini-POS Interface."""
     store = get_object_or_404(Store, id=store_id)
-    # Get the first branch for this store (Simulated for PoC)
     branch = Branch.objects.filter(store=store).first()
     
     context = {
@@ -33,16 +32,14 @@ def pos_search_api(request, store_id):
 
     store = get_object_or_404(Store, id=store_id)
     
-    # Search Variants by Name, SKU, or Barcode
     variants = ProductVariant.objects.filter(product__store=store).filter(
         Q(product__name__icontains=query) | 
         Q(sku__icontains=query) | 
         Q(barcode__icontains=query)
-    )[:10] # Limit to 10 results
+    )[:10]
 
     results = []
     for v in variants:
-        # Get stock for the first branch (PoC)
         branch = Branch.objects.filter(store=store).first()
         stock = StockLevel.objects.filter(variant=v, branch=branch).first()
         qty = stock.quantity if stock else 0
@@ -63,70 +60,83 @@ def pos_checkout_api(request, store_id):
     if request.method != 'POST':
         return JsonResponse({'error': 'Invalid method'}, status=405)
 
-    data = json.loads(request.body)
-    items = data.get('items', [])
-    
-    if not items:
-        return JsonResponse({'error': 'Cart is empty'}, status=400)
-
-    store = get_object_or_404(Store, id=store_id)
-    branch = Branch.objects.filter(store=store).first()
-    user = request.user
-
-    # 1. Check for Open Shift
-    shift = WorkShift.objects.filter(user=user, store=store, status=WorkShift.Status.OPEN).first()
-    if not shift:
-        return JsonResponse({'error': 'No Open Shift found! Please open a shift in Finance first.'}, status=403)
-
-    # 2. Get Default Customer (Walk-in)
-    # For PoC, we grab the first customer or create a dummy one
-    customer = Customer.objects.filter(store=store).first()
-    if not customer:
-        return JsonResponse({'error': 'No customers found in store. Create one first.'}, status=400)
-
-    # 3. Create Invoice
-    invoice = SalesInvoice.objects.create(
-        store=store,
-        branch=branch,
-        customer=customer,
-        status=SalesInvoice.Status.POSTED, # Finalized immediately
-        date=timezone.now()
-    )
-
-    # 4. Add Items & Deduct Stock
-    for item in items:
-        variant = ProductVariant.objects.get(id=item['id'])
-        qty = float(item['qty'])
+    try:
+        data = json.loads(request.body)
+        items = data.get('items', [])
         
-        # Create Line Item
-        SalesInvoiceItem.objects.create(
-            invoice=invoice,
-            variant=variant,
-            quantity=qty,
-            unit_price=variant.sell_price
+        if not items:
+            return JsonResponse({'error': 'Cart is empty'}, status=400)
+
+        store = get_object_or_404(Store, id=store_id)
+        branch = Branch.objects.filter(store=store).first()
+        user = request.user
+        
+        # 0. Get Settings
+        settings = getattr(store, 'settings', None)
+        allow_negative = settings.allow_negative_stock if settings else False
+
+        # 1. Check for Open Shift
+        shift = WorkShift.objects.filter(user=user, store=store, status=WorkShift.Status.OPEN).first()
+        if not shift:
+            return JsonResponse({'error': 'No Open Shift found! Please open a shift in Finance first.'}, status=403)
+
+        # 2. Get Default Customer
+        customer = Customer.objects.filter(store=store).first()
+        if not customer:
+            return JsonResponse({'error': 'No customers found in store. Create one first.'}, status=400)
+
+        # 3. Create Invoice
+        invoice = SalesInvoice.objects.create(
+            store=store,
+            branch=branch,
+            customer=customer,
+            status=SalesInvoice.Status.POSTED,
+            date=timezone.now()
         )
 
-        # Deduct Stock
-        stock_level, created = StockLevel.objects.get_or_create(variant=variant, branch=branch)
-        stock_level.quantity -= Decimal(qty)
-        stock_level.save()
+        # 4. Add Items & Deduct Stock
+        for item in items:
+            variant = ProductVariant.objects.get(id=item['id'])
+            qty = Decimal(item['qty'])
+            
+            stock_level, created = StockLevel.objects.get_or_create(variant=variant, branch=branch)
+            
+            if not allow_negative and stock_level.quantity < qty:
+                raise ValueError(f"Insufficient stock for {variant.product.name}. Available: {stock_level.quantity}")
 
-    # 5. Create Payment (Cash)
-    # Find a cash method
-    cash_method = PaymentMethod.objects.filter(store=store, is_cash=True).first()
-    if not cash_method:
-        # Fallback if no method exists
-        cash_method = PaymentMethod.objects.create(store=store, name="Cash", is_cash=True)
+            SalesInvoiceItem.objects.create(
+                invoice=invoice,
+                variant=variant,
+                quantity=qty,
+                unit_price=variant.sell_price
+            )
 
-    Payment.objects.create(
-        invoice=invoice,
-        method=cash_method,
-        amount=invoice.grand_total, # Full payment
-        created_by=user
-    )
+            stock_level.quantity -= qty
+            stock_level.save()
 
-    return JsonResponse({
-        'success': True, 
-        'invoice_number': invoice.invoice_number,
-        'total': float(invoice.grand_total)
-    })
+        # 5. Create Payment (Cash)
+        cash_method = PaymentMethod.objects.filter(store=store, is_cash=True).first()
+        if not cash_method:
+            cash_method = PaymentMethod.objects.create(store=store, name="Cash", is_cash=True)
+
+        Payment.objects.create(
+            invoice=invoice,
+            method=cash_method,
+            amount=invoice.grand_total,
+            created_by=user
+        )
+
+        return JsonResponse({
+            'success': True, 
+            'invoice_number': invoice.invoice_number,
+            'total': float(invoice.grand_total)
+        })
+
+    except ValueError as e:
+        # Catch stock errors
+        transaction.set_rollback(True)
+        return JsonResponse({'error': str(e)}, status=400)
+    except Exception as e:
+        # Catch other errors
+        transaction.set_rollback(True)
+        return JsonResponse({'error': f"System Error: {str(e)}"}, status=500)

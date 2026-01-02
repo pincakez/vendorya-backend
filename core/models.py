@@ -110,3 +110,33 @@ class ActivityLog(models.Model):
 
     def __str__(self):
         return f"{self.user} - {self.action}"
+    
+    # --- STORE SETTINGS ---
+class StoreSettings(TimestampedModel):
+    """Configuration for a specific store."""
+    store = models.OneToOneField(Store, on_delete=models.CASCADE, related_name='settings')
+    
+    # 1. Inventory Rules
+    allow_negative_stock = models.BooleanField(default=False, help_text="If False, POS will block sales when stock is insufficient.")
+    
+    # 2. Sales Rules
+    enable_agel_selling = models.BooleanField(default=True, help_text="Allow selling on credit (Customer Debt).")
+    default_tax = models.ForeignKey('inventory.Tax', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    
+    # 3. Legal & Receipt Info
+    tax_id = models.CharField(_("Tax ID / Betaka"), max_length=50, blank=True)
+    commercial_reg = models.CharField(_("Commercial Reg / Sogel"), max_length=50, blank=True)
+    receipt_header = models.TextField(_("Receipt Header"), blank=True, help_text="Text to appear at the top of the receipt.")
+    receipt_footer = models.TextField(_("Receipt Footer"), blank=True, help_text="Text to appear at the bottom (e.g., Return Policy).")
+
+    def __str__(self):
+        return f"Settings for {self.store.name}"
+
+# Signal to auto-create settings when a Store is created
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+@receiver(post_save, sender=Store)
+def create_store_settings(sender, instance, created, **kwargs):
+    if created:
+        StoreSettings.objects.create(store=instance)
