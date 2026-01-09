@@ -4,8 +4,11 @@ from django.db import models
 from django.db.models import Sum, Max
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
+from django.db.models.signals import pre_save
+from django.dispatch import receiver
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
-from inventory.models import ProductVariant
+# ADDED StockLevel here
+from inventory.models import ProductVariant, StockLevel
 from users.models import Customer
 
 # --- 1. SEQUENCING ---
@@ -97,6 +100,8 @@ class Payment(TimestampedModel, SoftDeleteModel):
     invoice = models.ForeignKey(SalesInvoice, on_delete=models.CASCADE, related_name='payments')
     method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    
+    # Added to track WHO took the money (for Shifts)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True)
     
     def save(self, *args, **kwargs):
@@ -187,5 +192,61 @@ class RefundItem(models.Model):
         total = self.refund.items.aggregate(sum=Sum('refund_amount'))['sum'] or 0
         self.refund.total_refunded = total
         self.refund.save()
+
+# --- 6. PURCHASING ---
+class PurchaseInvoice(TimestampedModel, SoftDeleteModel):
+    class Status(models.TextChoices):
+        DRAFT = 'DRAFT', _('Draft')
+        RECEIVED = 'RECEIVED', _('Received') # Stock Added
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='purchases')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT)
+    supplier = models.ForeignKey('inventory.Supplier', on_delete=models.PROTECT, related_name='purchases')
+    
+    vendor_reference = models.CharField(_("Supplier Invoice #"), max_length=100, blank=True, help_text="The number on the paper invoice they gave you.")
+    date = models.DateTimeField()
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
+    
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    
+    notes = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.supplier.name} - {self.vendor_reference or self.id}"
+
+class PurchaseItem(models.Model):
+    invoice = models.ForeignKey(PurchaseInvoice, on_delete=models.CASCADE, related_name='items')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    quantity = models.DecimalField(max_digits=10, decimal_places=3)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2, help_text="Cost per item in this specific shipment.")
+    total_cost = models.DecimalField(max_digits=12, decimal_places=2)
+
+    def save(self, *args, **kwargs):
+        self.total_cost = self.quantity * self.unit_cost
+        super().save(*args, **kwargs)
         
-        
+        # Update Invoice Total
+        total = self.invoice.items.aggregate(sum=Sum('total_cost'))['sum'] or 0
+        self.invoice.total_amount = total
+        self.invoice.save()
+
+@receiver(pre_save, sender=PurchaseInvoice)
+def handle_purchase_stock(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            old = PurchaseInvoice.objects.get(pk=instance.pk)
+            # If changing from DRAFT to RECEIVED -> Add Stock
+            if old.status == PurchaseInvoice.Status.DRAFT and instance.status == PurchaseInvoice.Status.RECEIVED:
+                for item in instance.items.all():
+                    # 1. Increase Stock
+                    stock, created = StockLevel.objects.get_or_create(variant=item.variant, branch=instance.branch)
+                    stock.quantity += item.quantity
+                    stock.save()
+                    
+                    # 2. Update Product Cost
+                    item.variant.cost_price = item.unit_cost
+                    item.variant.save()
+        except PurchaseInvoice.DoesNotExist:
+            pass

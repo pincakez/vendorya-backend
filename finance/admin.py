@@ -3,7 +3,7 @@ from core.admin import SoftDeleteAdmin
 from .models import (
     PaymentMethod, SalesInvoice, SalesInvoiceItem, Payment, 
     InvoiceSequence, Expense, ExpenseCategory, WorkShift,
-    RefundInvoice, RefundItem
+    RefundInvoice, RefundItem, PurchaseInvoice, PurchaseItem
 )
 
 class SalesInvoiceItemInline(admin.TabularInline):
@@ -49,6 +49,17 @@ class RefundInvoiceAdmin(SoftDeleteAdmin):
     list_display = ('refund_number', 'original_invoice', 'customer', 'total_refunded', 'date')
     list_filter = ('store', 'date')
     inlines = [RefundItemInline]
+
+class PurchaseItemInline(admin.TabularInline):
+    model = PurchaseItem
+    extra = 1
+    readonly_fields = ('total_cost',)
+
+@admin.register(PurchaseInvoice)
+class PurchaseInvoiceAdmin(SoftDeleteAdmin):
+    list_display = ('supplier', 'vendor_reference', 'total_amount', 'status', 'date')
+    list_filter = ('store', 'status', 'date')
+    inlines = [PurchaseItemInline]
 
 admin.site.register(PaymentMethod, SoftDeleteAdmin)
 admin.site.register(InvoiceSequence)

@@ -220,22 +220,24 @@ JAZZMIN_SETTINGS = {
         "core.Store": "fas fa-store",
         "core.Branch": "fas fa-building",
         "core.Address": "fas fa-map-marker-alt",
-        "core.ActivityLog": "fas fa-history", # NEW
+        "core.ActivityLog": "fas fa-history",
+        "core.StoreSettings": "fas fa-cogs",
         
         # Inventory
         "inventory.Product": "fas fa-tshirt",
         "inventory.ProductVariant": "fas fa-tags",
         "inventory.StockLevel": "fas fa-boxes",
-        "inventory.StockAdjustment": "fas fa-wrench", # NEW
+        "inventory.StockAdjustment": "fas fa-wrench",
         "inventory.Category": "fas fa-sitemap",
         "inventory.Supplier": "fas fa-truck",
         "inventory.Tax": "fas fa-percent",
         "inventory.AttributeDefinition": "fas fa-list",
         
         # Finance
-        "finance.WorkShift": "fas fa-clock", # NEW
+        "finance.WorkShift": "fas fa-clock",
         "finance.SalesInvoice": "fas fa-file-invoice-dollar",
-        "finance.RefundInvoice": "fas fa-undo-alt", # NEW
+        "finance.PurchaseInvoice": "fas fa-truck-loading", # NEW
+        "finance.RefundInvoice": "fas fa-undo-alt",
         "finance.Payment": "fas fa-money-bill-wave",
         "finance.Expense": "fas fa-receipt",
         "finance.ExpenseCategory": "fas fa-folder-open",
@@ -252,6 +254,7 @@ JAZZMIN_SETTINGS = {
         # Operations
         "finance.WorkShift",
         "finance.SalesInvoice",
+        "finance.PurchaseInvoice", # NEW
         "finance.RefundInvoice",
         "finance.Payment",
         "finance.Expense",
@@ -268,6 +271,7 @@ JAZZMIN_SETTINGS = {
         
         # Configuration
         "core.Store",
+        "core.StoreSettings",
         "core.Branch",
         "inventory.Category",
         "inventory.Tax",
