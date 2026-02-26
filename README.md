@@ -1,88 +1,83 @@
-# Vendorya ERP - Backend Blueprint (Live Document)
+VENDORYA ERP - PROJECT MEMORY (v3.0)
 
-This document outlines the architecture, database schema, and API structure for the Vendorya multi-tenant ERP system. It is the single source of truth for the project.
+System Context: Local WSL2 (Ubuntu 24.04) | Windows 11 Host
+Role: Senior Full-Stack Architect & UI/UX Designer
+Current State: Backend Restored & Running | Frontend Initialized (Blank Canvas)
+1. The Architecture (Headless SaaS)
 
----
+    Root Path: ~/vendorya/
 
-## 1. Core Architecture
+    Backend: ~/vendorya/vendorya-backend/ (Django 5.2, Python 3.12, DRF) -> Port 8000
 
-- **Framework:** Django (Python)
-- **API:** Django REST Framework (DRF)
-- **Database:** PostgreSQL
-- **Architecture:** Multi-Tenant SaaS (Software as a Service)
-- **Primary Tenant Key:** `Store` model (`core.Store`)
-- **Authentication:** JWT (JSON Web Tokens) via `djangorestframework-simplejwt`
+    Frontend: ~/vendorya/vendorya-frontend/ (Vue 3, Vite, Tailwind v4) -> Port 5173
 
----
+    Database: PostgreSQL 16 (Local Service) -> Port 5432
 
-## 2. Database Schema (Models)
+2. 🚨 CRITICAL SECURITY PROTOCOL (The "Middleware Gap")
 
-### `core` app
-- `Store`: The central tenant. All other data links to this.
-- `Address`: Reusable address model for branches and customers.
-- `Branch`: A physical location belonging to a `Store`.
+Current Risk: High.
 
-### `users` app
-- `User`: Custom user model inheriting from Django's `AbstractUser`. Linked to a `Store`. Has roles (`OWNER`, `MANAGER`, etc.).
-- `Customer`: A customer belonging to a specific `Store`.
+    The Issue: The system uses a Shared Database schema (all tenants in one table). However, there is currently NO Global Middleware to automatically filter data by Tenant (store_id).
 
-### `inventory` app
-- `Supplier`: A supplier linked to a `Store`. Provides `code_prefix` for products.
-- `Category`: Product categories, linked to a `Store`. Can be nested.
-- `Product`: The central inventory item.
-    - Contains standard fields (`name`, `price`, `stock_quantity`, `wholesale_price`).
-    - **Key Feature:** `attributes` (JSONField). Allows for flexible, store-specific data like `{"Size": "M", "Color": "Red"}` for a clothing store or `{"Expiry": "2025-12-01"}` for a pharmacy.
-    - **Automation:** `product_code` is auto-generated based on the supplier's prefix.
+    The Rule: Until a ThreadLocal or django-multitenant middleware is implemented, EVERY Django ViewSet and API endpoint MUST explicitly include:
+    code Python
 
-### `finance` app
-- `PaymentMethod`: e.g., Cash, Visa. Linked to a `Store`.
-- `SalesInvoice` & `SalesInvoiceItem`: Tracks sales transactions.
-    - **Automation:** Invoice totals are calculated automatically via Django Signals whenever an item is added, changed, or removed.
+    queryset = Model.objects.filter(store=self.request.user.store)
 
-### `smart_analysis` app
-- `TablePreference`: Stores user-specific UI settings for data tables (e.g., visible columns, sort order). This is a JSONField to support the frontend's dynamic tables.
+    Strict Warning: Failure to include this filter will result in a Data Leak (Store A seeing Store B's data). This is the #1 priority for code review.
 
----
+3. Backend Engineering Rules
 
-## 3. API Endpoints
+    Soft Deletes: Data is never deleted. All models inherit SoftDeleteModel.
 
-All endpoints require a `Bearer` token in the `Authorization` header.
+    Inventory Logic:
 
-### Authentication (`/api/auth/`)
-- **`POST /api/auth/token/`**:
-  - **Body:** `{"username": "...", "password": "..."}`
-  - **Returns:** JWT `access` and `refresh` tokens.
-- **`POST /api/auth/token/refresh/`**:
-  - **Body:** `{"refresh": "..."}`
-  - **Returns:** A new `access` token.
+        Product (Abstract Parent) -> ProductVariant (Sellable SKU) -> StockLevel (Physical Count).
 
-### Inventory (`/api/inventory/`)
-Standard CRUD (Create, Read, Update, Delete) endpoints are available. Data is automatically filtered by the authenticated user's `store`.
+        No Magic Stock: Stock is only updated via PurchaseInvoice (Supply) or StockAdjustment (Audit).
 
-- **Products:**
-  - `GET /api/inventory/products/` (List all products)
-  - `POST /api/inventory/products/` (Create a new product)
-  - `GET /api/inventory/products/{id}/` (Retrieve one product)
-  - `PUT/PATCH /api/inventory/products/{id}/` (Update a product)
-  - `DELETE /api/inventory/products/{id}/` (Delete a product)
-- **Categories:**
-  - `GET /api/inventory/categories/`
-  - `POST /api/inventory/categories/`
-  - etc.
-- **Suppliers:**
-  - `GET /api/inventory/suppliers/`
-  - `POST /api/inventory/suppliers/`
-  - etc.
+    Finance Logic:
 
----
+        Shift Enforcement: Cashiers cannot sell without an OPEN WorkShift. API returns 403 Forbidden.
 
-## 4. How to Use with GitHub Copilot Chat
+        Invoice Sequence: Per-store sequential IDs (1001, 1002), not UUIDs.
 
-1. Open the Chat view in VS Code.
-2. Type `@workspace` followed by your question. This tells Copilot to read all the files in your project, including this `README.md`.
+4. Frontend Engineering Rules (The "Designer's Canvas")
 
-**Example Questions:**
-- `@workspace What fields are in the Product model?`
-- `@workspace Generate a DRF serializer for the Customer model.`
-- `@workspace How do I get an authentication token?`
-- `@workspace Explain the purpose of the `attributes` field in the Product model.`
+    Stack: Vue 3 (Composition API), Pinia, Vue Router, Axios.
+
+    Styling: Tailwind CSS v4 (configured via @tailwindcss/postcss).
+
+    UI Components: @headlessui/vue (Logic only), lucide-vue-next (Icons).
+
+    Data Tables: @tanstack/vue-table (Headless sorting/filtering).
+
+    Design Philosophy: Pixel-perfect implementation of the Photoshop concepts. Dark mode default.
+
+5. The "Raw Linux" Workflow
+
+The user prefers manual terminal commands to build muscle memory.
+
+    Start Backend:
+    code Bash
+
+    cd ~/vendorya/vendorya-backend
+    source venv/bin/activate
+    python manage.py runserver
+
+    Start Frontend:
+    code Bash
+
+    cd ~/vendorya/vendorya-frontend
+    npm run dev
+
+    Database Control: sudo service postgresql start / stop
+
+6. Immediate Task List
+
+    Restore Database & Backend from AWS backup.
+
+    Initialize Vue 3 Frontend with Tailwind v4.
+
+    Build "Sidebar" Component: Create a responsive, dark-mode sidebar using Lucide icons and Vue Router links.
+
