@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-pl7)bjl-0ne1w#)v@*7(+$_59pfs@_qfl99)i$i-b=bi2ct#r3
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['15.236.107.46', 'localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -95,7 +95,7 @@ DATABASES = {
         'NAME': 'vendorya_db',
         'USER': 'mysqladmin',
         'PASSWORD': 'Mashakel1',
-        'HOST': '15.236.107.46',
+        'HOST': 'localhost',
         'PORT': '5432',
     }
 }
