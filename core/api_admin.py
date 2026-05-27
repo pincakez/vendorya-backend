@@ -1,5 +1,5 @@
 from django.db.models import Count, Q
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from .models import Store, Branch, ActivityLog
@@ -7,17 +7,26 @@ from .serializers import AdminActivityLogSerializer
 from users.models import User
 from users.permissions import IsSuperAdmin
 from .api_admin_serializers import (
-    AdminStoreSerializer, AdminBranchSerializer, AdminUserSerializer,
+    AdminStoreSerializer, AdminStoreCreateSerializer,
+    AdminBranchSerializer, AdminUserSerializer,
 )
 
 
 class AdminStoreViewSet(viewsets.ModelViewSet):
-    """Platform-wide store management. Super-admin only."""
-    serializer_class = AdminStoreSerializer
+    """Platform-wide store management. Super-admin only.
+
+    POST uses the compound `AdminStoreCreateSerializer` (owner + store + main
+    branch, atomically).  GET/PATCH use `AdminStoreSerializer`.
+    """
     permission_classes = [IsSuperAdmin]
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'owner__username']
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return AdminStoreCreateSerializer
+        return AdminStoreSerializer
 
     def get_queryset(self):
         return (
@@ -30,6 +39,16 @@ class AdminStoreViewSet(viewsets.ModelViewSet):
             )
             .order_by('name')
         )
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        store = serializer.save()
+        # Re-serialize through the read serializer so the response matches list/retrieve.
+        store = (
+            self.get_queryset().filter(pk=store.pk).first()
+        )
+        return Response(AdminStoreSerializer(store).data, status=status.HTTP_201_CREATED)
 
 
 class AdminBranchViewSet(viewsets.ModelViewSet):
