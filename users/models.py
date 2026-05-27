@@ -13,6 +13,11 @@ class User(AbstractUser):
     store = models.ForeignKey(Store, related_name='staff', on_delete=models.CASCADE, null=True, blank=True)
     role = models.CharField(_("Role"), max_length=50, choices=Role.choices, default=Role.CASHIER)
     photo = models.ImageField(_("User Photo"), upload_to='user_photos/', blank=True, null=True)
+    is_superadmin = models.BooleanField(
+        _("Super Admin"),
+        default=False,
+        help_text=_("Vendorya platform-level admin. Bypasses per-store filtering via X-Store-ID header."),
+    )
 
     def __str__(self):
         return self.username

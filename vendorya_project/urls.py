@@ -12,6 +12,9 @@ urlpatterns = [
     path('api/inventory/', include('inventory.urls')),
     path('api/finance/',   include('finance.urls')),
 
+    # Super-admin API (sudo-only)
+    path('api/admin/', include('core.api_admin_urls')),
+
     # Auth URLs
     path('api/auth/', include('users.urls')),
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
