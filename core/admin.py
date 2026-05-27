@@ -63,8 +63,8 @@ class StoreAdmin(SoftDeleteAdmin):
     inlines = [AddressInline, BranchInline]
     
     fields = (
-        'name', 'owner', 'plan', 'is_active', 'default_supplier', 
-        'default_category', 'default_language', 'currency_symbol'
+        'name', 'owner', 'plan', 'is_active', 'default_supplier',
+        'default_category', 'default_language', 'currency', 'timezone',
     )
     readonly_fields = ('created_at', 'updated_at')
 

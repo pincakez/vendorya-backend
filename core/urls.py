@@ -1,10 +1,14 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import StoreView, StoreSettingsView, BranchViewSet, ActivityLogViewSet, ActivityLogMetaView, DashboardView
+from .views import (
+    StoreView, StoreSettingsView, BranchViewSet, ActivityLogViewSet,
+    ActivityLogMetaView, DashboardView, CurrencyViewSet,
+)
 
 router = DefaultRouter()
-router.register(r'branches', BranchViewSet,      basename='branch')
-router.register(r'logs',     ActivityLogViewSet, basename='activity-log')
+router.register(r'branches',   BranchViewSet,      basename='branch')
+router.register(r'logs',       ActivityLogViewSet, basename='activity-log')
+router.register(r'currencies', CurrencyViewSet,    basename='currency')
 
 urlpatterns = [
     path('store/',         StoreView.as_view(),         name='store'),

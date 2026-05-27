@@ -1,11 +1,33 @@
 from rest_framework import serializers
-from .models import Store, Branch, Address, StoreSettings, ActivityLog
+from .models import Store, Branch, Address, StoreSettings, ActivityLog, Currency
+
+
+class CurrencySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Currency
+        fields = ['id', 'code', 'symbol', 'name', 'position', 'is_active',
+                  'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class _CurrencyNestedSerializer(serializers.ModelSerializer):
+    """Embed used on Store payloads — keeps the frontend formatter self-sufficient."""
+    class Meta:
+        model = Currency
+        fields = ['id', 'code', 'symbol', 'position']
 
 
 class StoreSerializer(serializers.ModelSerializer):
+    currency = _CurrencyNestedSerializer(read_only=True)
+    currency_id = serializers.PrimaryKeyRelatedField(
+        source='currency', queryset=Currency.objects.filter(is_active=True),
+        write_only=True, required=False,
+    )
+
     class Meta:
         model = Store
-        fields = ['id', 'name', 'currency_symbol', 'default_language', 'plan', 'is_active']
+        fields = ['id', 'name', 'currency', 'currency_id',
+                  'default_language', 'timezone', 'plan', 'is_active']
         read_only_fields = ['id', 'plan', 'is_active']
 
 
@@ -55,10 +77,16 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         model = StoreSettings
         fields = [
             'allow_negative_stock', 'enable_agel_selling',
+            'decimals', 'thousands_separator',
             'tax_id', 'commercial_reg',
             'receipt_header', 'receipt_footer',
             'default_tax',
         ]
+
+    def validate_decimals(self, value):
+        if value < 0 or value > 4:
+            raise serializers.ValidationError("Decimals must be between 0 and 4.")
+        return value
 
 
 class ActivityLogSerializer(serializers.ModelSerializer):

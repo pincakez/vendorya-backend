@@ -3,11 +3,20 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import User, Customer
 
 
+class _CurrencyNestedSerializer(serializers.Serializer):
+    """Minimal currency embed for the login payload."""
+    id       = serializers.UUIDField()
+    code     = serializers.CharField()
+    symbol   = serializers.CharField()
+    position = serializers.CharField()
+
+
 class StoreMinimalSerializer(serializers.Serializer):
-    id = serializers.UUIDField()
-    name = serializers.CharField()
-    currency_symbol = serializers.CharField()
-    plan = serializers.CharField()
+    id       = serializers.UUIDField()
+    name     = serializers.CharField()
+    plan     = serializers.CharField()
+    timezone = serializers.CharField()
+    currency = _CurrencyNestedSerializer(allow_null=True)
 
 
 class UserProfileSerializer(serializers.ModelSerializer):

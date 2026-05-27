@@ -6,9 +6,13 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from users.permissions import (
     RoleScopedPermission, IsCashierOrAbove, IsManagerOrAbove, IsOwner,
+    IsSuperAdmin,
 )
-from .models import Branch, ActivityLog
-from .serializers import StoreSerializer, BranchSerializer, StoreSettingsSerializer, ActivityLogSerializer
+from .models import Branch, ActivityLog, Currency
+from .serializers import (
+    StoreSerializer, BranchSerializer, StoreSettingsSerializer,
+    ActivityLogSerializer, CurrencySerializer,
+)
 from users.models import User
 
 _NO_STORE = Response({'detail': 'User has no store assigned.'}, status=status.HTTP_403_FORBIDDEN)
@@ -57,6 +61,19 @@ class StoreSettingsView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+class CurrencyViewSet(viewsets.ModelViewSet):
+    """Currency master list.  Read-only for everyone authenticated, mutations
+    restricted to super-admins.  Order: code asc."""
+    serializer_class = CurrencySerializer
+    queryset = Currency.objects.filter(is_deleted=False).order_by('code')
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [IsAuthenticated(), IsCashierOrAbove()]
+        return [IsAuthenticated(), IsSuperAdmin()]
 
 
 class BranchViewSet(viewsets.ModelViewSet):

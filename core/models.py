@@ -43,6 +43,31 @@ class SoftDeleteModel(models.Model):
         self.save()
 
 # --- CONCRETE MODELS ---
+class Currency(TimestampedModel, SoftDeleteModel):
+    """Display currency for a tenant store. Sudo-managed master list."""
+
+    class Position(models.TextChoices):
+        PREFIX = 'PREFIX', _('Prefix (e.g. $100)')
+        SUFFIX = 'SUFFIX', _('Suffix (e.g. 100 LE)')
+
+    id     = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code   = models.CharField(max_length=10, unique=True,
+                              help_text=_("Short identifier. ISO if possible (EGP, USD, EUR) but free-form."))
+    symbol = models.CharField(max_length=10,
+                              help_text=_("How it renders to the user. e.g. 'EGP', 'LE', '$', '€'."))
+    name   = models.CharField(max_length=80)
+    position  = models.CharField(max_length=10, choices=Position.choices, default=Position.SUFFIX)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = _("Currency")
+        verbose_name_plural = _("Currencies")
+        ordering = ['code']
+
+    def __str__(self):
+        return f"{self.symbol} ({self.code})"
+
+
 class Store(TimestampedModel, SoftDeleteModel):
     class SubscriptionPlan(models.TextChoices):
         FREE = 'FREE', _('Free')
@@ -53,12 +78,19 @@ class Store(TimestampedModel, SoftDeleteModel):
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='owned_stores', on_delete=models.CASCADE)
     plan = models.CharField(max_length=20, choices=SubscriptionPlan.choices, default=SubscriptionPlan.FREE)
     is_active = models.BooleanField(default=True)
-    
+
     # Defaults
     default_supplier = models.ForeignKey('inventory.Supplier', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     default_category = models.ForeignKey('inventory.Category', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     default_language = models.CharField(max_length=5, default='ar')
-    currency_symbol = models.CharField(max_length=10, default='EGP')
+
+    # Localization. Server clock is the source of truth — store just picks
+    # which IANA zone to render in. Defaults to Cairo.
+    currency = models.ForeignKey(Currency, on_delete=models.PROTECT, related_name='stores',
+                                 null=True, blank=True,
+                                 help_text=_("Currency used everywhere this store displays money."))
+    timezone = models.CharField(max_length=64, default='Africa/Cairo',
+                                help_text=_("IANA timezone for rendering dates/times to the store."))
 
     class Meta:
         verbose_name = _("Store")
@@ -134,15 +166,21 @@ class ActivityLog(models.Model):
 class StoreSettings(TimestampedModel):
     """Configuration for a specific store."""
     store = models.OneToOneField(Store, on_delete=models.CASCADE, related_name='settings')
-    
+
     # 1. Inventory Rules
     allow_negative_stock = models.BooleanField(default=False, help_text="If False, POS will block sales when stock is insufficient.")
-    
+
     # 2. Sales Rules
     enable_agel_selling = models.BooleanField(default=True, help_text="Allow selling on credit (Customer Debt).")
     default_tax = models.ForeignKey('inventory.Tax', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
-    
-    # 3. Legal & Receipt Info
+
+    # 3. Number formatting (user-facing display rules)
+    decimals = models.PositiveSmallIntegerField(default=2,
+                                                help_text=_("Number of decimal places shown for prices/totals (0-4)."))
+    thousands_separator = models.BooleanField(default=False,
+                                              help_text=_("Show thousand separators in numbers (off by default)."))
+
+    # 4. Legal & Receipt Info
     tax_id = models.CharField(_("Tax ID / Betaka"), max_length=50, blank=True)
     commercial_reg = models.CharField(_("Commercial Reg / Sogel"), max_length=50, blank=True)
     receipt_header = models.TextField(_("Receipt Header"), blank=True, help_text="Text to appear at the top of the receipt.")

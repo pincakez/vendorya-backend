@@ -1,20 +1,27 @@
 from django.db import transaction
 from rest_framework import serializers
-from .models import Store, Branch, Address
+from .models import Store, Branch, Address, Currency
+from .serializers import _CurrencyNestedSerializer
 from users.models import User
 
 
 class AdminStoreSerializer(serializers.ModelSerializer):
     owner_username = serializers.CharField(source='owner.username', read_only=True)
     branches_count = serializers.IntegerField(read_only=True)
-    staff_count = serializers.IntegerField(read_only=True)
+    staff_count    = serializers.IntegerField(read_only=True)
+    currency       = _CurrencyNestedSerializer(read_only=True)
+    currency_id    = serializers.PrimaryKeyRelatedField(
+        source='currency', queryset=Currency.objects.filter(is_active=True),
+        write_only=True, required=False,
+    )
 
     class Meta:
         model = Store
         fields = [
             'id', 'name', 'owner', 'owner_username',
             'plan', 'is_active',
-            'currency_symbol', 'default_language',
+            'currency', 'currency_id',
+            'default_language', 'timezone',
             'branches_count', 'staff_count',
             'created_at', 'updated_at',
         ]
@@ -37,8 +44,12 @@ class _OwnerInputSerializer(serializers.Serializer):
 class _StoreInputSerializer(serializers.Serializer):
     name             = serializers.CharField(max_length=200)
     plan             = serializers.ChoiceField(choices=Store.SubscriptionPlan.choices, default=Store.SubscriptionPlan.FREE)
-    currency_symbol  = serializers.CharField(max_length=10, default='EGP')
+    currency         = serializers.PrimaryKeyRelatedField(
+        queryset=Currency.objects.filter(is_active=True),
+        required=False, allow_null=True,
+    )
     default_language = serializers.CharField(max_length=5, default='ar')
+    timezone         = serializers.CharField(max_length=64, default='Africa/Cairo')
 
 
 class _BranchInputSerializer(serializers.Serializer):
@@ -75,6 +86,11 @@ class AdminStoreCreateSerializer(serializers.Serializer):
         )
         owner.set_password(password)
         owner.save()
+
+        # Default currency to EGP if sudo didn't pick one.
+        if not store_data.get('currency'):
+            store_data['currency'] = (Currency.objects.filter(code='EGP').first()
+                                      or Currency.objects.filter(is_active=True).first())
 
         # 2. Store — owner is now bound, triggers post_save signal → StoreSettings
         store = Store.objects.create(owner=owner, **store_data)
