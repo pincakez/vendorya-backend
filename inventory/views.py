@@ -2,11 +2,12 @@ from decimal import Decimal
 from django.db.models import Q, Sum, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets, permissions, filters
-from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax
+from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer,
     ProductVariantSerializer,
     CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer, TaxSerializer,
+    StockAdjustmentSerializer,
 )
 
 class AttributeDefinitionViewSet(viewsets.ModelViewSet):
@@ -104,3 +105,20 @@ class TaxViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
+
+
+class StockAdjustmentViewSet(viewsets.ModelViewSet):
+    serializer_class = StockAdjustmentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ['get', 'post', 'head', 'options']  # immutable ledger — no edit/delete
+
+    def get_queryset(self):
+        return (
+            StockAdjustment.objects
+            .filter(store=self.request.user.store)
+            .select_related('variant__product', 'branch', 'adjusted_by')
+            .order_by('-created_at')
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(store=self.request.user.store, adjusted_by=self.request.user)

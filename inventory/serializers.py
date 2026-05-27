@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
-    ProductVariant, ProductAttribute, StockLevel, Tax
+    ProductVariant, ProductAttribute, StockLevel, Tax, StockAdjustment
 )
 
 # --- BASIC SERIALIZERS ---
@@ -114,3 +114,25 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = '__all__'
+
+
+# --- STOCK ADJUSTMENT SERIALIZER ---
+class StockAdjustmentSerializer(serializers.ModelSerializer):
+    variant_sku      = serializers.CharField(source='variant.sku', read_only=True)
+    product_name     = serializers.CharField(source='variant.product.name', read_only=True)
+    branch_name      = serializers.CharField(source='branch.name', read_only=True)
+    adjusted_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockAdjustment
+        fields = [
+            'id', 'variant', 'variant_sku', 'product_name',
+            'branch', 'branch_name',
+            'quantity_change', 'reason', 'notes',
+            'adjusted_by', 'adjusted_by_name', 'created_at',
+        ]
+        read_only_fields = ['id', 'adjusted_by', 'created_at']
+
+    def get_adjusted_by_name(self, obj):
+        u = obj.adjusted_by
+        return u.get_full_name() or u.username
