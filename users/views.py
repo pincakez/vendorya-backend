@@ -3,8 +3,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
-from .models import Customer
-from .serializers import VendoryaTokenObtainSerializer, UserProfileSerializer, CustomerSerializer
+from .models import User, Customer
+from .serializers import VendoryaTokenObtainSerializer, UserProfileSerializer, CustomerSerializer, StaffSerializer
 
 
 class VendoryaTokenObtainView(TokenObtainPairView):
@@ -26,6 +26,20 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Customer.objects.filter(store=self.request.user.store)
+
+    def perform_create(self, serializer):
+        serializer.save(store=self.request.user.store)
+
+
+class StaffViewSet(viewsets.ModelViewSet):
+    serializer_class = StaffSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['username', 'first_name', 'last_name', 'email']
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+
+    def get_queryset(self):
+        return User.objects.filter(store=self.request.user.store).order_by('first_name', 'username')
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)

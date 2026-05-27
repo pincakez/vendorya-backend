@@ -1,3 +1,6 @@
+from decimal import Decimal
+from django.db.models import Q, Sum, F, ExpressionWrapper, DecimalField
+from django.db.models.functions import Coalesce
 from rest_framework import viewsets, permissions, filters
 from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant
 from .serializers import (
@@ -70,9 +73,23 @@ class CategoryViewSet(viewsets.ModelViewSet):
 class SupplierViewSet(viewsets.ModelViewSet):
     serializer_class = SupplierSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['name', 'contact_info']
 
     def get_queryset(self):
-        return Supplier.objects.filter(store=self.request.user.store)
+        outstanding = ExpressionWrapper(
+            F('purchases__total_amount') - F('purchases__paid_amount'),
+            output_field=DecimalField(max_digits=12, decimal_places=2),
+        )
+        return (
+            Supplier.objects
+            .filter(store=self.request.user.store)
+            .annotate(balance=Coalesce(
+                Sum(outstanding, filter=Q(purchases__is_deleted=False)),
+                Decimal('0'),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            ))
+        )
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)

@@ -11,9 +11,11 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'parent']
 
 class SupplierSerializer(serializers.ModelSerializer):
+    balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, default=0)
+
     class Meta:
         model = Supplier
-        fields = ['id', 'name', 'contact_info', 'code_prefix']
+        fields = ['id', 'name', 'contact_info', 'code_prefix', 'balance']
 
 class AttributeDefinitionSerializer(serializers.ModelSerializer):
     class Meta:

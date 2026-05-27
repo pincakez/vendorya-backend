@@ -1,9 +1,10 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import VendoryaTokenObtainView, MeView, CustomerViewSet
+from .views import VendoryaTokenObtainView, MeView, CustomerViewSet, StaffViewSet
 
 router = DefaultRouter()
 router.register('customers', CustomerViewSet, basename='customers')
+router.register('staff', StaffViewSet, basename='staff')
 
 urlpatterns = [
     path('token/', VendoryaTokenObtainView.as_view(), name='token_obtain_pair'),
