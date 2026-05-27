@@ -1,0 +1,73 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<div style="max-width: 800px; margin: 0 auto; padding: 20px;">
+    <h1>🔍 Search inside: {{ store.name }}</h1>
+    
+    <!-- Search Input -->
+    <input type="text" id="searchInput" placeholder="Type 3 letters to search..." 
+           style="width: 100%; padding: 15px; font-size: 18px; border: 2px solid #ddd; border-radius: 8px; margin-bottom: 20px;">
+
+    <!-- Loading Spinner -->
+    <div id="loading" style="display:none; text-align:center; color:#666;">Searching...</div>
+
+    <!-- Results Container -->
+    <div id="resultsContainer"></div>
+</div>
+
+<script>
+    const searchInput = document.getElementById('searchInput');
+    const resultsContainer = document.getElementById('resultsContainer');
+    const loading = document.getElementById('loading');
+    let timeout = null;
+
+    searchInput.addEventListener('input', function() {
+        const query = this.value;
+        
+        // Clear previous timer
+        clearTimeout(timeout);
+        resultsContainer.innerHTML = '';
+
+        if (query.length < 3) return;
+
+        loading.style.display = 'block';
+
+        // Wait 300ms after typing stops (Debounce)
+        timeout = setTimeout(() => {
+            fetch(`api/?q=${query}`)
+                .then(response => response.json())
+                .then(data => {
+                    loading.style.display = 'none';
+                    renderResults(data.results);
+                });
+        }, 300);
+    });
+
+    function renderResults(results) {
+        let html = '';
+        
+        // Check if empty
+        if (Object.keys(results).length === 0 || Object.values(results).every(arr => arr.length === 0)) {
+            resultsContainer.innerHTML = '<p style="text-align:center; color:#999;">No results found.</p>';
+            return;
+        }
+
+        // Loop through groups (Products, Suppliers, etc.)
+        for (const [group, items] of Object.entries(results)) {
+            if (items.length > 0) {
+                html += `<div style="background:white; padding:15px; margin-bottom:15px; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.05);">`;
+                html += `<h3 style="margin-top:0; color:#333; border-bottom:1px solid #eee; padding-bottom:10px;">${group}</h3>`;
+                html += `<ul style="list-style:none; padding:0;">`;
+                
+                items.forEach(item => {
+                    html += `<li style="padding:8px 0; border-bottom:1px solid #f9f9f9;">
+                                <a href="${item.url}" style="text-decoration:none; color:#007bff; font-weight:bold; font-size:16px;">${item.name}</a>
+                             </li>`;
+                });
+                
+                html += `</ul></div>`;
+            }
+        }
+        resultsContainer.innerHTML = html;
+    }
+</script>
+{% endblock %}

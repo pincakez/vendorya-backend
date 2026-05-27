@@ -1,0 +1,48 @@
+/* 1. Make the outer shell huge */
+.modal-dialog {
+    max-width: 90vw !important; /* 90% of screen width */
+    width: 90vw !important;
+    margin: 2vh auto !important;
+}
+
+/* 2. Make the white/grey box fill the shell */
+.modal-content {
+    height: 90vh !important; /* 90% of screen height */
+}
+
+/* 3. Make the body fill the box */
+.modal-body {
+    height: 100% !important;
+    max-height: 100% !important;
+    padding: 0 !important;
+    overflow: hidden !important; /* Kill the double scrollbar */
+}
+
+/* 4. THE KEY FIX: Force the internal window (iframe) to expand */
+.modal-body iframe {
+    width: 100% !important;
+    height: 100% !important;
+    border: none !important;
+}
+
+/* --- Fix for Black Text in Select2 Dropdown in Dark Mode --- */
+
+/* 1. Fix the text color for UN-HIGHLIGHTED options/results */
+/* In dark mode, set the standard text color for dropdown options to white */
+.dark-mode .select2-container--default .select2-results__option {
+    color: #ffffff !important;
+}
+
+/* 2. Fix the text color for HIGHLIGHTED (selected/hovered) options */
+/* This ensures the text remains visible when the background turns purple/highlighted */
+.dark-mode .select2-container--default .select2-results__option--highlighted {
+    color: #ffffff !important;
+}
+
+/* 3. Fix the text color for the Search Input Field within the dropdown */
+/* The input box itself might also have black text on a dark background */
+.dark-mode .select2-search__field {
+    color: #ffffff !important;
+    /* Optional: Fix the background of the search field if it's too dark */
+    background-color: #343a40 !important; 
+}
