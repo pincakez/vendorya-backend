@@ -13,7 +13,12 @@ urlpatterns = [
     path('api/finance/',   include('finance.urls')),
 
     # Super-admin API (sudo-only)
-    path('api/admin/', include('core.api_admin_urls')),
+    path('api/admin/',         include('core.api_admin_urls')),
+    path('api/admin/billing/', include('billing.admin_urls')),
+
+    # Tenant billing + notifications
+    path('api/billing/',       include('billing.tenant_urls')),
+    path('api/notifications/', include('notifications.urls')),
 
     # Auth URLs
     path('api/auth/', include('users.urls')),
