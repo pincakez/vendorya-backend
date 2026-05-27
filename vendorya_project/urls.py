@@ -8,8 +8,9 @@ urlpatterns = [
     path('admin/', admin.site.urls),
 
     # API URLs
+    path('api/core/',      include('core.urls')),
     path('api/inventory/', include('inventory.urls')),
-    path('api/finance/', include('finance.urls')),
+    path('api/finance/',   include('finance.urls')),
 
     # Auth URLs
     path('api/auth/', include('users.urls')),

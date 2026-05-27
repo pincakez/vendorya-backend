@@ -2,11 +2,11 @@ from decimal import Decimal
 from django.db.models import Q, Sum, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets, permissions, filters
-from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant
+from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer,
     ProductVariantSerializer,
-    CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer,
+    CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer, TaxSerializer,
 )
 
 class AttributeDefinitionViewSet(viewsets.ModelViewSet):
@@ -90,6 +90,17 @@ class SupplierViewSet(viewsets.ModelViewSet):
                 output_field=DecimalField(max_digits=12, decimal_places=2),
             ))
         )
+
+    def perform_create(self, serializer):
+        serializer.save(store=self.request.user.store)
+
+
+class TaxViewSet(viewsets.ModelViewSet):
+    serializer_class = TaxSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Tax.objects.filter(store=self.request.user.store)
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)

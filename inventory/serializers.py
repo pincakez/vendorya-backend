@@ -1,10 +1,16 @@
 from rest_framework import serializers
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
-    ProductVariant, ProductAttribute, StockLevel
+    ProductVariant, ProductAttribute, StockLevel, Tax
 )
 
 # --- BASIC SERIALIZERS ---
+class TaxSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Tax
+        fields = ['id', 'name', 'rate']
+        read_only_fields = ['id']
+
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
