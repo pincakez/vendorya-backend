@@ -17,6 +17,18 @@ class MeView(APIView):
     def get(self, request):
         return Response(UserProfileSerializer(request.user).data)
 
+    def patch(self, request):
+        data = request.data
+        user = request.user
+        for field in ('first_name', 'last_name', 'email'):
+            if field in data:
+                setattr(user, field, data[field])
+        password = data.get('password', '').strip()
+        if password:
+            user.set_password(password)
+        user.save()
+        return Response(UserProfileSerializer(user).data)
+
 
 class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
