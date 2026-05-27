@@ -62,8 +62,25 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
 
 
 class ActivityLogSerializer(serializers.ModelSerializer):
-    username = serializers.CharField(source='user.username', read_only=True)
+    username  = serializers.CharField(source='user.username', read_only=True)
+    full_name = serializers.SerializerMethodField()
 
     class Meta:
         model = ActivityLog
-        fields = ['id', 'username', 'action', 'details', 'ip_address', 'timestamp']
+        fields = ['id', 'username', 'full_name',
+                  'operation_type', 'action', 'details',
+                  'ip_address', 'timestamp']
+
+    def get_full_name(self, obj):
+        if not obj.user:
+            return None
+        name = f"{obj.user.first_name} {obj.user.last_name}".strip()
+        return name or obj.user.username
+
+
+class AdminActivityLogSerializer(ActivityLogSerializer):
+    """Same as ActivityLog but also exposes the store (for the sudo global view)."""
+    store_name = serializers.CharField(source='store.name', read_only=True)
+
+    class Meta(ActivityLogSerializer.Meta):
+        fields = ActivityLogSerializer.Meta.fields + ['store_name']

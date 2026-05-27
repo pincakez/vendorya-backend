@@ -5,6 +5,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import User, Customer
 from .serializers import VendoryaTokenObtainSerializer, UserProfileSerializer, CustomerSerializer, StaffSerializer
+from core.activity import log_activity
+from core.models import ActivityLog
 
 
 class VendoryaTokenObtainView(TokenObtainPairView):
@@ -54,4 +56,26 @@ class StaffViewSet(viewsets.ModelViewSet):
         return User.objects.filter(store=self.request.user.store).order_by('first_name', 'username')
 
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        staff = serializer.save(store=self.request.user.store)
+        log_activity(
+            request=self.request,
+            action=f"Added staff member: {staff.username}",
+            op_type=ActivityLog.OperationType.STAFF,
+            details={'staff_id': staff.id, 'username': staff.username, 'role': staff.role},
+        )
+
+    def perform_update(self, serializer):
+        was_active = serializer.instance.is_active
+        staff = serializer.save()
+        if was_active and not staff.is_active:
+            action = f"Deactivated staff member: {staff.username}"
+        elif not was_active and staff.is_active:
+            action = f"Reactivated staff member: {staff.username}"
+        else:
+            action = f"Updated staff member: {staff.username}"
+        log_activity(
+            request=self.request,
+            action=action,
+            op_type=ActivityLog.OperationType.STAFF,
+            details={'staff_id': staff.id, 'username': staff.username, 'role': staff.role, 'is_active': staff.is_active},
+        )

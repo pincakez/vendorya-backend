@@ -9,6 +9,8 @@ from .serializers import (
     CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer, TaxSerializer,
     StockAdjustmentSerializer,
 )
+from core.activity import log_activity
+from core.models import ActivityLog
 
 class AttributeDefinitionViewSet(viewsets.ModelViewSet):
     serializer_class = AttributeDefinitionSerializer
@@ -121,4 +123,16 @@ class StockAdjustmentViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store, adjusted_by=self.request.user)
+        adjustment = serializer.save(store=self.request.user.store, adjusted_by=self.request.user)
+        log_activity(
+            request=self.request,
+            action=f"Stock adjustment: {adjustment.variant.sku} ({adjustment.quantity_change:+})",
+            op_type=ActivityLog.OperationType.ADJUSTMENT,
+            details={
+                'adjustment_id': str(adjustment.id),
+                'sku': adjustment.variant.sku,
+                'product': adjustment.variant.product.name,
+                'change': str(adjustment.quantity_change),
+                'reason': adjustment.reason,
+            },
+        )

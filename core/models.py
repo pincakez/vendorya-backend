@@ -95,18 +95,37 @@ class Branch(TimestampedModel, SoftDeleteModel):
 # --- AUDIT LOGS ---
 class ActivityLog(models.Model):
     """Tracks user actions for security and auditing."""
+
+    class OperationType(models.TextChoices):
+        SALE       = 'SALE',       _('Sale')
+        RETURN     = 'RETURN',     _('Return')
+        DISCOUNT   = 'DISCOUNT',   _('Discount')
+        PURCHASE   = 'PURCHASE',   _('Purchase')
+        ADJUSTMENT = 'ADJUSTMENT', _('Stock Adjustment')
+        EXPENSE    = 'EXPENSE',    _('Expense')
+        SHIFT      = 'SHIFT',      _('Shift')
+        STAFF      = 'STAFF',      _('Staff')
+        OTHER      = 'OTHER',      _('Other')
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='logs')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
-    
-    action = models.CharField(max_length=255) # e.g., "Created Invoice #1001"
-    details = models.JSONField(default=dict, blank=True) # e.g., {"total": 500, "items": 3}
-    
+
+    operation_type = models.CharField(
+        max_length=20, choices=OperationType.choices, default=OperationType.OTHER, db_index=True,
+    )
+    action = models.CharField(max_length=255)  # e.g., "Created Invoice #1001"
+    details = models.JSONField(default=dict, blank=True)  # e.g., {"total": 500, "items": 3}
+
     ip_address = models.GenericIPAddressField(null=True, blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['store', '-timestamp']),
+            models.Index(fields=['store', 'operation_type', '-timestamp']),
+        ]
 
     def __str__(self):
         return f"{self.user} - {self.action}"

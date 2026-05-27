@@ -1,11 +1,12 @@
 from django.utils import timezone
 from django.db.models import Sum, Count
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets, permissions, status, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from .models import Branch, ActivityLog
 from .serializers import StoreSerializer, BranchSerializer, StoreSettingsSerializer, ActivityLogSerializer
+from users.models import User
 
 _NO_STORE = Response({'detail': 'User has no store assigned.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -57,11 +58,54 @@ class BranchViewSet(viewsets.ModelViewSet):
 
 
 class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """Per-store activity log. Supports ?user=&operation_type=&since= filters."""
     serializer_class = ActivityLogSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return ActivityLog.objects.filter(store=self.request.user.store).select_related('user')
+        qs = ActivityLog.objects.filter(store=self.request.user.store).select_related('user')
+        params = self.request.query_params
+
+        op = params.get('operation_type')
+        if op:
+            qs = qs.filter(operation_type=op)
+
+        user_id = params.get('user')
+        if user_id:
+            qs = qs.filter(user_id=user_id)
+
+        since = params.get('since')
+        if since:
+            qs = qs.filter(timestamp__gt=since)
+
+        return qs
+
+
+class ActivityLogMetaView(APIView):
+    """Returns the per-store dropdown options for the log filters (users + operation types)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        store = request.user.store
+        if not store:
+            return Response({'users': [], 'operation_types': []})
+
+        users = (
+            User.objects
+            .filter(store=store)
+            .order_by('first_name', 'username')
+            .values('id', 'username', 'first_name', 'last_name')
+        )
+        users_list = [
+            {
+                'id': u['id'],
+                'username': u['username'],
+                'name': (f"{u['first_name']} {u['last_name']}".strip()) or u['username'],
+            }
+            for u in users
+        ]
+        op_types = [{'value': v, 'label': l} for v, l in ActivityLog.OperationType.choices]
+        return Response({'users': users_list, 'operation_types': op_types})
 
 
 LOW_STOCK_THRESHOLD = 5
