@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, StockLevel
+from .models import (
+    Product, Category, Supplier, AttributeDefinition,
+    ProductVariant, ProductAttribute, StockLevel
+)
 
 # --- BASIC SERIALIZERS ---
 class CategorySerializer(serializers.ModelSerializer):
@@ -17,14 +20,43 @@ class AttributeDefinitionSerializer(serializers.ModelSerializer):
         model = AttributeDefinition
         fields = ['id', 'name', 'key', 'input_type', 'options']
 
-# --- PRODUCT LIST SERIALIZER (Optimized for Table) ---
+# --- VARIANT SERIALIZERS ---
+class ProductAttributeSerializer(serializers.ModelSerializer):
+    definition_name = serializers.CharField(source='definition.name', read_only=True)
+    definition_key  = serializers.CharField(source='definition.key', read_only=True)
+
+    class Meta:
+        model = ProductAttribute
+        fields = ['id', 'definition', 'definition_name', 'definition_key', 'value']
+
+class StockLevelSerializer(serializers.ModelSerializer):
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+
+    class Meta:
+        model = StockLevel
+        fields = ['id', 'branch', 'branch_name', 'quantity']
+
+class ProductVariantSerializer(serializers.ModelSerializer):
+    attributes   = ProductAttributeSerializer(many=True, read_only=True)
+    stock_levels = StockLevelSerializer(many=True, read_only=True)
+    total_stock  = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductVariant
+        fields = ['id', 'product', 'sku', 'barcode',
+                  'cost_price', 'sell_price',
+                  'attributes', 'stock_levels', 'total_stock']
+
+    def get_total_stock(self, obj):
+        return sum(s.quantity for s in obj.stock_levels.all())
+
+# --- PRODUCT LIST SERIALIZER (optimised for table) ---
 class ProductListSerializer(serializers.ModelSerializer):
-    category_name = serializers.CharField(source='category.name', read_only=True)
-    supplier_name = serializers.CharField(source='supplier.name', read_only=True)
-    
-    total_stock = serializers.SerializerMethodField()
-    price_display = serializers.SerializerMethodField()
-    profit_display = serializers.SerializerMethodField()
+    category_name      = serializers.CharField(source='category.name', read_only=True)
+    supplier_name      = serializers.CharField(source='supplier.name', read_only=True)
+    total_stock        = serializers.SerializerMethodField()
+    price_display      = serializers.SerializerMethodField()
+    profit_display     = serializers.SerializerMethodField()
     attributes_summary = serializers.SerializerMethodField()
     default_variant_id = serializers.SerializerMethodField()
 
@@ -32,50 +64,45 @@ class ProductListSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             'id', 'name', 'category_name', 'supplier_name',
-            'total_stock', 'price_display', 'profit_display', 'attributes_summary',
-            'default_variant_id',
-            'status' # Assuming Product has status field (SoftDeleteModel has is_deleted, maybe add status later)
+            'total_stock', 'price_display', 'profit_display',
+            'attributes_summary', 'default_variant_id',
         ]
 
     def get_default_variant_id(self, obj):
         v = obj.variants.first()
-        return v.id if v else None
+        return str(v.id) if v else None
 
     def get_total_stock(self, obj):
-        total = 0
-        for variant in obj.variants.all():
-            for stock in variant.stock_levels.all():
-                total += stock.quantity
-        return total
+        return sum(
+            s.quantity
+            for v in obj.variants.all()
+            for s in v.stock_levels.all()
+        )
 
     def get_price_display(self, obj):
-        variants = obj.variants.all()
-        if not variants:
+        prices = [v.sell_price for v in obj.variants.all()]
+        if not prices:
             return str(obj.base_price)
-        prices = [v.sell_price for v in variants]
-        min_p, max_p = min(prices), max(prices)
-        return str(min_p) if min_p == max_p else f"{min_p} - {max_p}"
+        return str(min(prices)) if min(prices) == max(prices) else f"{min(prices)} – {max(prices)}"
 
     def get_profit_display(self, obj):
-        variants = obj.variants.all()
-        if not variants:
+        profits = [(v.sell_price - v.cost_price) for v in obj.variants.all()]
+        if not profits:
             return "0.00"
-        profits = [(v.sell_price - v.cost_price) for v in variants]
-        min_p, max_p = min(profits), max(profits)
-        return str(min_p) if min_p == max_p else f"{min_p} - {max_p}"
+        return str(min(profits)) if min(profits) == max(profits) else f"{min(profits)} – {max(profits)}"
 
     def get_attributes_summary(self, obj):
         summary = {}
         for variant in obj.variants.all():
             for attr in variant.attributes.all():
-                key = attr.definition.name
-                if key not in summary: summary[key] = set()
-                summary[key].add(attr.value)
-        return {k: ", ".join(sorted(v)) for k, v in summary.items()}
+                key = attr.definition.key
+                summary.setdefault(key, set()).add(attr.value)
+        return {k: sorted(v) for k, v in summary.items()}
 
-# --- FULL PRODUCT SERIALIZER (For Add/Edit Page) ---
-# We will need this later for the "One-Page" form
+# --- FULL PRODUCT SERIALIZER (for add/edit) ---
 class ProductDetailSerializer(serializers.ModelSerializer):
+    variants = ProductVariantSerializer(many=True, read_only=True)
+
     class Meta:
         model = Product
         fields = '__all__'
