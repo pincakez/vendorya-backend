@@ -1,9 +1,10 @@
-from rest_framework import viewsets, permissions, filters
+from rest_framework import viewsets, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import User, Customer
+from .permissions import RoleScopedPermission
 from .serializers import VendoryaTokenObtainSerializer, UserProfileSerializer, CustomerSerializer, StaffSerializer
 from core.activity import log_activity
 from core.models import ActivityLog
@@ -34,7 +35,15 @@ class MeView(APIView):
 
 class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'CASHIER',
+        'update':         'CASHIER',
+        'partial_update': 'CASHIER',
+        'destroy':        'MANAGER',
+    }
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'phone_number']
 
@@ -47,7 +56,15 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
 class StaffViewSet(viewsets.ModelViewSet):
     serializer_class = StaffSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'MANAGER',
+        'retrieve':       'MANAGER',
+        'create':         'ADMIN',
+        'update':         'ADMIN',
+        'partial_update': 'ADMIN',
+        'destroy':        'OWNER',
+    }
     filter_backends = [filters.SearchFilter]
     search_fields = ['username', 'first_name', 'last_name', 'email']
     http_method_names = ['get', 'post', 'patch', 'head', 'options']

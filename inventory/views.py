@@ -1,7 +1,9 @@
 from decimal import Decimal
 from django.db.models import Q, Sum, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
-from rest_framework import viewsets, permissions, filters
+from rest_framework import viewsets, filters
+from rest_framework.permissions import IsAuthenticated
+from users.permissions import RoleScopedPermission
 from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer,
@@ -12,9 +14,18 @@ from .serializers import (
 from core.activity import log_activity
 from core.models import ActivityLog
 
+
 class AttributeDefinitionViewSet(viewsets.ModelViewSet):
     serializer_class = AttributeDefinitionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'ADMIN',
+        'update':         'ADMIN',
+        'partial_update': 'ADMIN',
+        'destroy':        'ADMIN',
+    }
 
     def get_queryset(self):
         return AttributeDefinition.objects.filter(store=self.request.user.store)
@@ -24,7 +35,15 @@ class AttributeDefinitionViewSet(viewsets.ModelViewSet):
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+    }
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'variants__sku', 'variants__barcode']
     ordering_fields = ['name', 'created_at']
@@ -54,7 +73,15 @@ class ProductViewSet(viewsets.ModelViewSet):
 
 class ProductVariantViewSet(viewsets.ModelViewSet):
     serializer_class = ProductVariantSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+    }
 
     def get_queryset(self):
         return ProductVariant.objects.filter(
@@ -64,7 +91,15 @@ class ProductVariantViewSet(viewsets.ModelViewSet):
 
 class CategoryViewSet(viewsets.ModelViewSet):
     serializer_class = CategorySerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+    }
 
     def get_queryset(self):
         return Category.objects.filter(store=self.request.user.store)
@@ -75,7 +110,15 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
 class SupplierViewSet(viewsets.ModelViewSet):
     serializer_class = SupplierSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'MANAGER',
+        'retrieve':       'MANAGER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+    }
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'contact_info']
 
@@ -100,7 +143,15 @@ class SupplierViewSet(viewsets.ModelViewSet):
 
 class TaxViewSet(viewsets.ModelViewSet):
     serializer_class = TaxSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'ADMIN',
+        'update':         'ADMIN',
+        'partial_update': 'ADMIN',
+        'destroy':        'ADMIN',
+    }
 
     def get_queryset(self):
         return Tax.objects.filter(store=self.request.user.store)
@@ -111,7 +162,12 @@ class TaxViewSet(viewsets.ModelViewSet):
 
 class StockAdjustmentViewSet(viewsets.ModelViewSet):
     serializer_class = StockAdjustmentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':     'MANAGER',
+        'retrieve': 'MANAGER',
+        'create':   'MANAGER',
+    }
     http_method_names = ['get', 'post', 'head', 'options']  # immutable ledger — no edit/delete
 
     def get_queryset(self):

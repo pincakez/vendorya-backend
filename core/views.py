@@ -1,9 +1,12 @@
 from django.utils import timezone
 from django.db.models import Sum, Count
-from rest_framework import viewsets, permissions, status, filters
+from rest_framework import viewsets, status, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from users.permissions import (
+    RoleScopedPermission, IsCashierOrAbove, IsManagerOrAbove, IsOwner,
+)
 from .models import Branch, ActivityLog
 from .serializers import StoreSerializer, BranchSerializer, StoreSettingsSerializer, ActivityLogSerializer
 from users.models import User
@@ -12,7 +15,13 @@ _NO_STORE = Response({'detail': 'User has no store assigned.'}, status=status.HT
 
 
 class StoreView(APIView):
-    permission_classes = [IsAuthenticated]
+    """GET = any active staff (the sidebar needs the store name).
+    PATCH = OWNER only (or super-admin acting as store)."""
+
+    def get_permissions(self):
+        if self.request.method == 'PATCH':
+            return [IsAuthenticated(), IsOwner()]
+        return [IsAuthenticated(), IsCashierOrAbove()]
 
     def get(self, request):
         if not request.user.store:
@@ -29,7 +38,12 @@ class StoreView(APIView):
 
 
 class StoreSettingsView(APIView):
-    permission_classes = [IsAuthenticated]
+    """GET = manager+, PATCH = owner only."""
+
+    def get_permissions(self):
+        if self.request.method == 'PATCH':
+            return [IsAuthenticated(), IsOwner()]
+        return [IsAuthenticated(), IsManagerOrAbove()]
 
     def get(self, request):
         if not request.user.store:
@@ -47,7 +61,14 @@ class StoreSettingsView(APIView):
 
 class BranchViewSet(viewsets.ModelViewSet):
     serializer_class = BranchSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'ADMIN',
+        'update':         'ADMIN',
+        'partial_update': 'ADMIN',
+    }
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
@@ -60,7 +81,11 @@ class BranchViewSet(viewsets.ModelViewSet):
 class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
     """Per-store activity log. Supports ?user=&operation_type=&since= filters."""
     serializer_class = ActivityLogSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':     'MANAGER',
+        'retrieve': 'MANAGER',
+    }
 
     def get_queryset(self):
         qs = ActivityLog.objects.filter(store=self.request.user.store).select_related('user')
@@ -83,7 +108,7 @@ class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
 
 class ActivityLogMetaView(APIView):
     """Returns the per-store dropdown options for the log filters (users + operation types)."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsManagerOrAbove]
 
     def get(self, request):
         store = request.user.store
@@ -112,7 +137,7 @@ LOW_STOCK_THRESHOLD = 5
 
 
 class DashboardView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsCashierOrAbove]
 
     def get(self, request):
         store = request.user.store

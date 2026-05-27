@@ -1,7 +1,9 @@
-from rest_framework import viewsets, permissions, filters, status
+from rest_framework import viewsets, filters, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from users.permissions import RoleScopedPermission
 from .models import (
     SalesInvoice, Payment, PaymentMethod,
     PurchaseInvoice,
@@ -22,7 +24,15 @@ from core.models import ActivityLog
 
 class PaymentMethodViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentMethodSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'ADMIN',
+        'update':         'ADMIN',
+        'partial_update': 'ADMIN',
+        'destroy':        'ADMIN',
+    }
 
     def get_queryset(self):
         return PaymentMethod.objects.filter(store=self.request.user.store)
@@ -33,7 +43,16 @@ class PaymentMethodViewSet(viewsets.ModelViewSet):
 
 class SalesInvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = SalesInvoiceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'CASHIER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'MANAGER',
+        'void':           'MANAGER',
+    }
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['date', 'created_at', 'grand_total', 'invoice_number']
 
@@ -79,7 +98,12 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
 
 class PaymentViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':     'CASHIER',
+        'retrieve': 'CASHIER',
+        'create':   'CASHIER',
+    }
     http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
@@ -91,7 +115,16 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
 class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = PurchaseInvoiceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'MANAGER',
+        'retrieve':       'MANAGER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+        'receive':        'MANAGER',
+    }
 
     def get_queryset(self):
         return PurchaseInvoice.objects.filter(
@@ -138,7 +171,15 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
 
 class ExpenseCategoryViewSet(viewsets.ModelViewSet):
     serializer_class = ExpenseCategorySerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'MANAGER',
+        'retrieve':       'MANAGER',
+        'create':         'ADMIN',
+        'update':         'ADMIN',
+        'partial_update': 'ADMIN',
+        'destroy':        'ADMIN',
+    }
 
     def get_queryset(self):
         return ExpenseCategory.objects.filter(store=self.request.user.store)
@@ -149,7 +190,15 @@ class ExpenseCategoryViewSet(viewsets.ModelViewSet):
 
 class ExpenseViewSet(viewsets.ModelViewSet):
     serializer_class = ExpenseSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'MANAGER',
+        'retrieve':       'MANAGER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+    }
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['date', 'amount']
 
@@ -172,7 +221,16 @@ class ExpenseViewSet(viewsets.ModelViewSet):
 
 class WorkShiftViewSet(viewsets.ModelViewSet):
     serializer_class = WorkShiftSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'CASHIER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+        'close':          'CASHIER',
+    }
 
     def get_queryset(self):
         qs = WorkShift.objects.filter(store=self.request.user.store)
@@ -223,7 +281,15 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
 
 class RefundInvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = RefundInvoiceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+    }
 
     def get_queryset(self):
         return RefundInvoice.objects.filter(
