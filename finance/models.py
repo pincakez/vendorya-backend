@@ -1,6 +1,6 @@
 import uuid
 from decimal import Decimal
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Sum, Max
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
@@ -73,12 +73,12 @@ class SalesInvoice(TimestampedModel, SoftDeleteModel):
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     
     def save(self, *args, **kwargs):
-        # Auto-Sequence on first save if POSTED
         if self.status == self.Status.POSTED and not self.invoice_number:
-            seq, created = InvoiceSequence.objects.get_or_create(store=self.store)
-            seq.last_number += 1
-            seq.save()
-            self.invoice_number = seq.last_number
+            with transaction.atomic():
+                seq = InvoiceSequence.objects.select_for_update().get_or_create(store=self.store)[0]
+                seq.last_number += 1
+                seq.save()
+                self.invoice_number = seq.last_number
         super().save(*args, **kwargs)
 
 class SalesInvoiceItem(models.Model):
@@ -184,11 +184,18 @@ class RefundItem(models.Model):
     variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
     refund_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    
+
     restock_inventory = models.BooleanField(default=True, help_text="If True, adds item back to stock.")
 
     def save(self, *args, **kwargs):
+        is_new = self._state.adding
         super().save(*args, **kwargs)
+        if is_new and self.restock_inventory:
+            stock, _ = StockLevel.objects.get_or_create(
+                variant=self.variant, branch=self.refund.branch
+            )
+            stock.quantity += self.quantity
+            stock.save()
         total = self.refund.items.aggregate(sum=Sum('refund_amount'))['sum'] or 0
         self.refund.total_refunded = total
         self.refund.save()
@@ -232,21 +239,38 @@ class PurchaseItem(models.Model):
         self.invoice.total_amount = total
         self.invoice.save()
 
+@receiver(pre_save, sender=SalesInvoice)
+def handle_sale_stock(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            old = SalesInvoice.objects.get(pk=instance.pk)
+            if old.status == SalesInvoice.Status.DRAFT and instance.status == SalesInvoice.Status.POSTED:
+                with transaction.atomic():
+                    for item in instance.items.all():
+                        stock = StockLevel.objects.select_for_update().filter(
+                            variant=item.variant, branch=instance.branch
+                        ).first()
+                        if stock:
+                            stock.quantity -= item.quantity
+                            stock.save()
+        except SalesInvoice.DoesNotExist:
+            pass
+
+
 @receiver(pre_save, sender=PurchaseInvoice)
 def handle_purchase_stock(sender, instance, **kwargs):
     if instance.pk:
         try:
             old = PurchaseInvoice.objects.get(pk=instance.pk)
-            # If changing from DRAFT to RECEIVED -> Add Stock
             if old.status == PurchaseInvoice.Status.DRAFT and instance.status == PurchaseInvoice.Status.RECEIVED:
-                for item in instance.items.all():
-                    # 1. Increase Stock
-                    stock, created = StockLevel.objects.get_or_create(variant=item.variant, branch=instance.branch)
-                    stock.quantity += item.quantity
-                    stock.save()
-                    
-                    # 2. Update Product Cost
-                    item.variant.cost_price = item.unit_cost
-                    item.variant.save()
+                with transaction.atomic():
+                    for item in instance.items.all():
+                        stock, _ = StockLevel.objects.select_for_update().get_or_create(
+                            variant=item.variant, branch=instance.branch
+                        )
+                        stock.quantity += item.quantity
+                        stock.save()
+                        item.variant.cost_price = item.unit_cost
+                        item.variant.save()
         except PurchaseInvoice.DoesNotExist:
             pass
