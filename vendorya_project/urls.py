@@ -23,6 +23,7 @@ urlpatterns = [
     # Super-admin API (sudo-only)
     path('api/admin/',         include('core.api_admin_urls')),
     path('api/admin/billing/', include('billing.admin_urls')),
+    path('api/admin/ai/',      include('admin_ai.urls')),
 
     # Tenant billing + notifications
     path('api/billing/',       include('billing.tenant_urls')),

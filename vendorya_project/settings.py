@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.postgres',
     'rest_framework_simplejwt',
     'django_extensions',
     
@@ -70,6 +71,7 @@ INSTALLED_APPS = [
     'smart_analysis',
     'billing',
     'notifications',
+    'admin_ai',
 ]
 
 MIDDLEWARE = [
