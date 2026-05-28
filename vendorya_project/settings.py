@@ -40,7 +40,7 @@ def _env_required(key):
 # Core security knobs — must be supplied via env (no in-repo fallback).
 SECRET_KEY = _env_required('DJANGO_SECRET_KEY')
 DEBUG = _env_bool('DJANGO_DEBUG', default=False)
-ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '.trycloudflare.com', 'vendorya.gatesinnov.com'])
 
 
 # Application definition
@@ -155,6 +155,11 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
+
+# Vue production build — served by Django for demo/production
+VUE_DIST_DIR = os.path.join(BASE_DIR, '..', 'vendorya-frontend', 'dist')
+if os.path.exists(VUE_DIST_DIR):
+    STATICFILES_DIRS += [os.path.join(VUE_DIST_DIR, 'assets')]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

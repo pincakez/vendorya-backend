@@ -1,8 +1,16 @@
+import os
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
+from django.http import FileResponse, Http404
 from rest_framework_simplejwt.views import TokenRefreshView
+
+def serve_vue(request, path=''):
+    index = os.path.join(settings.BASE_DIR, '..', 'vendorya-frontend', 'dist', 'index.html')
+    if os.path.exists(index):
+        return FileResponse(open(index, 'rb'), content_type='text/html')
+    raise Http404
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -27,3 +35,11 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Serve Vue assets (js/css from dist/assets/)
+vue_assets = os.path.join(settings.BASE_DIR, '..', 'vendorya-frontend', 'dist', 'assets')
+if os.path.exists(vue_assets):
+    urlpatterns += static('/assets/', document_root=vue_assets)
+
+# Catch-all: serve Vue index.html for any non-API route (SPA routing)
+urlpatterns += [re_path(r'^(?!api/|admin/|static/|media/|assets/).*$', serve_vue)]
