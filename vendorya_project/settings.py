@@ -41,6 +41,7 @@ def _env_required(key):
 SECRET_KEY = _env_required('DJANGO_SECRET_KEY')
 DEBUG = _env_bool('DJANGO_DEBUG', default=False)
 ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '.trycloudflare.com', 'vendorya.gatesinnov.com'])
+CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=['https://vendorya.gatesinnov.com', 'https://*.trycloudflare.com'])
 
 
 # Application definition

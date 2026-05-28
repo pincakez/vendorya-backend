@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional
 
+import requests
+
 from django.utils import timezone
 
 from .models import AISettings, AIModelCache, AIProfile
@@ -46,9 +48,12 @@ class GeminiService:
     the admin rotates the key mid-session.
     """
 
+    MODELS_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
+
     def __init__(self, api_key: str):
         if not api_key:
             raise NoApiKey("Gemini API key is not configured.")
+        self.api_key = api_key
         # Imported lazily so unit tests / migrations that never touch the
         # service don't pay the import cost.
         from google import genai
@@ -71,12 +76,10 @@ class GeminiService:
         callers can show a richer state than just on/off.
         """
         try:
-            # Listing models is the cheapest authenticated call.
-            it = self.client.models.list()
-            # Consume just one item to confirm the iterator yields without error.
-            next(iter(it), None)
+            resp = requests.get(self.MODELS_URL, params={'key': self.api_key}, timeout=10)
+            resp.raise_for_status()
             return {'ok': True}
-        except Exception as e:  # noqa: BLE001 — surface any SDK / network error
+        except Exception as e:  # noqa: BLE001 — surface any network / auth error
             logger.warning("Gemini ping failed: %s", e)
             return {'ok': False, 'error': str(e)}
 
@@ -85,40 +88,48 @@ class GeminiService:
     def refresh_models(self) -> Dict[str, Any]:
         """Pull the model list from Gemini and reconcile into AIModelCache.
 
+        Only keeps models that support generateContent (chat-capable).
         Returns a diff summary suitable for the C4 refresh modal:
             {'added': [...], 'removed': [...], 'kept': [...]}
         """
         try:
-            remote = list(self.client.models.list())
+            resp = requests.get(self.MODELS_URL, params={'key': self.api_key}, timeout=15)
+            resp.raise_for_status()
+            all_models = resp.json().get('models', [])
         except Exception as e:  # noqa: BLE001
             raise GeminiError(f"Failed to list Gemini models: {e}") from e
+
+        # Temporary whitelist — swap for dynamic discovery once confirmed.
+        FREE_CAPABLE = {
+            'models/gemini-2.5-flash',
+            'models/gemini-2.5-pro',
+            'models/gemini-2.5-flash-lite',
+            'models/gemini-3.1-flash-lite',
+            'models/gemini-3.5-flash',
+        }
+        remote = [m for m in all_models if m.get('name') in FREE_CAPABLE]
 
         seen_ids: List[str] = []
         added: List[str] = []
         kept: List[str] = []
 
         for m in remote:
-            # SDK returns objects with .name like 'models/gemini-2.5-flash'.
-            raw_name = getattr(m, 'name', '') or ''
+            # REST API returns .name like 'models/gemini-2.5-flash'.
+            raw_name = m.get('name', '')
             model_id = raw_name.split('/', 1)[1] if raw_name.startswith('models/') else raw_name
             if not model_id:
                 continue
-            # Skip embedding / non-chat models from the chat dropdown — but
-            # still cache them so the embedder can find text-embedding-004.
             seen_ids.append(model_id)
 
-            supported = list(getattr(m, 'supported_actions', []) or []) \
-                or list(getattr(m, 'supported_generation_methods', []) or [])
-            supports_vision = any('vision' in s.lower() for s in supported) \
-                or 'gemini' in model_id.lower()
+            supports_vision = 'gemini' in model_id.lower()
 
             defaults = dict(
-                display_name=getattr(m, 'display_name', '') or model_id,
-                description=getattr(m, 'description', '') or '',
+                display_name=m.get('displayName') or model_id,
+                description=m.get('description') or '',
                 supports_vision=supports_vision,
                 supports_audio=supports_vision,
                 supports_thinking='thinking' in model_id.lower(),
-                supports_grounding=True,  # All Gemini models support search grounding today.
+                supports_grounding=True,
             )
             row, created = AIModelCache.objects.update_or_create(
                 model_id=model_id,

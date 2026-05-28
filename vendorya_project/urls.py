@@ -13,7 +13,7 @@ def serve_vue(request, path=''):
     raise Http404
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path('django-admin/', admin.site.urls),
 
     # API URLs
     path('api/core/',      include('core.urls')),
@@ -43,4 +43,4 @@ if os.path.exists(vue_assets):
     urlpatterns += static('/assets/', document_root=vue_assets)
 
 # Catch-all: serve Vue index.html for any non-API route (SPA routing)
-urlpatterns += [re_path(r'^(?!api/|admin/|static/|media/|assets/).*$', serve_vue)]
+urlpatterns += [re_path(r'^(?!api/|django-admin/|static/|media/|assets/).*$', serve_vue)]
