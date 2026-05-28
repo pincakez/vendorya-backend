@@ -276,7 +276,7 @@ class AIChatView(APIView):
 # ---------- knowledge base ----------
 
 class AIKnowledgeChunkViewSet(viewsets.ModelViewSet):
-    """KB CRUD + semantic search. Embeddings are computed server-side on save."""
+    """KB CRUD + semantic search + file upload. Embeddings computed server-side."""
     serializer_class   = AIKnowledgeChunkSerializer
     permission_classes = [IsSuperAdmin]
     http_method_names  = ['get', 'post', 'delete', 'head', 'options']
@@ -287,8 +287,6 @@ class AIKnowledgeChunkViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         service, err = _gemini_or_error()
         if err is not None:
-            # Without a key we still want admins to be able to seed text — they
-            # just can't search it semantically. Save with no embedding.
             serializer.save()
             return
         chunk = serializer.save()
@@ -297,6 +295,116 @@ class AIKnowledgeChunkViewSet(viewsets.ModelViewSet):
             chunk.save(update_fields=['embedding'])
         except GeminiError as e:
             logger.warning("Embedding failed for chunk %s: %s", chunk.id, e)
+
+    @action(detail=False, methods=['post'])
+    def upload(self, request):
+        """Parse a document and ingest all text chunks into the knowledge base.
+
+        Accepts multipart/form-data with:
+          file       — PDF / DOCX / CSV / TXT
+          industries — JSON array or comma-separated string of tags
+        """
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': 'file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        industries = request.data.get('industries') or []
+        if isinstance(industries, str):
+            try:
+                industries = json.loads(industries)
+            except (json.JSONDecodeError, ValueError):
+                industries = [t.strip() for t in industries.split(',') if t.strip()]
+
+        text = self._parse_file(file)
+        if not text:
+            return Response({'error': 'Could not extract text from the file.'},
+                            status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        chunks = self._chunk_text(text)
+        service, _ = _gemini_or_error()
+
+        created_ids = []
+        for idx, chunk_text in enumerate(chunks):
+            chunk = AIKnowledgeChunk.objects.create(
+                source_name=file.name,
+                source_type='document',
+                chunk_index=idx,
+                content=chunk_text,
+                industries=industries,
+            )
+            if service:
+                try:
+                    chunk.embedding = service.embed(chunk_text)
+                    chunk.save(update_fields=['embedding'])
+                except GeminiError as e:
+                    logger.warning("Embedding skipped for chunk %s: %s", chunk.id, e)
+            created_ids.append(str(chunk.id))
+
+        return Response({'created': len(created_ids), 'ids': created_ids},
+                        status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _parse_file(file) -> str:
+        name = (file.name or '').lower()
+        raw = file.read()
+
+        if name.endswith('.txt'):
+            return raw.decode('utf-8', errors='ignore')
+
+        if name.endswith('.csv'):
+            import csv
+            import io
+            text = raw.decode('utf-8', errors='ignore')
+            reader = csv.reader(io.StringIO(text))
+            return '\n'.join(', '.join(row) for row in reader)
+
+        if name.endswith('.pdf'):
+            try:
+                from pypdf import PdfReader
+                import io
+                reader = PdfReader(io.BytesIO(raw))
+                pages = [p.extract_text() or '' for p in reader.pages]
+                return '\n\n'.join(pages)
+            except Exception as e:
+                logger.warning("PDF parse failed: %s", e)
+                return ''
+
+        if name.endswith('.docx'):
+            try:
+                from docx import Document
+                import io
+                doc = Document(io.BytesIO(raw))
+                return '\n'.join(p.text for p in doc.paragraphs if p.text.strip())
+            except Exception as e:
+                logger.warning("DOCX parse failed: %s", e)
+                return ''
+
+        # Fallback: try UTF-8 plain text.
+        return raw.decode('utf-8', errors='ignore')
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int = 1200) -> list:
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        if not paragraphs:
+            return [text[:chunk_size]] if text.strip() else []
+
+        chunks = []
+        current: list = []
+        current_len = 0
+
+        for para in paragraphs:
+            if current_len + len(para) > chunk_size and current:
+                chunks.append('\n\n'.join(current))
+                current = [para]
+                current_len = len(para)
+            else:
+                current.append(para)
+                current_len += len(para)
+
+        if current:
+            chunks.append('\n\n'.join(current))
+
+        return chunks
 
     @action(detail=False, methods=['post'])
     def search(self, request):

@@ -63,3 +63,6 @@ typing_extensions==4.15.0
 typing-inspection==0.4.2
 urllib3==2.7.0
 websockets==16.0
+lxml==6.1.1
+pypdf==6.12.2
+python-docx==1.2.0
