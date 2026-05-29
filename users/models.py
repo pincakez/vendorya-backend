@@ -23,6 +23,8 @@ class User(AbstractUser):
         default=False,
         help_text=_("Set when an admin issues a temp password. User must change it on next login."),
     )
+    phone_number = models.CharField(_("Phone Number"), max_length=20, blank=True, default='')
+    whatsapp_number = models.CharField(_("WhatsApp Number"), max_length=20, blank=True, default='')
 
     def __str__(self):
         return self.username

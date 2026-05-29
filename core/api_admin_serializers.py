@@ -29,11 +29,13 @@ class AdminStoreSerializer(serializers.ModelSerializer):
 
 
 class _OwnerInputSerializer(serializers.Serializer):
-    username   = serializers.CharField(max_length=150)
-    password   = serializers.CharField(max_length=128, min_length=8)
-    email      = serializers.EmailField(required=False, allow_blank=True)
-    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
-    last_name  = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    username        = serializers.CharField(max_length=150, min_length=6)
+    password        = serializers.CharField(max_length=128, min_length=8)
+    email           = serializers.EmailField(required=False, allow_blank=True)
+    first_name      = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name       = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    phone_number    = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
+    whatsapp_number = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
 
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
@@ -50,14 +52,20 @@ class _StoreInputSerializer(serializers.Serializer):
     )
     default_language = serializers.CharField(max_length=5, default='ar')
     timezone         = serializers.CharField(max_length=64, default='Africa/Cairo')
+    phone_number     = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
+    whatsapp_number  = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
+    city             = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    country          = serializers.CharField(max_length=100, required=False, allow_blank=True, default='Egypt')
 
 
 class _BranchInputSerializer(serializers.Serializer):
-    name     = serializers.CharField(max_length=150, default='Main Branch')
-    street_1 = serializers.CharField(max_length=255)
-    street_2 = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    city     = serializers.CharField(max_length=100)
-    country  = serializers.CharField(max_length=100, default='Egypt')
+    name         = serializers.CharField(max_length=150, default='Main Branch')
+    street_1     = serializers.CharField(max_length=255)
+    street_2     = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    city         = serializers.CharField(max_length=100)
+    country      = serializers.CharField(max_length=100, default='Egypt')
+    phone_number = serializers.CharField(max_length=20)
+    email        = serializers.EmailField(max_length=254)
 
 
 class AdminStoreCreateSerializer(serializers.Serializer):
@@ -113,6 +121,8 @@ class AdminStoreCreateSerializer(serializers.Serializer):
             address=address,
             name=branch_data['name'],
             is_main_branch=True,
+            phone_number=branch_data.get('phone_number', ''),
+            email=branch_data.get('email', ''),
         )
 
         return store

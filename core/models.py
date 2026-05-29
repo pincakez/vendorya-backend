@@ -94,6 +94,12 @@ class Store(TimestampedModel, SoftDeleteModel):
     default_category = models.ForeignKey('inventory.Category', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     default_language = models.CharField(max_length=5, default='ar')
 
+    # Contact
+    phone_number    = models.CharField(_("Phone Number"),    max_length=20, blank=True, default='')
+    whatsapp_number = models.CharField(_("WhatsApp Number"), max_length=20, blank=True, default='')
+    city    = models.CharField(_("City"),    max_length=100, blank=True, default='')
+    country = models.CharField(_("Country"), max_length=100, blank=True, default='Egypt')
+
     # Localization. Server clock is the source of truth — store just picks
     # which IANA zone to render in. Defaults to Cairo.
     currency = models.ForeignKey(Currency, on_delete=models.PROTECT, related_name='stores',
@@ -126,6 +132,8 @@ class Branch(TimestampedModel, SoftDeleteModel):
     name = models.CharField(_("Branch Name"), max_length=150)
     address = models.OneToOneField(Address, on_delete=models.PROTECT, verbose_name=_("Address"))
     is_main_branch = models.BooleanField(default=False)
+    phone_number = models.CharField(_("Phone Number"), max_length=20, blank=True, default='')
+    email = models.EmailField(_("Email"), max_length=254, blank=True, default='')
 
     class Meta:
         verbose_name = _("Branch")

@@ -27,7 +27,8 @@ class StoreSerializer(serializers.ModelSerializer):
     class Meta:
         model = Store
         fields = ['id', 'name', 'store_code', 'currency', 'currency_id',
-                  'default_language', 'timezone', 'plan', 'is_active']
+                  'default_language', 'timezone', 'plan', 'is_active',
+                  'phone_number', 'whatsapp_number', 'city', 'country']
         read_only_fields = ['id', 'plan', 'is_active', 'store_code']
 
 
@@ -45,7 +46,8 @@ class BranchSerializer(serializers.ModelSerializer):
         model = Branch
         fields = ['id', 'name', 'is_main_branch',
                   'street_1', 'city', 'country',
-                  'address_street_1', 'address_city', 'address_country']
+                  'address_street_1', 'address_city', 'address_country',
+                  'phone_number', 'email']
         read_only_fields = ['id']
 
     def create(self, validated_data):
