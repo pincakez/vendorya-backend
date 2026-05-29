@@ -87,6 +87,17 @@ class StaffSerializer(serializers.ModelSerializer):
 
 class VendoryaTokenObtainSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
+        # BUG-001: the FE field is labeled "Username", but users naturally type
+        # their email. If the value looks like an email and maps to exactly one
+        # active user, resolve it to that user's username before authenticating.
+        # Ambiguous (duplicate emails) or no-match cases fall through untouched
+        # so the normal "invalid credentials" path still applies.
+        login = attrs.get(self.username_field, '')
+        if login and '@' in login:
+            matches = User.objects.filter(email__iexact=login, is_active=True)
+            if matches.count() == 1:
+                attrs[self.username_field] = matches.first().username
+
         data = super().validate(attrs)
         data['user'] = UserProfileSerializer(self.user).data
         return data
