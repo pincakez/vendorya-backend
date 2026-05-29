@@ -91,6 +91,10 @@ class SalesInvoiceItem(models.Model):
     tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     total = models.DecimalField(max_digits=12, decimal_places=2)
 
+    # COGS snapshot — captured from the weighted-average received purchase cost at the
+    # moment the invoice is POSTED. Reports use THIS, never ProductVariant.cost_price.
+    cost_at_sale = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
     def save(self, *args, **kwargs):
         self.total = (self.quantity * self.unit_price) + self.tax_amount
         super().save(*args, **kwargs)
@@ -170,7 +174,14 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
     refund_number = models.PositiveIntegerField(editable=False, null=True)
     date = models.DateTimeField(auto_now_add=True)
     total_refunded = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    
+
+    # Who processed the return — used for per-cashier returns in reports.
+    # Existing rows stay null ("unattributed").
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='refunds_created',
+    )
+
     reason = models.TextField(blank=True)
 
     def save(self, *args, **kwargs):
@@ -239,6 +250,25 @@ class PurchaseItem(models.Model):
         self.invoice.total_amount = total
         self.invoice.save()
 
+def weighted_avg_cost(variant, store):
+    """Weighted-average unit cost from RECEIVED purchases of this variant in this store.
+
+    COGS source of truth: actual purchase-invoice prices, NOT ProductVariant.cost_price.
+    Falls back to the variant's stored cost_price, then 0, when no purchases exist.
+    """
+    agg = PurchaseItem.objects.filter(
+        variant=variant,
+        invoice__store=store,
+        invoice__status=PurchaseInvoice.Status.RECEIVED,
+        invoice__is_deleted=False,
+    ).aggregate(total_cost=Sum('total_cost'), total_qty=Sum('quantity'))
+    total_cost = agg['total_cost'] or Decimal('0')
+    total_qty = agg['total_qty'] or Decimal('0')
+    if total_qty > 0:
+        return (total_cost / total_qty).quantize(Decimal('0.01'))
+    return variant.cost_price or Decimal('0')
+
+
 @receiver(pre_save, sender=SalesInvoice)
 def handle_sale_stock(sender, instance, **kwargs):
     if instance.pk:
@@ -253,6 +283,9 @@ def handle_sale_stock(sender, instance, **kwargs):
                         if stock:
                             stock.quantity -= item.quantity
                             stock.save()
+                        # Snapshot COGS at the moment of posting.
+                        item.cost_at_sale = weighted_avg_cost(item.variant, instance.store)
+                        item.save(update_fields=['cost_at_sale'])
         except SalesInvoice.DoesNotExist:
             pass
 

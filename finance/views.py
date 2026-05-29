@@ -297,7 +297,7 @@ class RefundInvoiceViewSet(viewsets.ModelViewSet):
         ).prefetch_related('items').select_related('customer', 'branch', 'original_invoice')
 
     def perform_create(self, serializer):
-        refund = serializer.save(store=self.request.user.store)
+        refund = serializer.save(store=self.request.user.store, created_by=self.request.user)
         log_activity(
             request=self.request,
             action=f"Created Return #{refund.refund_number or refund.id}",
