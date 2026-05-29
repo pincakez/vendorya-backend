@@ -301,7 +301,7 @@ def handle_purchase_stock(sender, instance, **kwargs):
                         stock, _ = StockLevel.objects.select_for_update().get_or_create(
                             variant=item.variant, branch=instance.branch
                         )
-                        stock.quantity += item.quantity
+                        stock.quantity = Decimal(str(stock.quantity)) + item.quantity
                         stock.save()
                         item.variant.cost_price = item.unit_cost
                         item.variant.save()
