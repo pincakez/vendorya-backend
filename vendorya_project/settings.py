@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     'billing',
     'notifications',
     'admin_ai',
+    'reports',
 ]
 
 MIDDLEWARE = [
