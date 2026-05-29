@@ -1,9 +1,8 @@
 """Two-factor (TOTP) helpers: requirement policy, device lookup, token matching.
 
-Policy (item 4 + 8 of Auth Hardening):
-  - super-admins (sudo) always require 2FA
-  - OWNER always requires 2FA
-  - role >= MANAGER requires 2FA when the store toggles force_2fa_managers on
+Policy: 2FA is **fully optional / opt-in**. No account is ever forced to enrol.
+A user is only prompted for a code at login if they have voluntarily enrolled a
+confirmed TOTP device (see the login view, which gates on ``is_enrolled``).
 """
 from django_otp import devices_for_user, match_token
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -13,17 +12,11 @@ from .models import User
 
 
 def requires_2fa(user):
-    """True if this user must pass 2FA to log in."""
-    if not user or not user.is_authenticated:
-        return False
-    if getattr(user, 'is_superadmin', False):
-        return True
-    if user.role == User.Role.OWNER:
-        return True
-    store = getattr(user, 'store', None)
-    settings_obj = getattr(store, 'settings', None) if store else None
-    if settings_obj and settings_obj.force_2fa_managers:
-        return ROLE_RANK.get(user.role, 0) >= ROLE_RANK[User.Role.MANAGER]
+    """Forced 2FA is disabled — enrolment is always optional.
+
+    Kept as a single source of truth so the login view, status, and disable
+    endpoints all agree that nobody is *required* to use 2FA.
+    """
     return False
 
 

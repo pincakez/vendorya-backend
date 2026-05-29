@@ -13,8 +13,7 @@ from .models import User, Customer
 from .permissions import RoleScopedPermission
 from .serializers import VendoryaTokenObtainSerializer, UserProfileSerializer, CustomerSerializer, StaffSerializer
 from .throttling import LoginRateThrottle
-from .twofa import requires_2fa, is_enrolled, verify_token
-from .views_2fa import make_pre_auth_token
+from .twofa import is_enrolled, verify_token
 from .cookies import set_refresh_cookie, clear_refresh_cookie
 from core.activity import log_activity
 from core.models import ActivityLog
@@ -61,16 +60,10 @@ class VendoryaTokenObtainView(TokenObtainPairView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # 4. Two-factor.
-        if requires_2fa(user):
+        # 4. Two-factor — OPTIONAL. Only users who voluntarily enrolled a
+        #    confirmed device are prompted; nobody is ever forced to enrol.
+        if is_enrolled(user):
             otp_token = str(request.data.get('otp_token', '')).strip()
-            if not is_enrolled(user):
-                # Must enrol before they can complete login.
-                return Response(
-                    {'enroll_2fa': True, 'pre_auth_token': make_pre_auth_token(user),
-                     'detail': 'Two-factor authentication setup is required.'},
-                    status=status.HTTP_200_OK,
-                )
             if not otp_token:
                 return Response(
                     {'requires_2fa': True, 'detail': 'Enter your authenticator code.'},
