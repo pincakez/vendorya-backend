@@ -150,7 +150,9 @@ class ChangePasswordView(APIView):
         user = request.user
         current = str(request.data.get('current_password', ''))
         new = str(request.data.get('new_password', '')).strip()
-        if not user.check_password(current):
+        # Forced first-login change: the user just authenticated with the temp
+        # password, so we don't demand it again. Voluntary changes require it.
+        if not user.force_password_change and not user.check_password(current):
             return Response({'detail': 'Current password is incorrect.'},
                             status=status.HTTP_400_BAD_REQUEST)
         if not new:
