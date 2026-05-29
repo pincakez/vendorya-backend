@@ -195,10 +195,11 @@ AUTH_USER_MODEL = 'users.User'
 # in DEBUG we fall back to the Vite dev server origins.
 _cors_origins = _env_list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_ALL_ORIGINS = False
-if DEBUG and not _cors_origins:
+if not _cors_origins:
     _cors_origins = [
         'http://localhost:5173', 'http://127.0.0.1:5173',
         'http://localhost:8000', 'http://127.0.0.1:8000',
+        'https://vendorya.gatesinnov.com',
     ]
 CORS_ALLOWED_ORIGINS = _cors_origins
 # Allow the super-admin store-scoping header on cross-origin (dev) requests.
