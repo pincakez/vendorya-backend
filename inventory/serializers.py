@@ -68,18 +68,27 @@ class ProductListSerializer(serializers.ModelSerializer):
     profit_display     = serializers.SerializerMethodField()
     attributes_summary = serializers.SerializerMethodField()
     default_variant_id = serializers.SerializerMethodField()
+    sku_display        = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'category_name', 'supplier_name',
             'total_stock', 'price_display', 'profit_display',
-            'attributes_summary', 'default_variant_id',
+            'attributes_summary', 'default_variant_id', 'sku_display',
         ]
 
     def get_default_variant_id(self, obj):
         v = obj.variants.first()
         return str(v.id) if v else None
+
+    def get_sku_display(self, obj):
+        variants = list(obj.variants.all())
+        if not variants:
+            return None
+        if len(variants) == 1:
+            return variants[0].sku
+        return f"{variants[0].sku} +{len(variants) - 1}"
 
     def get_total_stock(self, obj):
         return sum(
