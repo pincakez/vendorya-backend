@@ -1,4 +1,6 @@
 from rest_framework import viewsets, filters, status
+from notifications.dispatcher import send_notification
+from notifications.models import Notification
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -83,6 +85,14 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'Already voided.'}, status=status.HTTP_400_BAD_REQUEST)
         invoice.status = SalesInvoice.Status.VOID
         invoice.save()
+        send_notification(
+            store=invoice.store,
+            title=f"Invoice #{invoice.invoice_number} was voided",
+            body=f"Total: {invoice.grand_total}",
+            priority=Notification.Priority.ALERT,
+            notif_type=Notification.Type.INVOICE_VOIDED,
+            link="/finance/invoices",
+        )
         log_activity(
             request=request,
             action=f"Voided Sales Invoice #{invoice.invoice_number}",
@@ -265,6 +275,16 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'Shift already closed.'}, status=status.HTTP_400_BAD_REQUEST)
         counted_cash = request.data.get('counted_cash', 0)
         shift.close_shift(counted_cash)
+        if shift.difference != 0:
+            direction = "over" if shift.difference > 0 else "short"
+            send_notification(
+                store=shift.store,
+                title=f"Shift closed with cash {direction}",
+                body=f"Cashier: {shift.user.get_full_name() or shift.user.username} · Difference: {shift.difference:+.2f}",
+                priority=Notification.Priority.WARNING,
+                notif_type=Notification.Type.SHIFT_DIFFERENCE,
+                link="/finance/shifts",
+            )
         log_activity(
             request=request,
             action="Closed Shift",

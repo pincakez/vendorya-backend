@@ -275,6 +275,7 @@ def handle_sale_stock(sender, instance, **kwargs):
         try:
             old = SalesInvoice.objects.get(pk=instance.pk)
             if old.status == SalesInvoice.Status.DRAFT and instance.status == SalesInvoice.Status.POSTED:
+                LOW_STOCK_THRESHOLD = 5
                 with transaction.atomic():
                     for item in instance.items.all():
                         stock = StockLevel.objects.select_for_update().filter(
@@ -283,6 +284,18 @@ def handle_sale_stock(sender, instance, **kwargs):
                         if stock:
                             stock.quantity -= item.quantity
                             stock.save()
+                            # Fire low-stock notification once per variant crossing threshold.
+                            if stock.quantity <= LOW_STOCK_THRESHOLD:
+                                from notifications.dispatcher import send_notification
+                                from notifications.models import Notification as Notif
+                                send_notification(
+                                    store=instance.store,
+                                    title=f"Low stock: {item.variant.product.name} ({item.variant.sku})",
+                                    body=f"Only {stock.quantity} left at {instance.branch.name}",
+                                    priority=Notif.Priority.WARNING,
+                                    notif_type=Notif.Type.LOW_STOCK,
+                                    link="/inventory/products",
+                                )
                         # Snapshot COGS at the moment of posting.
                         item.cost_at_sale = weighted_avg_cost(item.variant, instance.store)
                         item.save(update_fields=['cost_at_sale'])
