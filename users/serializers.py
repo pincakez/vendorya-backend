@@ -1,3 +1,5 @@
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import User, Customer
@@ -54,6 +56,15 @@ class StaffSerializer(serializers.ModelSerializer):
     def get_full_name(self, obj):
         name = f"{obj.first_name} {obj.last_name}".strip()
         return name or obj.username
+
+    def validate_password(self, value):
+        # Empty = "keep current / auto-generate"; only validate a real password.
+        if value:
+            try:
+                validate_password(value)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError(list(exc.messages))
+        return value
 
     def create(self, validated_data):
         password = validated_data.pop('password', None)

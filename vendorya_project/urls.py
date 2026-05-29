@@ -4,7 +4,6 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path, include, re_path
 from django.http import FileResponse, Http404
-from rest_framework_simplejwt.views import TokenRefreshView
 
 def serve_vue(request, path=''):
     index = os.path.join(settings.BASE_DIR, '..', 'vendorya-frontend', 'dist', 'index.html')
@@ -29,9 +28,8 @@ urlpatterns = [
     path('api/billing/',       include('billing.tenant_urls')),
     path('api/notifications/', include('notifications.urls')),
 
-    # Auth URLs
+    # Auth URLs (login, refresh, logout, 2FA, me, customers, staff)
     path('api/auth/', include('users.urls')),
-    path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]
 
 if settings.DEBUG:

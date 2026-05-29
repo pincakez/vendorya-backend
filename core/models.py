@@ -186,6 +186,17 @@ class StoreSettings(TimestampedModel):
     receipt_header = models.TextField(_("Receipt Header"), blank=True, help_text="Text to appear at the top of the receipt.")
     receipt_footer = models.TextField(_("Receipt Footer"), blank=True, help_text="Text to appear at the bottom (e.g., Return Policy).")
 
+    # 5. Security (Auth Hardening)
+    session_timeout_minutes = models.PositiveSmallIntegerField(
+        _("Session Timeout (minutes)"), default=0,
+        help_text=_("Auto-logout after this many minutes idle. 0 = disabled. Enforced client-side."))
+    login_ip_allowlist = models.TextField(
+        _("Login IP Allowlist"), blank=True,
+        help_text=_("Restrict OWNER/ADMIN logins to these IPs/CIDRs (comma or newline separated). Empty = no restriction."))
+    force_2fa_managers = models.BooleanField(
+        _("Force 2FA for Managers+"), default=False,
+        help_text=_("Require TOTP two-factor auth for all staff with role Manager or higher."))
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 

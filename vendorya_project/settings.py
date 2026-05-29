@@ -56,12 +56,17 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'django.contrib.postgres',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'django_extensions',
-    
+
 
     # Third Party
     'rest_framework',
     'corsheaders',
+    'axes',
+    'django_otp',
+    'django_otp.plugins.otp_totp',
+    'django_otp.plugins.otp_static',
 
     # Local Apps
     'import_export',
@@ -82,9 +87,18 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django_otp.middleware.OTPMiddleware',  # guards /django-admin/ TOTP
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.TenantContextMiddleware',
+    # AxesMiddleware must be last so it sees the final auth outcome.
+    'axes.middleware.AxesMiddleware',
+]
+
+# django-axes hooks Django's auth via a backend; ModelBackend stays for normal auth.
+AUTHENTICATION_BACKENDS = [
+    'axes.backends.AxesStandaloneBackend',
+    'django.contrib.auth.backends.ModelBackend',
 ]
 
 ROOT_URLCONF = 'vendorya_project.urls'
@@ -131,12 +145,16 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': 10},
     },
     {
         'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
     },
     {
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+    {
+        'NAME': 'core.validators.ComplexityValidator',
     },
 ]
 
@@ -171,14 +189,17 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'users.User'
 
-# CORS: allow-all is *only* permitted in DEBUG. In prod, set CORS_ALLOWED_ORIGINS
-# explicitly via .env (comma-separated list of full origins).
+# CORS: credentialed requests (httpOnly refresh cookie) forbid allow-all, so we
+# always use an explicit origin list. In prod set CORS_ALLOWED_ORIGINS via .env;
+# in DEBUG we fall back to the Vite dev server origins.
 _cors_origins = _env_list('CORS_ALLOWED_ORIGINS')
+CORS_ALLOW_ALL_ORIGINS = False
 if DEBUG and not _cors_origins:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
-    CORS_ALLOW_ALL_ORIGINS = False
-    CORS_ALLOWED_ORIGINS = _cors_origins
+    _cors_origins = [
+        'http://localhost:5173', 'http://127.0.0.1:5173',
+        'http://localhost:8000', 'http://127.0.0.1:8000',
+    ]
+CORS_ALLOWED_ORIGINS = _cors_origins
 
 import os
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
@@ -194,13 +215,21 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
-    )
+    ),
+    # Only the 'login' scope is used (applied on the token view). No global
+    # throttling — that would rate-limit the whole authenticated app.
+    'DEFAULT_THROTTLE_RATES': {
+        'login': '5/min',
+    },
 }
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    # 60-day refresh = Facebook-style persistent sessions (Yakot). Made safe by
+    # ROTATE + BLACKLIST_AFTER_ROTATION (reuse detection) and the httpOnly cookie.
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=60),
     'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': _env_required('JWT_SIGNING_KEY'),
     'AUDIENCE': None,
@@ -210,6 +239,28 @@ SIMPLE_JWT = {
     'USER_ID_CLAIM': 'user_id',
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
+
+# --- django-axes: account lockout after repeated failed logins ---------------
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = timedelta(hours=1)      # auto-unlock after 1h
+AXES_RESET_ON_SUCCESS = True                # clear the counter on a good login
+AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"]]  # lock the user+IP pair
+# Real client IP comes from Cloudflare's CF-Connecting-IP behind the tunnel.
+AXES_IPWARE_META_PRECEDENCE_ORDER = ('HTTP_CF_CONNECTING_IP', 'REMOTE_ADDR')
+AXES_LOCKOUT_CALLABLE = 'users.lockout.lockout_response'  # JSON 429 for the SPA
+
+# --- Refresh-token cookie (phased httpOnly migration) ------------------------
+# Refresh token is ALSO set as an httpOnly cookie. Body still carries it this
+# phase (dual-support) so the existing localStorage path keeps working.
+REFRESH_COOKIE_NAME = 'vendorya_refresh'
+REFRESH_COOKIE_PATH = '/api/auth/'
+REFRESH_COOKIE_SAMESITE = 'Strict'
+REFRESH_COOKIE_SECURE = not DEBUG           # http on localhost dev; https in prod
+REFRESH_COOKIE_HTTPONLY = True
+REFRESH_COOKIE_MAX_AGE = int(SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
+
+# Cookies require credentialed CORS with explicit origins (no allow-all).
+CORS_ALLOW_CREDENTIALS = True
 
 JAZZMIN_SETTINGS = {
     # UI Customizer

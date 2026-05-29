@@ -81,11 +81,25 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'tax_id', 'commercial_reg',
             'receipt_header', 'receipt_footer',
             'default_tax',
+            'session_timeout_minutes', 'login_ip_allowlist', 'force_2fa_managers',
         ]
 
     def validate_decimals(self, value):
         if value < 0 or value > 4:
             raise serializers.ValidationError("Decimals must be between 0 and 4.")
+        return value
+
+    def validate_session_timeout_minutes(self, value):
+        if value < 0 or value > 1440:
+            raise serializers.ValidationError("Session timeout must be between 0 and 1440 minutes.")
+        return value
+
+    def validate_login_ip_allowlist(self, value):
+        from core.security import validate_allowlist
+        try:
+            validate_allowlist(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
         return value
 
 
