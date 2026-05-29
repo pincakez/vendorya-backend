@@ -1,5 +1,6 @@
 import uuid
-from django.db import models
+import random as _random
+from django.db import models, transaction
 from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
@@ -22,12 +23,16 @@ class Supplier(TimestampedModel, SoftDeleteModel):
     contact_info = models.TextField(_("Contact Info"), blank=True, null=True)
     
     code_prefix = models.CharField(
-        _("Supplier Code Prefix"), 
-        max_length=2, 
-        validators=[RegexValidator(r'^\d{2}$', 'Prefix must be exactly 2 digits (00-99).')],
-        help_text=_("Unique 2-digit ID for generating product codes.")
+        _("Supplier Code Prefix"),
+        max_length=3,
+        validators=[RegexValidator(r'^\d{3}$', _('Prefix must be exactly 3 digits (100–999).'))],
+        help_text=_("Unique 3-digit code for this supplier within this store (100–999). Part of every SKU.")
     )
-    
+    prefix_locked = models.BooleanField(
+        _("Prefix Locked"), default=False,
+        help_text=_("Once locked the prefix can never be changed — it is embedded in all SKUs.")
+    )
+
     class Meta:
         unique_together = [('store', 'code_prefix')]
 
@@ -87,39 +92,68 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variants')
     sku = models.CharField(
-        _("SKU"), 
-        max_length=100, 
+        _("SKU"),
+        max_length=10,
+        unique=True,
         blank=True,
-        validators=[RegexValidator(r'^[0-9A-Za-z-]+$', 'SKU must be alphanumeric (A-Z, 0-9, -).')]
+        validators=[RegexValidator(r'^\d{10}$', _('SKU must be exactly 10 digits.'))]
     )
     barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
-    
+
     cost_price = models.DecimalField(_("Cost (Avg)"), max_digits=12, decimal_places=2, default=0.00)
     sell_price = models.DecimalField(_("Sell Price"), max_digits=12, decimal_places=2, default=0.00)
-    
+
     def __str__(self):
         return f"{self.product.name} ({self.sku})"
 
     def save(self, *args, **kwargs):
-        # Auto-Generate SKU: SupplierPrefix + 3 digits (e.g., 13001)
-        if not self.sku and self.product.supplier:
-            prefix = self.product.supplier.code_prefix
-            last_variant = ProductVariant.objects.filter(
-                product__store=self.product.store, 
-                sku__startswith=prefix
-            ).order_by('sku').last()
-            
-            if last_variant and last_variant.sku[2:].isdigit():
-                next_num = int(last_variant.sku[2:]) + 1
-            else:
-                next_num = 1
-                
-            self.sku = f"{prefix}{next_num:03d}"
-            
-        elif not self.sku:
-            self.sku = str(uuid.uuid4())[:8].upper()
-            
+        if not self.sku:
+            self.sku = self._generate_sku()
         super().save(*args, **kwargs)
+
+    def _generate_sku(self):
+        store    = self.product.store
+        supplier = self.product.supplier
+
+        if not store.store_code:
+            raise ValueError("Store must have a store_code set before products can be created.")
+        if not supplier:
+            raise ValueError("Product must be assigned a supplier before a variant can be saved.")
+        if not supplier.prefix_locked:
+            raise ValueError("Supplier prefix must be confirmed (locked) before products can be created.")
+
+        store_part    = store.store_code        # 3 digits
+        supplier_part = supplier.code_prefix    # 3 digits
+        prefix        = f"{store_part}{supplier_part}"
+
+        with transaction.atomic():
+            # Lock the supplier row — prevents concurrent SKU generation for same supplier
+            Supplier.objects.select_for_update().get(pk=supplier.pk)
+
+            existing_nums = set()
+            for sku in ProductVariant.all_objects.filter(
+                sku__startswith=prefix
+            ).values_list('sku', flat=True):
+                suffix = sku[6:]
+                if suffix.isdigit():
+                    existing_nums.add(int(suffix))
+
+            try:
+                mode = store.settings.product_numbering_mode
+            except Exception:
+                mode = 'PROGRESSIVE'
+
+            if mode == 'RANDOM':
+                available = set(range(1, 10000)) - existing_nums
+                if not available:
+                    raise ValueError("All 9999 product slots for this supplier are used.")
+                counter = _random.choice(list(available))
+            else:
+                counter = max(existing_nums, default=0) + 1
+                if counter > 9999:
+                    raise ValueError("Maximum product count (9999) reached for this supplier.")
+
+            return f"{prefix}{counter:04d}"
 
 class ProductAttribute(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

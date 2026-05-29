@@ -108,6 +108,18 @@ class AdminActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
         return qs
 
 
+class AdminStoreCodeCheckView(APIView):
+    """GET /api/admin/stores/check-code/?code=120 — returns available true/false. Sudo only."""
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        code = request.query_params.get('code', '').strip()
+        if not code or not code.isdigit() or len(code) != 3:
+            return Response({'detail': 'Provide a 3-digit code.'}, status=status.HTTP_400_BAD_REQUEST)
+        taken = Store.objects.filter(store_code=code).exists()
+        return Response({'code': code, 'available': not taken})
+
+
 class AdminActivityLogMetaView(APIView):
     """Dropdown options for the global log filters (stores + operation types)."""
     permission_classes = [IsSuperAdmin]

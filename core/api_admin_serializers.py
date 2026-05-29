@@ -18,7 +18,7 @@ class AdminStoreSerializer(serializers.ModelSerializer):
     class Meta:
         model = Store
         fields = [
-            'id', 'name', 'owner', 'owner_username',
+            'id', 'name', 'store_code', 'owner', 'owner_username',
             'plan', 'is_active',
             'currency', 'currency_id',
             'default_language', 'timezone',

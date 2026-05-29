@@ -21,7 +21,8 @@ class SupplierSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Supplier
-        fields = ['id', 'name', 'contact_info', 'code_prefix', 'balance']
+        fields = ['id', 'name', 'contact_info', 'code_prefix', 'prefix_locked', 'balance']
+        read_only_fields = ['id', 'prefix_locked']
 
 class AttributeDefinitionSerializer(serializers.ModelSerializer):
     class Meta:

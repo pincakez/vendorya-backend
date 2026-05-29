@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
 from django.conf import settings
+from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
@@ -75,6 +76,15 @@ class Store(TimestampedModel, SoftDeleteModel):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(_("Store Name"), max_length=200)
+    store_code = models.CharField(
+        _("Store Code"),
+        max_length=3,
+        unique=True,
+        null=True,
+        blank=True,
+        validators=[RegexValidator(r'^\d{3}$', _('Store code must be exactly 3 digits (000–999).'))],
+        help_text=_("Globally unique 3-digit code — forms the first segment of every SKU in this store.")
+    )
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='owned_stores', on_delete=models.CASCADE)
     plan = models.CharField(max_length=20, choices=SubscriptionPlan.choices, default=SubscriptionPlan.FREE)
     is_active = models.BooleanField(default=True)
@@ -186,7 +196,19 @@ class StoreSettings(TimestampedModel):
     receipt_header = models.TextField(_("Receipt Header"), blank=True, help_text="Text to appear at the top of the receipt.")
     receipt_footer = models.TextField(_("Receipt Footer"), blank=True, help_text="Text to appear at the bottom (e.g., Return Policy).")
 
-    # 5. Security (Auth Hardening)
+    # 5. SKU / Numbering
+    class ProductNumberingMode(models.TextChoices):
+        PROGRESSIVE = 'PROGRESSIVE', _('Progressive (0001, 0002 …)')
+        RANDOM      = 'RANDOM',      _('Random (4-digit unique)')
+
+    product_numbering_mode = models.CharField(
+        _("Product Numbering Mode"),
+        max_length=20,
+        choices=ProductNumberingMode.choices,
+        default=ProductNumberingMode.PROGRESSIVE,
+    )
+
+    # 6. Security (Auth Hardening)
     session_timeout_minutes = models.PositiveSmallIntegerField(
         _("Session Timeout (minutes)"), default=0,
         help_text=_("Auto-logout after this many minutes idle. 0 = disabled. Enforced client-side."))

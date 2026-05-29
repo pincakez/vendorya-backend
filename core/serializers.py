@@ -26,9 +26,9 @@ class StoreSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Store
-        fields = ['id', 'name', 'currency', 'currency_id',
+        fields = ['id', 'name', 'store_code', 'currency', 'currency_id',
                   'default_language', 'timezone', 'plan', 'is_active']
-        read_only_fields = ['id', 'plan', 'is_active']
+        read_only_fields = ['id', 'plan', 'is_active', 'store_code']
 
 
 class BranchSerializer(serializers.ModelSerializer):
@@ -81,6 +81,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'tax_id', 'commercial_reg',
             'receipt_header', 'receipt_footer',
             'default_tax',
+            'product_numbering_mode',
             'session_timeout_minutes', 'login_ip_allowlist', 'force_2fa_managers',
         ]
 

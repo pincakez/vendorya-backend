@@ -1,9 +1,11 @@
 from decimal import Decimal
 from django.db.models import Q, Sum, F, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, status
+from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from users.permissions import RoleScopedPermission
+from rest_framework.response import Response
+from users.permissions import RoleScopedPermission, IsManagerOrAbove
 from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer,
@@ -138,7 +140,28 @@ class SupplierViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        # Lock the prefix on creation — irreversible by design
+        serializer.save(store=self.request.user.store, prefix_locked=True)
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        # Prevent changing the prefix once locked
+        if instance.prefix_locked and 'code_prefix' in serializer.validated_data:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'code_prefix': 'Supplier prefix is locked and cannot be changed.'})
+        serializer.save()
+
+
+class SupplierPrefixCheckView(APIView):
+    """GET /api/inventory/suppliers/check-prefix/?prefix=101 — store-scoped availability check."""
+    permission_classes = [IsAuthenticated, IsManagerOrAbove]
+
+    def get(self, request):
+        prefix = request.query_params.get('prefix', '').strip()
+        if not prefix or not prefix.isdigit() or len(prefix) != 3:
+            return Response({'detail': 'Provide a 3-digit prefix.'}, status=status.HTTP_400_BAD_REQUEST)
+        taken = Supplier.objects.filter(store=request.user.store, code_prefix=prefix).exists()
+        return Response({'prefix': prefix, 'available': not taken})
 
 
 class TaxViewSet(viewsets.ModelViewSet):
