@@ -1,5 +1,6 @@
 from axes.handlers.proxy import AxesProxyHandler
 from django.conf import settings as dj_settings
+from django.db import transaction
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets, filters, serializers, status
@@ -132,15 +133,38 @@ class MeView(APIView):
         for field in ('first_name', 'last_name', 'email'):
             if field in data:
                 setattr(user, field, data[field])
-        password = data.get('password', '').strip()
-        if password:
-            try:
-                validate_password(password, user)
-            except DjangoValidationError as exc:
-                raise serializers.ValidationError({'password': list(exc.messages)})
-            user.set_password(password)
+        # Password changes go through ChangePasswordView (current-password required).
         user.save()
         return Response(UserProfileSerializer(user).data)
+
+
+class ChangePasswordView(APIView):
+    """Self-service password change. Requires the current password.
+
+    Also used for the forced change after an admin issues a temp password —
+    on success the force_password_change flag is cleared.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        current = str(request.data.get('current_password', ''))
+        new = str(request.data.get('new_password', '')).strip()
+        if not user.check_password(current):
+            return Response({'detail': 'Current password is incorrect.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not new:
+            return Response({'detail': 'New password is required.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validate_password(new, user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'new_password': list(exc.messages)})
+        with transaction.atomic():
+            user.set_password(new)
+            user.force_password_change = False
+            user.save(update_fields=['password', 'force_password_change'])
+        return Response({'detail': 'Password changed.'})
 
 
 class CustomerViewSet(viewsets.ModelViewSet):

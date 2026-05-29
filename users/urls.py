@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     VendoryaTokenObtainView, CookieTokenRefreshView, LogoutView,
-    MeView, CustomerViewSet, StaffViewSet,
+    MeView, ChangePasswordView, CustomerViewSet, StaffViewSet,
 )
 from .views_2fa import (
     TwoFactorSetupView, TwoFactorVerifySetupView, TwoFactorStatusView,
@@ -18,6 +18,7 @@ urlpatterns = [
     path('token/refresh/', CookieTokenRefreshView.as_view(), name='token_refresh'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('me/', MeView.as_view(), name='me'),
+    path('change-password/', ChangePasswordView.as_view(), name='change_password'),
 
     # Two-factor (TOTP)
     path('2fa/setup/', TwoFactorSetupView.as_view(), name='2fa_setup'),

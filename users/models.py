@@ -18,6 +18,11 @@ class User(AbstractUser):
         default=False,
         help_text=_("Vendorya platform-level admin. Bypasses per-store filtering via X-Store-ID header."),
     )
+    force_password_change = models.BooleanField(
+        _("Force Password Change"),
+        default=False,
+        help_text=_("Set when an admin issues a temp password. User must change it on next login."),
+    )
 
     def __str__(self):
         return self.username
