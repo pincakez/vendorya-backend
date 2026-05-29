@@ -1,4 +1,3 @@
-from finance.admin_views import pos_view, pos_search_api, pos_checkout_api
 from django.contrib import admin
 from django.urls import path, reverse
 from django.utils.html import format_html
@@ -84,20 +83,13 @@ class StoreAdmin(SoftDeleteAdmin):
         custom_urls = [
             path('<uuid:store_id>/search/', self.admin_site.admin_view(store_global_search_view), name='store_global_search'),
             path('<uuid:store_id>/search/api/', self.admin_site.admin_view(store_global_search_api), name='store_global_search_api'),
-            path('<uuid:store_id>/pos/', self.admin_site.admin_view(pos_view), name='store_pos'),
-            path('<uuid:store_id>/pos/api/search/', self.admin_site.admin_view(pos_search_api), name='store_pos_search'),
-            path('<uuid:store_id>/pos/api/checkout/', self.admin_site.admin_view(pos_checkout_api), name='store_pos_checkout'),
         ]
         return custom_urls + urls
 
     def actions_column(self, obj):
         search_url = reverse('admin:store_global_search', args=[obj.id])
-        search_btn = f'<a class="button" href="{search_url}" style="background-color:#17a2b8; color:white; padding:5px 10px; border-radius:4px; margin-right:5px;">🔍 Search</a>'
-        
-        pos_url = reverse('admin:store_pos', args=[obj.id])
-        pos_btn = f'<a class="button" href="{pos_url}" style="background-color:#28a745; color:white; padding:5px 10px; border-radius:4px;">🛒 POS</a>'
-        
-        return format_html(search_btn + pos_btn)
+        search_btn = f'<a class="button" href="{search_url}" style="background-color:#17a2b8; color:white; padding:5px 10px; border-radius:4px;">🔍 Search</a>'
+        return format_html(search_btn)
     actions_column.short_description = "Actions"
     
 @admin.register(Address)
