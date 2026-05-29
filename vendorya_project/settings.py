@@ -200,6 +200,9 @@ if DEBUG and not _cors_origins:
         'http://localhost:8000', 'http://127.0.0.1:8000',
     ]
 CORS_ALLOWED_ORIGINS = _cors_origins
+# Allow the super-admin store-scoping header on cross-origin (dev) requests.
+from corsheaders.defaults import default_headers as _cors_default_headers
+CORS_ALLOW_HEADERS = list(_cors_default_headers) + ['x-store-id']
 
 import os
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
