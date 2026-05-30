@@ -136,6 +136,60 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class ProductWriteSerializer(serializers.ModelSerializer):
+    """Used for create / update. Accepts category/supplier FKs and creates the
+    default variant inline when attributes or pricing are provided."""
+
+    attributes = serializers.ListField(
+        child=serializers.DictField(), write_only=True, required=False, default=list
+    )
+    cost_price = serializers.DecimalField(max_digits=12, decimal_places=2,
+                                          write_only=True, required=False, default=0)
+    sell_price = serializers.DecimalField(max_digits=12, decimal_places=2,
+                                          write_only=True, required=False, default=0)
+
+    class Meta:
+        model = Product
+        fields = ['id', 'name', 'description', 'category', 'supplier',
+                  'base_price', 'attributes', 'cost_price', 'sell_price']
+        read_only_fields = ['id']
+
+    def create(self, validated_data):
+        from django.db import transaction
+        attrs      = validated_data.pop('attributes', [])
+        cost_price = validated_data.pop('cost_price', 0)
+        sell_price = validated_data.pop('sell_price', 0)
+
+        with transaction.atomic():
+            product = Product.objects.create(**validated_data)
+            variant = ProductVariant.objects.create(
+                product=product,
+                cost_price=cost_price,
+                sell_price=sell_price or validated_data.get('base_price', 0),
+            )
+            for attr in attrs:
+                defn_id = attr.get('definition') or attr.get('definition_id')
+                value   = attr.get('value', '')
+                if defn_id and value:
+                    defn = AttributeDefinition.objects.filter(
+                        id=defn_id, store=product.store
+                    ).first()
+                    if defn:
+                        ProductAttribute.objects.create(
+                            variant=variant, definition=defn, value=value
+                        )
+        return product
+
+    def update(self, instance, validated_data):
+        validated_data.pop('attributes', None)
+        validated_data.pop('cost_price', None)
+        validated_data.pop('sell_price', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
+
+
 # --- STOCK ADJUSTMENT SERIALIZER ---
 class StockAdjustmentSerializer(serializers.ModelSerializer):
     variant_sku      = serializers.CharField(source='variant.sku', read_only=True)

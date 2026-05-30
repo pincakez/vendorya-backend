@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from users.permissions import RoleScopedPermission, IsManagerOrAbove
 from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment
 from .serializers import (
-    ProductListSerializer, ProductDetailSerializer,
+    ProductListSerializer, ProductDetailSerializer, ProductWriteSerializer,
     ProductVariantSerializer,
     CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer, TaxSerializer,
     StockAdjustmentSerializer,
@@ -73,6 +73,8 @@ class ProductViewSet(viewsets.ModelViewSet):
     _RESERVED_PARAMS = {'search', 'ordering', 'page', 'page_size', 'category'}
 
     def get_serializer_class(self):
+        if self.action in ('create', 'update', 'partial_update'):
+            return ProductWriteSerializer
         if self.action == 'retrieve':
             return ProductDetailSerializer
         return ProductListSerializer
