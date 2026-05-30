@@ -8,7 +8,11 @@ from django.http import FileResponse, Http404
 def serve_vue(request, path=''):
     index = os.path.join(settings.BASE_DIR, '..', 'vendorya-frontend', 'dist', 'index.html')
     if os.path.exists(index):
-        return FileResponse(open(index, 'rb'), content_type='text/html')
+        response = FileResponse(open(index, 'rb'), content_type='text/html')
+        # Never let Cloudflare or browsers cache index.html — hashed JS/CSS are fine to cache
+        response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response['Pragma'] = 'no-cache'
+        return response
     raise Http404
 
 urlpatterns = [
