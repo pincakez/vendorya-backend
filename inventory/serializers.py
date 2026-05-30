@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from core.field_visibility import FieldVisibilityMixin
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
     ProductVariant, ProductAttribute, StockLevel, Tax, StockAdjustment
@@ -60,7 +61,9 @@ class ProductVariantSerializer(serializers.ModelSerializer):
         return sum(s.quantity for s in obj.stock_levels.all())
 
 # --- PRODUCT LIST SERIALIZER (optimised for table) ---
-class ProductListSerializer(serializers.ModelSerializer):
+class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
+    table_id = 'inventory_products'
+
     category_name      = serializers.CharField(source='category.name', read_only=True)
     supplier_name      = serializers.CharField(source='supplier.name', read_only=True)
     total_stock        = serializers.SerializerMethodField()

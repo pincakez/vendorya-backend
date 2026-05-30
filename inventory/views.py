@@ -15,6 +15,22 @@ from .serializers import (
 )
 from core.activity import log_activity
 from core.models import ActivityLog
+from core.field_visibility import hidden_fields_for
+
+# Maps a sort key -> the output field it would reveal the order of.
+_ORDER_TO_FIELD = {'o_wholesale': 'cost_display', 'o_retail': 'price_display', 'o_profit': 'profit_display'}
+
+
+class VisibilityOrderingFilter(filters.OrderingFilter):
+    """Drop ordering by fields the user isn't permitted to see (prevents
+    inferring a hidden column's order). Pairs with FieldVisibilityMixin."""
+    def remove_invalid_fields(self, queryset, fields, view, request):
+        valid = super().remove_invalid_fields(queryset, fields, view, request)
+        hidden = hidden_fields_for(request.user, getattr(view, 'fv_table_id', None))
+        if not hidden:
+            return valid
+        blocked = {k for k, f in _ORDER_TO_FIELD.items() if f in hidden}
+        return [t for t in valid if t.lstrip('-') not in blocked]
 
 
 class AttributeDefinitionViewSet(viewsets.ModelViewSet):
@@ -46,7 +62,8 @@ class ProductViewSet(viewsets.ModelViewSet):
         'partial_update': 'MANAGER',
         'destroy':        'ADMIN',
     }
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
+    fv_table_id = 'inventory_products'
     search_fields = ['name', 'variants__sku', 'variants__barcode']
     # Server-side sort. FE maps column keys -> these (see Products.vue ORDER_MAP).
     ordering_fields = ['name', 'supplier__name', 'created_at',

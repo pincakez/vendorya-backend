@@ -227,6 +227,13 @@ class StoreSettings(TimestampedModel):
         _("Force 2FA for Managers+"), default=False,
         help_text=_("Require TOTP two-factor auth for all staff with role Manager or higher."))
 
+    # 7. Field Visibility (Layer 1 — server-enforced, per-store, by role)
+    field_visibility = models.JSONField(
+        _("Field Visibility"), default=dict, blank=True,
+        help_text=_("Per-role hidden columns: {table_id: {ROLE: [field, ...]}}. "
+                    "Server omits these fields from API responses for that role. "
+                    "Empty = use built-in defaults."))
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 
