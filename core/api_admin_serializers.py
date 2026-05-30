@@ -141,6 +141,37 @@ class AdminBranchSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
+class AdminBranchCreateSerializer(serializers.ModelSerializer):
+    """Sudo creates a branch under any store. Builds the Address inline."""
+    street_1 = serializers.CharField(write_only=True, required=False, allow_blank=True, default='')
+    city     = serializers.CharField(write_only=True, required=False, allow_blank=True, default='')
+    country  = serializers.CharField(write_only=True, required=False, allow_blank=True, default='Egypt')
+
+    class Meta:
+        model = Branch
+        fields = ['id', 'name', 'store', 'is_main_branch',
+                  'street_1', 'city', 'country', 'phone_number', 'email']
+        read_only_fields = ['id']
+
+    def create(self, validated_data):
+        from django.db import transaction
+        street_1 = validated_data.pop('street_1', '') or '-'
+        city     = validated_data.pop('city', '') or '-'
+        country  = validated_data.pop('country', '') or 'Egypt'
+        store    = validated_data['store']
+        with transaction.atomic():
+            address = Address.objects.create(
+                store=store, street_1=street_1, city=city, country=country
+            )
+            branch = Branch.objects.create(address=address, **validated_data)
+            # Only one main branch per store — demote any existing main.
+            if branch.is_main_branch:
+                Branch.objects.filter(store=store, is_main_branch=True).exclude(
+                    pk=branch.pk
+                ).update(is_main_branch=False)
+        return branch
+
+
 class AdminUserSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField(read_only=True)
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)

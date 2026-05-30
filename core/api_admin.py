@@ -8,7 +8,7 @@ from users.models import User
 from users.permissions import IsSuperAdmin
 from .api_admin_serializers import (
     AdminStoreSerializer, AdminStoreCreateSerializer,
-    AdminBranchSerializer, AdminUserSerializer,
+    AdminBranchSerializer, AdminBranchCreateSerializer, AdminUserSerializer,
 )
 
 
@@ -57,7 +57,12 @@ class AdminBranchViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdmin]
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'store__name']
-    http_method_names = ['get', 'patch', 'head', 'options']
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return AdminBranchCreateSerializer
+        return AdminBranchSerializer
 
     def get_queryset(self):
         return (
