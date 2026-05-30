@@ -50,6 +50,30 @@ class AdminStoreViewSet(viewsets.ModelViewSet):
         )
         return Response(AdminStoreSerializer(store).data, status=status.HTTP_201_CREATED)
 
+    def perform_update(self, serializer):
+        """Log suspend / reactivate to the activity log, capturing the reason.
+
+        Suspending a store flips `is_active` off; the login gate then blocks all
+        its users. The reason (sent as `suspend_reason`) is recorded for audit.
+        """
+        was_active = serializer.instance.is_active
+        store = serializer.save()
+        if was_active and not store.is_active:
+            reason = (self.request.data.get('suspend_reason') or '').strip() or 'No reason provided'
+            ActivityLog.objects.create(
+                store=store, user=self.request.user,
+                operation_type=ActivityLog.OperationType.OTHER,
+                action="Store suspended by admin",
+                details={'reason': reason, 'by': self.request.user.username},
+            )
+        elif not was_active and store.is_active:
+            ActivityLog.objects.create(
+                store=store, user=self.request.user,
+                operation_type=ActivityLog.OperationType.OTHER,
+                action="Store reactivated by admin",
+                details={'by': self.request.user.username},
+            )
+
 
 class AdminBranchViewSet(viewsets.ModelViewSet):
     """All branches across all stores. Super-admin only."""
