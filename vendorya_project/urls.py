@@ -1,4 +1,5 @@
 import os
+import mimetypes
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
@@ -43,10 +44,25 @@ urlpatterns = [
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
+def serve_dist_file(request, filename):
+    """Serve root-level static files from dist/ (logos, favicon, manifest, etc.)"""
+    dist_file = os.path.join(settings.BASE_DIR, '..', 'vendorya-frontend', 'dist', filename)
+    if os.path.exists(dist_file) and os.path.isfile(dist_file):
+        content_type, _ = mimetypes.guess_type(dist_file)
+        return FileResponse(open(dist_file, 'rb'), content_type=content_type or 'application/octet-stream')
+    raise Http404
+
 # Serve Vue assets (js/css from dist/assets/)
 vue_assets = os.path.join(settings.BASE_DIR, '..', 'vendorya-frontend', 'dist', 'assets')
 if os.path.exists(vue_assets):
     urlpatterns += static('/assets/', document_root=vue_assets)
+
+# Serve root-level dist files (logos, favicon, manifest, robots.txt, etc.)
+# Must be before the SPA catch-all
+urlpatterns += [
+    re_path(r'^(?P<filename>[\w.-]+\.(png|jpg|jpeg|gif|svg|ico|webp|woff2?|ttf|json|txt|xml|webmanifest))$',
+            serve_dist_file)
+]
 
 # Catch-all: serve Vue index.html for any non-API route (SPA routing)
 urlpatterns += [re_path(r'^(?!api/|django-admin/|static/|media/|assets/).*$', serve_vue)]
