@@ -4,15 +4,48 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.core.management import call_command
+
 from users.permissions import IsSuperAdmin, IsOwner
-from .models import SubscriptionPlan, Subscription, BillingInvoice
+from .models import SubscriptionPlan, Subscription, BillingInvoice, BillingSettings
 from .serializers import (
     SubscriptionPlanSerializer,
     AdminSubscriptionSerializer,
     TenantSubscriptionSerializer,
     BillingInvoiceSerializer,
     AdminBillingInvoiceCreateSerializer,
+    BillingSettingsSerializer,
 )
+
+
+# ---------- Sudo: platform billing settings (singleton) ----------
+
+class AdminBillingSettingsView(APIView):
+    """GET / PATCH the single platform-wide BillingSettings row. Sudo only.
+
+    `POST run-cycle` triggers `run_billing_cycle` on demand (the "Run now"
+    button on the settings page).
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        return Response(BillingSettingsSerializer(BillingSettings.load()).data)
+
+    def patch(self, request):
+        obj = BillingSettings.load()
+        ser = BillingSettingsSerializer(obj, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data)
+
+
+class AdminBillingRunCycleView(APIView):
+    """Run the billing cycle on demand. Sudo only."""
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request):
+        call_command('run_billing_cycle', force=True)
+        return Response(BillingSettingsSerializer(BillingSettings.load()).data)
 
 
 # ---------- Sudo: plans ----------
@@ -130,7 +163,10 @@ class TenantSubscriptionView(APIView):
             sub = Subscription.objects.select_related('plan').get(store=store)
         except Subscription.DoesNotExist:
             return Response({'detail': 'No subscription found.'}, status=404)
-        return Response(TenantSubscriptionSerializer(sub).data)
+        from .quota import quota_status
+        data = TenantSubscriptionSerializer(sub).data
+        data['quota'] = quota_status(store)
+        return Response(data)
 
 
 class TenantBillingInvoiceViewSet(viewsets.ReadOnlyModelViewSet):

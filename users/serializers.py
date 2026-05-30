@@ -99,5 +99,16 @@ class VendoryaTokenObtainSerializer(TokenObtainPairSerializer):
                 attrs[self.username_field] = matches.first().username
 
         data = super().validate(attrs)
+
+        # Block login when the user's store has been suspended (billing past-due
+        # auto-suspend or a manual sudo suspend). Sudo users (store=None) are exempt.
+        store = getattr(self.user, 'store', None)
+        if store is not None and not store.is_active:
+            from rest_framework import exceptions
+            raise exceptions.AuthenticationFailed(
+                "This store has been suspended. Please contact support.",
+                code='store_suspended',
+            )
+
         data['user'] = UserProfileSerializer(self.user).data
         return data

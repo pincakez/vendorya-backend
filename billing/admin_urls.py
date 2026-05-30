@@ -5,6 +5,8 @@ from .views import (
     AdminSubscriptionPlanViewSet,
     AdminSubscriptionViewSet,
     AdminBillingInvoiceViewSet,
+    AdminBillingSettingsView,
+    AdminBillingRunCycleView,
 )
 
 
@@ -14,5 +16,7 @@ router.register(r'subscriptions', AdminSubscriptionViewSet,     basename='admin-
 router.register(r'invoices',      AdminBillingInvoiceViewSet,   basename='admin-billing-invoice')
 
 urlpatterns = [
+    path('settings/',         AdminBillingSettingsView.as_view(), name='admin-billing-settings'),
+    path('settings/run-cycle/', AdminBillingRunCycleView.as_view(), name='admin-billing-run-cycle'),
     path('', include(router.urls)),
 ]

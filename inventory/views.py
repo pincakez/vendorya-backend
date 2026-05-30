@@ -118,6 +118,8 @@ class ProductViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
+        from billing.quota import enforce_quota
+        enforce_quota(self.request.user.store, 'products')
         serializer.save(store=self.request.user.store)
 
 

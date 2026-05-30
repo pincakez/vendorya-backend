@@ -92,6 +92,8 @@ class BranchViewSet(viewsets.ModelViewSet):
         return Branch.objects.filter(store=self.request.user.store).select_related('address')
 
     def perform_create(self, serializer):
+        from billing.quota import enforce_quota
+        enforce_quota(self.request.user.store, 'branches')
         serializer.save(store=self.request.user.store)
 
 

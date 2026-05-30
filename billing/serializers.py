@@ -1,6 +1,19 @@
 from rest_framework import serializers
 
-from .models import SubscriptionPlan, Subscription, BillingInvoice
+from .models import SubscriptionPlan, Subscription, BillingInvoice, BillingSettings
+
+
+# ---------- Platform billing settings (singleton) ----------
+
+class BillingSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BillingSettings
+        fields = [
+            'trial_length_days', 'grace_days', 'invoice_due_days',
+            'quota_mode', 'nightly_job_enabled', 'last_run_at',
+            'updated_at',
+        ]
+        read_only_fields = ['last_run_at', 'updated_at']
 
 
 # ---------- Plans ----------

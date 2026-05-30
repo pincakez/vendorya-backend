@@ -64,6 +64,8 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         ).prefetch_related('items', 'payments').select_related('customer', 'branch')
 
     def perform_create(self, serializer):
+        from billing.quota import enforce_quota
+        enforce_quota(self.request.user.store, 'invoices')
         invoice = serializer.save(store=self.request.user.store)
         log_activity(
             request=self.request,
