@@ -1,5 +1,5 @@
 from decimal import Decimal
-from django.db.models import Q, Sum, F, ExpressionWrapper, DecimalField
+from django.db.models import Q, Sum, F, Min, Value, OuterRef, Subquery, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets, filters, status
 from rest_framework.views import APIView
@@ -48,7 +48,12 @@ class ProductViewSet(viewsets.ModelViewSet):
     }
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'variants__sku', 'variants__barcode']
-    ordering_fields = ['name', 'created_at']
+    # Server-side sort. FE maps column keys -> these (see Products.vue ORDER_MAP).
+    ordering_fields = ['name', 'supplier__name', 'created_at',
+                       'o_sku', 'o_wholesale', 'o_retail', 'o_profit', 'o_stock']
+
+    # Reserved params that are NOT dynamic attribute filters.
+    _RESERVED_PARAMS = {'search', 'ordering', 'page', 'page_size', 'category'}
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
@@ -61,10 +66,34 @@ class ProductViewSet(viewsets.ModelViewSet):
             'variants', 'variants__stock_levels',
             'variants__attributes', 'variants__attributes__definition',
         )
-        # Dynamic attribute filters: ?season=AW25&gender=Men
+
+        # Sort annotations. Min over variants is fan-out-safe (idempotent); stock
+        # uses a subquery so the Sum isn't multiplied by the variant join.
+        stock_sq = Subquery(
+            ProductVariant.objects.filter(product=OuterRef('pk'))
+            .values('product')
+            .annotate(t=Coalesce(Sum('stock_levels__quantity'), Value(Decimal('0'))))
+            .values('t')[:1]
+        )
+        qs = qs.annotate(
+            o_sku=Min('variants__sku'),
+            o_wholesale=Min('variants__cost_price'),
+            o_retail=Min('variants__sell_price'),
+            o_stock=Coalesce(stock_sq, Value(Decimal('0')), output_field=DecimalField()),
+        ).annotate(
+            o_profit=ExpressionWrapper(F('o_retail') - F('o_wholesale'), output_field=DecimalField()),
+        )
+
         params = self.request.query_params
+
+        # Category quick-filter
+        category = params.get('category')
+        if category:
+            qs = qs.filter(category_id=category)
+
+        # Dynamic attribute filters: ?season=AW25&gender=Men
         for key, value in params.items():
-            if key not in ('search', 'ordering', 'page', 'page_size'):
+            if key not in self._RESERVED_PARAMS:
                 qs = qs.filter(variants__attributes__definition__key=key,
                                variants__attributes__value=value).distinct()
         return qs

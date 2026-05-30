@@ -69,12 +69,13 @@ class ProductListSerializer(serializers.ModelSerializer):
     attributes_summary = serializers.SerializerMethodField()
     default_variant_id = serializers.SerializerMethodField()
     sku_display        = serializers.SerializerMethodField()
+    cost_display       = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'category_name', 'supplier_name',
-            'total_stock', 'price_display', 'profit_display',
+            'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'sku_display',
         ]
 
@@ -102,6 +103,12 @@ class ProductListSerializer(serializers.ModelSerializer):
         if not prices:
             return str(obj.base_price)
         return str(min(prices)) if min(prices) == max(prices) else f"{min(prices)} – {max(prices)}"
+
+    def get_cost_display(self, obj):
+        costs = [v.cost_price for v in obj.variants.all()]
+        if not costs:
+            return "0.00"
+        return str(min(costs)) if min(costs) == max(costs) else f"{min(costs)} – {max(costs)}"
 
     def get_profit_display(self, obj):
         profits = [(v.sell_price - v.cost_price) for v in obj.variants.all()]
