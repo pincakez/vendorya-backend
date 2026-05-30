@@ -39,9 +39,10 @@ class BillingSettings(TimestampedModel):
         max_length=10, choices=QuotaMode.choices, default=QuotaMode.WARN,
         help_text=_("How plan limits are enforced platform-wide."))
 
-    # Nightly job
+    # Nightly job. Default OFF — Vendorya runs the cycle manually via the
+    # "Run cycle now" button. This only gates an external scheduler (none today).
     nightly_job_enabled = models.BooleanField(
-        default=True, help_text=_("When off, run_billing_cycle exits without making changes."))
+        default=False, help_text=_("When off, a scheduled run_billing_cycle exits without making changes. The manual 'Run now' button always works."))
     last_run_at = models.DateTimeField(null=True, blank=True,
                                        help_text=_("Stamped each time run_billing_cycle executes."))
 
