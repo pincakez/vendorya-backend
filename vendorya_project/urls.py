@@ -30,6 +30,7 @@ urlpatterns = [
     # Tenant billing + notifications
     path('api/billing/',       include('billing.tenant_urls')),
     path('api/notifications/', include('notifications.urls')),
+    path('api/smart/',         include('smart_analysis.urls')),
 
     # Auth URLs (login, refresh, logout, 2FA, me, customers, staff)
     path('api/auth/', include('users.urls')),
