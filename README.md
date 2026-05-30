@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo-text.png" alt="Vendorya" width="320" />
+  <img src="logo-text.png" alt="Vendorya" width="320" />
 </p>
 
 <h1 align="center">Vendorya</h1>
@@ -19,7 +19,11 @@
   <img src="https://img.shields.io/badge/Gemini-AI%20admin-8E75FF?logo=googlegemini&logoColor=white" alt="Gemini" />
 </p>
 
-<p align="center"><em>📦 This is the <strong>backend</strong> (Django 6 + DRF + PostgreSQL) of Vendorya. The frontend lives at <a href="https://github.com/pincakez/vendorya-frontend">vendorya-frontend</a>. This README documents the whole platform.</em></p>
+<p align="center"><em>This is the development monorepo. It ships to two GitHub repositories via <code>git subtree</code>: <a href="https://github.com/pincakez/vendorya-backend">vendorya-backend</a> &amp; <a href="https://github.com/pincakez/vendorya-frontend">vendorya-frontend</a>.</em></p>
+
+<p align="center">
+  <a href="https://vendorya.gatesinnov.com"><strong>Live Demo →</strong></a>
+</p>
 
 ---
 
@@ -37,6 +41,7 @@ It is built for real retail accounting: **soft deletes everywhere**, **atomic st
 
 | Area | What you get |
 |---|---|
+| 🎨 **UI** | White + orange store theme · zinc dark mode · collapsible group-card sidebar · split login · global ⌘K search |
 | 🏬 **Multi-tenant** | Shared DB · `store` FK on every model · enforced in ViewSets **and** `TenantContextMiddleware` · UUID primary keys |
 | 📦 **Inventory** | Products, dynamic per-store attributes, variants, SKUs (supplier-prefixed), multi-branch stock levels, categories, suppliers, taxes, stock adjustments |
 | 💵 **Finance** | Sales invoices (draft → posted → void), partial payments, purchases (draft → received), expenses, work shifts + cash drawer, returns/refunds with restock |
@@ -248,6 +253,7 @@ sudo service postgresql start
 
 ## ✦ Roadmap (abridged)
 
+- Product add/edit form (API complete — frontend form not yet built)
 - POS terminal (cart, barcode, receipt printing) + idempotent invoice posting
 - Billing nightly jobs + quota enforcement + payment processor
 - Notification dispatcher + transactional emails
