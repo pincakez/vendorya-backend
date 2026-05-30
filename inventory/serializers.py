@@ -181,12 +181,50 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         return product
 
     def update(self, instance, validated_data):
-        validated_data.pop('attributes', None)
-        validated_data.pop('cost_price', None)
-        validated_data.pop('sell_price', None)
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
+        from django.db import transaction
+        attrs      = validated_data.pop('attributes', None)
+        cost_price = validated_data.pop('cost_price', None)
+        sell_price = validated_data.pop('sell_price', None)
+        # Supplier is locked after creation — the SKU embeds the supplier prefix,
+        # so changing it would invalidate every SKU on this product.
+        validated_data.pop('supplier', None)
+
+        with transaction.atomic():
+            for attr, value in validated_data.items():
+                setattr(instance, attr, value)
+            instance.save()
+
+            # Prices + attributes live on the default (first) variant. Stock
+            # quantity is intentionally NOT touched here — it only moves via
+            # purchases / sales / stock adjustments (each with a reason).
+            variant = instance.variants.first()
+            if variant:
+                if cost_price is not None:
+                    variant.cost_price = cost_price
+                if sell_price is not None:
+                    variant.sell_price = sell_price
+                variant.save()
+
+                if attrs is not None:
+                    for attr in attrs:
+                        defn_id = attr.get('definition') or attr.get('definition_id')
+                        value   = attr.get('value', '')
+                        if not defn_id:
+                            continue
+                        defn = AttributeDefinition.objects.filter(
+                            id=defn_id, store=instance.store
+                        ).first()
+                        if not defn:
+                            continue
+                        if value:
+                            ProductAttribute.objects.update_or_create(
+                                variant=variant, definition=defn,
+                                defaults={'value': value},
+                            )
+                        else:
+                            ProductAttribute.objects.filter(
+                                variant=variant, definition=defn
+                            ).delete()
         return instance
 
 
