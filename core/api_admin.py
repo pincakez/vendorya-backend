@@ -1,7 +1,9 @@
 from django.db.models import Count, Q
+from django.utils import timezone as tz
 from rest_framework import viewsets, filters, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 from .models import Store, Branch, ActivityLog
 from .serializers import AdminActivityLogSerializer
 from users.models import User
@@ -164,4 +166,54 @@ class AdminActivityLogMetaView(APIView):
         return Response({
             'stores':          [{'id': str(s['id']), 'name': s['name']} for s in stores],
             'operation_types': op_types,
+        })
+
+
+class AdminStoreForceLogoutView(APIView):
+    """POST /api/admin/stores/{store_id}/force-logout/
+
+    Kill switch for compromised stores: blacklists every active refresh token
+    for all users in the store. Their next API call will be rejected and they
+    will be forced to log in again from scratch.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request, store_id):
+        try:
+            store = Store.objects.get(pk=store_id, is_deleted=False)
+        except Store.DoesNotExist:
+            return Response({'detail': 'Store not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        user_ids = list(User.objects.filter(store=store).values_list('id', flat=True))
+
+        # All outstanding tokens for this store's users that are still valid
+        # and not already blacklisted.
+        tokens = list(
+            OutstandingToken.objects
+            .filter(user_id__in=user_ids, expires_at__gt=tz.now())
+            .exclude(blacklistedtoken__isnull=False)
+        )
+        count = len(tokens)
+        if count:
+            BlacklistedToken.objects.bulk_create(
+                [BlacklistedToken(token=t) for t in tokens],
+                ignore_conflicts=True,
+            )
+
+        ActivityLog.objects.create(
+            store=store,
+            user=request.user,
+            operation_type=ActivityLog.OperationType.OTHER,
+            action="Force-logout: all store sessions terminated",
+            details={
+                'by': request.user.username,
+                'sessions_killed': count,
+                'users_affected': len(user_ids),
+            },
+        )
+
+        return Response({
+            'detail': f'Terminated {count} active session(s) across {len(user_ids)} user(s).',
+            'sessions_killed': count,
+            'users_affected': len(user_ids),
         })
