@@ -41,6 +41,32 @@ class StoreView(APIView):
         return Response(serializer.data)
 
 
+class StoreLogoView(APIView):
+    """PATCH /api/core/store/logo/ — multipart upload for logo_light and/or logo_dark.
+    Owner only. Accepts fields: logo_light (file), logo_dark (file),
+    clear_logo_light (bool), clear_logo_dark (bool)."""
+    permission_classes = [IsAuthenticated, IsOwner]
+
+    def patch(self, request):
+        if not request.user.store:
+            return _NO_STORE
+        store = request.user.store
+        if request.data.get('clear_logo_light') in (True, 'true', '1'):
+            store.logo_light.delete(save=False)
+            store.logo_light = None
+        if request.data.get('clear_logo_dark') in (True, 'true', '1'):
+            store.logo_dark.delete(save=False)
+            store.logo_dark = None
+        if 'logo_light' in request.FILES:
+            store.logo_light = request.FILES['logo_light']
+        if 'logo_dark' in request.FILES:
+            store.logo_dark = request.FILES['logo_dark']
+        store.save(update_fields=['logo_light', 'logo_dark'])
+        serializer = StoreSerializer(store, context={'request': request})
+        return Response({'logo_light_url': serializer.data['logo_light_url'],
+                         'logo_dark_url':  serializer.data['logo_dark_url']})
+
+
 class StoreSettingsView(APIView):
     """GET = manager+, PATCH = owner only."""
 

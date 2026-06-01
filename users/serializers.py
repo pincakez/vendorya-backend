@@ -14,11 +14,23 @@ class _CurrencyNestedSerializer(serializers.Serializer):
 
 
 class StoreMinimalSerializer(serializers.Serializer):
-    id       = serializers.UUIDField()
-    name     = serializers.CharField()
-    plan     = serializers.CharField()
-    timezone = serializers.CharField()
-    currency = _CurrencyNestedSerializer(allow_null=True)
+    id            = serializers.UUIDField()
+    name          = serializers.CharField()
+    plan          = serializers.CharField()
+    timezone      = serializers.CharField()
+    currency      = _CurrencyNestedSerializer(allow_null=True)
+    logo_light_url = serializers.SerializerMethodField()
+    logo_dark_url  = serializers.SerializerMethodField()
+
+    def _abs(self, obj, field):
+        f = getattr(obj, field, None)
+        if not f:
+            return None
+        req = self.context.get('request')
+        return req.build_absolute_uri(f.url) if req else f.url
+
+    def get_logo_light_url(self, obj): return self._abs(obj, 'logo_light')
+    def get_logo_dark_url(self,  obj): return self._abs(obj, 'logo_dark')
 
 
 class UserProfileSerializer(serializers.ModelSerializer):

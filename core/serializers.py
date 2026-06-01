@@ -23,13 +23,27 @@ class StoreSerializer(serializers.ModelSerializer):
         source='currency', queryset=Currency.objects.filter(is_active=True),
         write_only=True, required=False,
     )
+    logo_light_url = serializers.SerializerMethodField()
+    logo_dark_url  = serializers.SerializerMethodField()
+
+    def _abs(self, obj, field):
+        f = getattr(obj, field)
+        if not f:
+            return None
+        req = self.context.get('request')
+        return req.build_absolute_uri(f.url) if req else f.url
+
+    def get_logo_light_url(self, obj): return self._abs(obj, 'logo_light')
+    def get_logo_dark_url(self,  obj): return self._abs(obj, 'logo_dark')
 
     class Meta:
         model = Store
         fields = ['id', 'name', 'store_code', 'currency', 'currency_id',
                   'default_language', 'timezone', 'plan', 'is_active',
-                  'phone_number', 'whatsapp_number', 'city', 'country']
-        read_only_fields = ['id', 'plan', 'is_active', 'store_code']
+                  'phone_number', 'whatsapp_number', 'city', 'country',
+                  'logo_light_url', 'logo_dark_url']
+        read_only_fields = ['id', 'plan', 'is_active', 'store_code',
+                            'logo_light_url', 'logo_dark_url']
 
 
 class BranchSerializer(serializers.ModelSerializer):

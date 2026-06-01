@@ -100,6 +100,13 @@ class Store(TimestampedModel, SoftDeleteModel):
     city    = models.CharField(_("City"),    max_length=100, blank=True, default='')
     country = models.CharField(_("Country"), max_length=100, blank=True, default='Egypt')
 
+    # Branding logos (480×112px recommended). Two variants so the app can
+    # switch automatically when the user toggles dark/light mode.
+    logo_light = models.ImageField(upload_to='store_logos/', null=True, blank=True,
+                                   help_text=_("Store logo for light mode (recommended 480×112 px, PNG/SVG)."))
+    logo_dark  = models.ImageField(upload_to='store_logos/', null=True, blank=True,
+                                   help_text=_("Store logo for dark mode (recommended 480×112 px, PNG/SVG)."))
+
     # Localization. Server clock is the source of truth — store just picks
     # which IANA zone to render in. Defaults to Cairo.
     currency = models.ForeignKey(Currency, on_delete=models.PROTECT, related_name='stores',
