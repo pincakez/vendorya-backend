@@ -85,57 +85,61 @@ class GeminiService:
 
     # ---- model catalog ----
 
-    # Static, hand-maintained catalog of the models we actually use.
-    # WHY static: on the free tier the live `/v1beta/models?key=` list endpoint
-    # is unreliable — it intermittently omits preview / allowlisted models (e.g.
-    # the gemini-3.x family) even though generateContent on them works fine.
-    # Reconciling against the live list therefore deletes good models and wipes
-    # the rate limits. So this catalog is the source of truth; Refresh (manual or
-    # the 24h job) just re-asserts it. Edit THIS dict when Google changes the lineup.
-    #   model_id: (rpm, rpd, tpm, thinking, grounding, vision, audio, display_name)
-    MODEL_CATALOG = {
-        'gemini-3.5-flash':       (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 3.5 Flash'),
-        'gemini-3-flash-preview': (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 3 Flash (Preview)'),
-        'gemini-3.1-flash-lite':  (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 3.1 Flash-Lite'),
-        'gemini-2.5-pro':         (2,    50,    32_000, True,  True, True, True, 'Gemini 2.5 Pro'),
-        'gemini-2.5-flash':       (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 2.5 Flash'),
-        'gemini-2.5-flash-lite':  (15, 1500, 1_000_000, False, True, True, True, 'Gemini 2.5 Flash-Lite'),
-    }
+    # Names that are NOT regular text chat models — skip them on discovery.
+    # (image generation, text-to-speech, embeddings, realtime/bidi, special tool builds)
+    _NON_CHAT_HINTS = ('image', 'tts', 'embedding', 'aqa', 'live', 'customtools',
+                       'vision', 'robotics', 'computer-use')
 
     def refresh_models(self) -> Dict[str, Any]:
-        """Reconcile AIModelCache against the static MODEL_CATALOG.
+        """Ask Google (via the SDK) for its live model list and mirror it locally.
 
-        Free-tier-safe: does NOT depend on the live `/models` list (which flakily
-        omits preview models). It only PINGS the API first to confirm the key is
-        valid/reachable, then writes the known-good catalog. Returns a diff summary
-        for the C4 refresh modal: {'added': [...], 'kept': [...], 'removed': [...]}.
+        Source of truth = Google's own `models.list()`. We keep every real Gemini
+        chat model (supports generateContent, not an image/tts/embedding/realtime
+        variant), under its REAL name. New models from Google appear automatically;
+        deprecated ones disappear automatically. No hand-maintained list, and we
+        deliberately do NOT track RPM/RPD (those aren't in the API — they depend on
+        the billing tier — so they're left blank rather than faked).
+
+        Returns the diff for the refresh modal: {'added': [...], 'kept': [...], 'removed': [...]}.
         """
-        # Confirm the key works before touching the cache — but don't let a flaky
-        # list response decide which models exist.
-        health = self.ping()
-        if not health.get('ok'):
-            raise GeminiError(f"Gemini key/API unreachable: {health.get('error', 'unknown error')}")
+        try:
+            remote = list(self.client.models.list())
+        except Exception as e:  # noqa: BLE001 — bad key / network → surface clearly
+            raise GeminiError(f"Couldn't reach Gemini to list models: {e}") from e
 
         seen_ids: List[str] = []
         added: List[str] = []
         kept: List[str] = []
 
-        for model_id, (rpm, rpd, tpm, thinking, grounding, vision, audio, display) in self.MODEL_CATALOG.items():
+        for m in remote:
+            raw_name = getattr(m, 'name', '') or ''
+            model_id = raw_name.split('/', 1)[1] if raw_name.startswith('models/') else raw_name
+            if not model_id or 'gemini' not in model_id.lower():
+                continue
+            actions = getattr(m, 'supported_actions', None) or []
+            if 'generateContent' not in actions:
+                continue
+            low = model_id.lower()
+            if any(hint in low for hint in self._NON_CHAT_HINTS):
+                continue
+
             seen_ids.append(model_id)
             _, created = AIModelCache.objects.update_or_create(
                 model_id=model_id,
                 defaults=dict(
-                    display_name=display,
-                    rpm=rpm, rpd=rpd, tokens=tpm,
-                    supports_thinking=thinking,
-                    supports_grounding=grounding,
-                    supports_vision=vision,
-                    supports_audio=audio,
+                    display_name=getattr(m, 'display_name', '') or model_id,
+                    description=getattr(m, 'description', '') or '',
+                    tokens=getattr(m, 'input_token_limit', None),   # real context window
+                    rpm=None, rpd=None,                              # not exposed by the API
+                    supports_thinking='lite' not in low,            # lites generally can't think
+                    supports_grounding=True,
+                    supports_vision=True,
+                    supports_audio=True,
                 ),
             )
             (added if created else kept).append(model_id)
 
-        # Drop anything cached that's no longer in the catalog.
+        # Anything we had cached that Google no longer lists → drop it.
         removed_qs = AIModelCache.objects.exclude(model_id__in=seen_ids)
         removed = list(removed_qs.values_list('model_id', flat=True))
         removed_qs.delete()
