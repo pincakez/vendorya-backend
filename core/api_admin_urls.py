@@ -5,6 +5,7 @@ from .api_admin import (
     AdminActivityLogViewSet, AdminActivityLogMetaView,
     AdminStoreCodeCheckView, AdminStoreForceLogoutView,
 )
+from .api_admin_trash import AdminTrashListView, AdminTrashRestoreView
 
 router = DefaultRouter()
 router.register(r'stores',         AdminStoreViewSet,        basename='admin-store')
@@ -16,5 +17,7 @@ urlpatterns = [
     path('activity-logs/meta/', AdminActivityLogMetaView.as_view(), name='admin-activity-log-meta'),
     path('stores/check-code/',  AdminStoreCodeCheckView.as_view(),  name='admin-store-check-code'),
     path('stores/<uuid:store_id>/force-logout/', AdminStoreForceLogoutView.as_view(), name='admin-store-force-logout'),
+    path('trash/',         AdminTrashListView.as_view(),    name='admin-trash-list'),
+    path('trash/restore/', AdminTrashRestoreView.as_view(), name='admin-trash-restore'),
     path('', include(router.urls)),
 ]

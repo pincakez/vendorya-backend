@@ -94,7 +94,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         fields = [
             'allow_negative_stock', 'enable_agel_selling',
             'decimals', 'thousands_separator',
-            'tax_id', 'commercial_reg',
+            'tax_id', 'print_tax_id', 'commercial_reg',
             'receipt_header', 'receipt_footer',
             'default_tax',
             'product_numbering_mode',

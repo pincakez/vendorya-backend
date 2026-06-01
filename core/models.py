@@ -207,6 +207,10 @@ class StoreSettings(TimestampedModel):
 
     # 4. Legal & Receipt Info
     tax_id = models.CharField(_("Tax ID / Betaka"), max_length=50, blank=True)
+    print_tax_id = models.BooleanField(
+        _("Print Tax ID on invoices"), default=True,
+        help_text=_("When off, the Tax ID is omitted entirely from printed invoices "
+                    "(no 'N/A' placeholder). Turn off if the store is not tax-registered."))
     commercial_reg = models.CharField(_("Commercial Reg / Sogel"), max_length=50, blank=True)
     receipt_header = models.TextField(_("Receipt Header"), blank=True, help_text="Text to appear at the top of the receipt.")
     receipt_footer = models.TextField(_("Receipt Footer"), blank=True, help_text="Text to appear at the bottom (e.g., Return Policy).")

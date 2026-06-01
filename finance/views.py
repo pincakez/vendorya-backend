@@ -54,6 +54,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         'partial_update': 'MANAGER',
         'destroy':        'MANAGER',
         'void':           'MANAGER',
+        'print_data':     'CASHIER',
     }
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['date', 'created_at', 'grand_total', 'invoice_number']
@@ -106,6 +107,72 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             },
         )
         return Response(SalesInvoiceSerializer(invoice).data)
+
+    @action(detail=True, methods=['get'], url_path='print-data')
+    def print_data(self, request, pk=None):
+        """Fully-resolved payload for the printable invoice — store header,
+        legal info (Tax ID gated by StoreSettings.print_tax_id), customer,
+        line items with product names, and payment breakdown. One round-trip
+        so the print view never has to stitch lookups together."""
+        invoice = self.get_object()
+        store = invoice.store
+        settings_obj = getattr(store, 'settings', None)
+
+        currency = None
+        if getattr(store, 'currency', None):
+            currency = {
+                'symbol': store.currency.symbol,
+                'position': store.currency.position,
+            }
+
+        items = [{
+            'name': item.variant.product.name,
+            'sku': item.variant.sku,
+            'quantity': str(item.quantity),
+            'unit_price': str(item.unit_price),
+            'tax_amount': str(item.tax_amount),
+            'total': str(item.total),
+        } for item in invoice.items.select_related('variant__product').all()]
+
+        payments = [{
+            'method': p.method.name,
+            'amount': str(p.amount),
+        } for p in invoice.payments.select_related('method').all()]
+
+        # Tax ID only travels to the client when the store opts in — off means
+        # it is omitted entirely, not blanked to "N/A".
+        show_tax_id = bool(settings_obj and settings_obj.print_tax_id)
+
+        return Response({
+            'invoice': {
+                'invoice_number': invoice.invoice_number,
+                'status': invoice.status,
+                'date': invoice.date,
+                'subtotal': str(invoice.subtotal),
+                'tax_total': str(invoice.tax_total),
+                'discount': str(invoice.discount),
+                'grand_total': str(invoice.grand_total),
+                'paid_amount': str(invoice.paid_amount),
+            },
+            'store': {
+                'name': store.name,
+                'phone_number': getattr(store, 'phone_number', '') or '',
+                'city': getattr(store, 'city', '') or '',
+                'country': getattr(store, 'country', '') or '',
+            },
+            'branch': {'name': invoice.branch.name} if invoice.branch else None,
+            'customer': {'name': invoice.customer.name} if invoice.customer else None,
+            'legal': {
+                'tax_id': settings_obj.tax_id if (show_tax_id and settings_obj) else '',
+                'show_tax_id': show_tax_id,
+                'commercial_reg': settings_obj.commercial_reg if settings_obj else '',
+                'receipt_header': settings_obj.receipt_header if settings_obj else '',
+                'receipt_footer': settings_obj.receipt_footer if settings_obj else '',
+            },
+            'currency': currency,
+            'items': items,
+            'payments': payments,
+        })
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
