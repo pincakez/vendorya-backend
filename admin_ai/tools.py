@@ -401,9 +401,9 @@ def list_branches(context, store_id=None):
             'low_stock_only': {'type': 'boolean',
                                'description': 'Only products with any stock level <= 5.'},
             'attrs': {
-                'type': 'object',
-                'description': 'Dynamic attribute filters, e.g. {"season":"AW25","gender":"Men"}.',
-                'additionalProperties': {'type': 'string'},
+                'type': 'string',
+                'description': 'Dynamic attribute filters as a JSON object string, '
+                               'e.g. {"season":"AW25","gender":"Men"}.',
             },
             'limit': {'type': 'integer'},
         },
@@ -426,6 +426,12 @@ def list_products(context, store_id=None, category_id=None, supplier_id=None,
             | Q(variants__sku__icontains=search)
             | Q(variants__barcode__icontains=search)
         ).distinct()
+    if isinstance(attrs, str) and attrs.strip():
+        import json
+        try:
+            attrs = json.loads(attrs)
+        except ValueError:
+            attrs = None
     if isinstance(attrs, dict):
         for k, v in attrs.items():
             qs = qs.filter(

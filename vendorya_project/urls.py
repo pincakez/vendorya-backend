@@ -56,9 +56,17 @@ def serve_dist_file(request, filename):
         if filename.endswith(('.js', '.mjs')):
             content_type = 'text/javascript'
         resp = FileResponse(open(dist_file, 'rb'), content_type=content_type or 'application/octet-stream')
-        # The SW + manifest must never be served stale (Cloudflare/browser),
-        # or updates won't roll out. Allow root scope for the worker.
-        if filename in ('sw.js', 'registerSW.js') or filename.endswith('.webmanifest'):
+        # The SW + manifest + brand icons must never be served stale
+        # (Cloudflare/browser), or updates won't roll out. Allow root scope
+        # for the worker.
+        _never_stale = (
+            'sw.js', 'registerSW.js',
+            'favicon.ico', 'favicon.png',
+            'favicon-16x16.png', 'favicon-32x32.png', 'favicon-48x48.png',
+            'apple-touch-icon.png',
+            'logo-text-dark-mode.png', 'logo-text-light-mode.png',
+        )
+        if filename in _never_stale or filename.endswith('.webmanifest'):
             resp['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         if filename == 'sw.js':
             resp['Service-Worker-Allowed'] = '/'

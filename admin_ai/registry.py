@@ -60,8 +60,28 @@ class ToolSpec:
         return {
             'name': self.name,
             'description': self.description,
-            'parameters': self.parameters,
+            'parameters': _sanitize_schema(self.parameters),
         }
+
+
+# Keys that are valid JSON-Schema but NOT accepted by Gemini's FunctionDeclaration
+# schema. Gemini 400s on any of these (e.g. `additionalProperties`). Strip them
+# recursively so a tool author can't accidentally break the whole tools payload.
+_GEMINI_UNSUPPORTED_KEYS = frozenset({
+    'additionalProperties', 'additional_properties',
+    '$schema', '$ref', '$defs', 'definitions',
+    'patternProperties', 'unevaluatedProperties',
+})
+
+
+def _sanitize_schema(node):
+    """Recursively drop schema keys Gemini's function-calling API rejects."""
+    if isinstance(node, dict):
+        return {k: _sanitize_schema(v) for k, v in node.items()
+                if k not in _GEMINI_UNSUPPORTED_KEYS}
+    if isinstance(node, list):
+        return [_sanitize_schema(v) for v in node]
+    return node
 
 
 class ToolRegistry:
