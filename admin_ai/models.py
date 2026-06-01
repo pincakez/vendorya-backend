@@ -28,6 +28,14 @@ class AISettings(TimestampedModel):
     id           = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     gemini_api_key = models.CharField(_("Gemini API Key"), max_length=200, blank=True, default='')
 
+    # Safe, code-free knobs for the auto model-discovery (edited on the Misc page).
+    # One model id per line (or comma-separated). Matched against Google's live list.
+    extra_models  = models.TextField(_("Extra models to include"), blank=True, default='',
+        help_text=_("Force these model ids into the dropdown even if auto-discovery would skip them "
+                    "(must still exist in Google's live list). One per line."))
+    hidden_models = models.TextField(_("Models to hide"), blank=True, default='',
+        help_text=_("Hide these model ids from the dropdown. Substring match. One per line."))
+
     class Meta:
         verbose_name = _("AI Settings")
         verbose_name_plural = _("AI Settings")
@@ -35,6 +43,22 @@ class AISettings(TimestampedModel):
     def save(self, *args, **kwargs):
         self.id = 1
         super().save(*args, **kwargs)
+
+    @staticmethod
+    def _parse_list(raw):
+        """Split a textarea blob (newlines and/or commas) into clean lower-cased ids."""
+        if not raw:
+            return []
+        parts = raw.replace(',', '\n').splitlines()
+        return [p.strip().lower() for p in parts if p.strip()]
+
+    @property
+    def extra_model_list(self):
+        return self._parse_list(self.extra_models)
+
+    @property
+    def hidden_model_list(self):
+        return self._parse_list(self.hidden_models)
 
     @classmethod
     def load(cls):

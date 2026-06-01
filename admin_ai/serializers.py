@@ -13,7 +13,8 @@ class AISettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model  = AISettings
-        fields = ['has_key', 'masked_key', 'gemini_api_key', 'updated_at']
+        fields = ['has_key', 'masked_key', 'gemini_api_key',
+                  'extra_models', 'hidden_models', 'updated_at']
         read_only_fields = ['updated_at']
 
     def get_masked_key(self, obj):

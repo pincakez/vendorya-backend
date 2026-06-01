@@ -107,6 +107,11 @@ class GeminiService:
         except Exception as e:  # noqa: BLE001 — bad key / network → surface clearly
             raise GeminiError(f"Couldn't reach Gemini to list models: {e}") from e
 
+        # Code-free overrides from the Misc page.
+        settings_row = AISettings.load()
+        extra  = set(settings_row.extra_model_list)   # force-include these
+        hidden = settings_row.hidden_model_list       # substring-hide these
+
         seen_ids: List[str] = []
         added: List[str] = []
         kept: List[str] = []
@@ -114,14 +119,24 @@ class GeminiService:
         for m in remote:
             raw_name = getattr(m, 'name', '') or ''
             model_id = raw_name.split('/', 1)[1] if raw_name.startswith('models/') else raw_name
-            if not model_id or 'gemini' not in model_id.lower():
-                continue
-            actions = getattr(m, 'supported_actions', None) or []
-            if 'generateContent' not in actions:
+            if not model_id:
                 continue
             low = model_id.lower()
-            if any(hint in low for hint in self._NON_CHAT_HINTS):
+
+            # Explicit hide always wins.
+            if any(h in low for h in hidden):
                 continue
+
+            # A model the user pinned skips the auto-filters; everything else
+            # must look like a normal Gemini chat model.
+            if low not in extra:
+                if 'gemini' not in low:
+                    continue
+                actions = getattr(m, 'supported_actions', None) or []
+                if 'generateContent' not in actions:
+                    continue
+                if any(hint in low for hint in self._NON_CHAT_HINTS):
+                    continue
 
             seen_ids.append(model_id)
             _, created = AIModelCache.objects.update_or_create(
