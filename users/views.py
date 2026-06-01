@@ -76,17 +76,21 @@ class VendoryaTokenObtainView(TokenObtainPairView):
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
 
-        # 5. Success -> tokens. Refresh goes in the body (dual-support) AND as an
-        #    httpOnly cookie (phased migration).
-        data = serializer.validated_data
+        # 5. Success -> tokens. The refresh token goes ONLY into the httpOnly
+        #    cookie — never the response body — so page JS (XSS) can't read it.
+        #    The body keeps just the short-lived access token + user payload.
+        data = dict(serializer.validated_data)
+        refresh = data.pop('refresh', None)
         response = Response(data, status=status.HTTP_200_OK)
-        set_refresh_cookie(response, data['refresh'])
+        if refresh:
+            set_refresh_cookie(response, refresh)
         return response
 
 
 class CookieTokenRefreshView(TokenRefreshView):
-    """Refresh accepts the token from the body OR the httpOnly cookie, and
-    re-sets the rotated refresh cookie."""
+    """Refresh reads the token from the httpOnly cookie (body still accepted as a
+    fallback), rotates it into a new cookie, and returns ONLY the access token in
+    the body — the rotated refresh token never reaches page JS."""
     authentication_classes = []
     permission_classes = [AllowAny]
 
@@ -99,8 +103,12 @@ class CookieTokenRefreshView(TokenRefreshView):
                 data['refresh'] = cookie
                 request._full_data = data
         response = super().post(request, *args, **kwargs)
-        if response.status_code == 200 and response.data.get('refresh'):
-            set_refresh_cookie(response, response.data['refresh'])
+        if response.status_code == 200:
+            # ROTATE_REFRESH_TOKENS returns a new refresh token — move it into the
+            # cookie and strip it from the body so JS only ever sees the access token.
+            rotated = response.data.pop('refresh', None)
+            if rotated:
+                set_refresh_cookie(response, rotated)
         return response
 
 

@@ -255,9 +255,10 @@ AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"]]  # lock the user+IP pair
 AXES_IPWARE_META_PRECEDENCE_ORDER = ('HTTP_CF_CONNECTING_IP', 'REMOTE_ADDR')
 AXES_LOCKOUT_CALLABLE = 'users.lockout.lockout_response'  # JSON 429 for the SPA
 
-# --- Refresh-token cookie (phased httpOnly migration) ------------------------
-# Refresh token is ALSO set as an httpOnly cookie. Body still carries it this
-# phase (dual-support) so the existing localStorage path keeps working.
+# --- Refresh-token cookie (httpOnly migration COMPLETE — #10) -----------------
+# The refresh token lives ONLY in this httpOnly cookie — it is never returned in
+# a response body, so page JS (and any XSS) can't read it. The access token is
+# short-lived and held in browser memory only (frontend api/token.js).
 REFRESH_COOKIE_NAME = 'vendorya_refresh'
 REFRESH_COOKIE_PATH = '/api/auth/'
 REFRESH_COOKIE_SAMESITE = 'Strict'
