@@ -85,59 +85,57 @@ class GeminiService:
 
     # ---- model catalog ----
 
+    # Static, hand-maintained catalog of the models we actually use.
+    # WHY static: on the free tier the live `/v1beta/models?key=` list endpoint
+    # is unreliable — it intermittently omits preview / allowlisted models (e.g.
+    # the gemini-3.x family) even though generateContent on them works fine.
+    # Reconciling against the live list therefore deletes good models and wipes
+    # the rate limits. So this catalog is the source of truth; Refresh (manual or
+    # the 24h job) just re-asserts it. Edit THIS dict when Google changes the lineup.
+    #   model_id: (rpm, rpd, tpm, thinking, grounding, vision, audio, display_name)
+    MODEL_CATALOG = {
+        'gemini-3.5-flash':       (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 3.5 Flash'),
+        'gemini-3-flash-preview': (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 3 Flash (Preview)'),
+        'gemini-3.1-flash-lite':  (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 3.1 Flash-Lite'),
+        'gemini-2.5-pro':         (2,    50,    32_000, True,  True, True, True, 'Gemini 2.5 Pro'),
+        'gemini-2.5-flash':       (15, 1500, 1_000_000, True,  True, True, True, 'Gemini 2.5 Flash'),
+        'gemini-2.5-flash-lite':  (15, 1500, 1_000_000, False, True, True, True, 'Gemini 2.5 Flash-Lite'),
+    }
+
     def refresh_models(self) -> Dict[str, Any]:
-        """Pull the model list from Gemini and reconcile into AIModelCache.
+        """Reconcile AIModelCache against the static MODEL_CATALOG.
 
-        Only keeps models that support generateContent (chat-capable).
-        Returns a diff summary suitable for the C4 refresh modal:
-            {'added': [...], 'removed': [...], 'kept': [...]}
+        Free-tier-safe: does NOT depend on the live `/models` list (which flakily
+        omits preview models). It only PINGS the API first to confirm the key is
+        valid/reachable, then writes the known-good catalog. Returns a diff summary
+        for the C4 refresh modal: {'added': [...], 'kept': [...], 'removed': [...]}.
         """
-        try:
-            resp = requests.get(self.MODELS_URL, params={'key': self.api_key}, timeout=15)
-            resp.raise_for_status()
-            all_models = resp.json().get('models', [])
-        except Exception as e:  # noqa: BLE001
-            raise GeminiError(f"Failed to list Gemini models: {e}") from e
-
-        # Temporary whitelist — swap for dynamic discovery once confirmed.
-        FREE_CAPABLE = {
-            'models/gemini-2.5-flash',
-            'models/gemini-2.5-pro',
-            'models/gemini-2.5-flash-lite',
-            'models/gemini-3.1-flash-lite',
-            'models/gemini-3.5-flash',
-        }
-        remote = [m for m in all_models if m.get('name') in FREE_CAPABLE]
+        # Confirm the key works before touching the cache — but don't let a flaky
+        # list response decide which models exist.
+        health = self.ping()
+        if not health.get('ok'):
+            raise GeminiError(f"Gemini key/API unreachable: {health.get('error', 'unknown error')}")
 
         seen_ids: List[str] = []
         added: List[str] = []
         kept: List[str] = []
 
-        for m in remote:
-            # REST API returns .name like 'models/gemini-2.5-flash'.
-            raw_name = m.get('name', '')
-            model_id = raw_name.split('/', 1)[1] if raw_name.startswith('models/') else raw_name
-            if not model_id:
-                continue
+        for model_id, (rpm, rpd, tpm, thinking, grounding, vision, audio, display) in self.MODEL_CATALOG.items():
             seen_ids.append(model_id)
-
-            supports_vision = 'gemini' in model_id.lower()
-
-            defaults = dict(
-                display_name=m.get('displayName') or model_id,
-                description=m.get('description') or '',
-                supports_vision=supports_vision,
-                supports_audio=supports_vision,
-                supports_thinking='thinking' in model_id.lower(),
-                supports_grounding=True,
-            )
-            row, created = AIModelCache.objects.update_or_create(
+            _, created = AIModelCache.objects.update_or_create(
                 model_id=model_id,
-                defaults=defaults,
+                defaults=dict(
+                    display_name=display,
+                    rpm=rpm, rpd=rpd, tokens=tpm,
+                    supports_thinking=thinking,
+                    supports_grounding=grounding,
+                    supports_vision=vision,
+                    supports_audio=audio,
+                ),
             )
             (added if created else kept).append(model_id)
 
-        # Anything we have cached but the API no longer lists.
+        # Drop anything cached that's no longer in the catalog.
         removed_qs = AIModelCache.objects.exclude(model_id__in=seen_ids)
         removed = list(removed_qs.values_list('model_id', flat=True))
         removed_qs.delete()
