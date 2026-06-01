@@ -210,3 +210,27 @@ class StockAdjustment(TimestampedModel):
         stock, created = StockLevel.objects.get_or_create(variant=self.variant, branch=self.branch)
         stock.quantity += self.quantity_change
         stock.save()
+
+
+# --- 7. STOCK TRANSFERS ---
+class StockTransfer(TimestampedModel):
+    """Move stock from one branch to another — instant, no pending state."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='stock_transfers')
+    from_branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='transfers_out')
+    to_branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='transfers_in')
+    transferred_by = models.ForeignKey('users.User', on_delete=models.PROTECT)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Transfer {self.from_branch} → {self.to_branch} ({self.created_at:%Y-%m-%d})"
+
+
+class StockTransferItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name='items')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    quantity = models.DecimalField(max_digits=10, decimal_places=3)

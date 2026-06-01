@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ProductViewSet, ProductVariantViewSet,
     CategoryViewSet, SupplierViewSet, AttributeDefinitionViewSet, TaxViewSet,
-    StockAdjustmentViewSet, SupplierPrefixCheckView,
+    StockAdjustmentViewSet, StockTransferViewSet, SupplierPrefixCheckView,
 )
 
 router = DefaultRouter()
@@ -15,6 +15,7 @@ router.register(r'attributes',            AttributeDefinitionViewSet, basename='
 router.register(r'attribute-definitions', AttributeDefinitionViewSet, basename='attribute-definition-alias')
 router.register(r'taxes',       TaxViewSet,                 basename='tax')
 router.register(r'adjustments', StockAdjustmentViewSet,    basename='adjustment')
+router.register(r'transfers',   StockTransferViewSet,      basename='transfer')
 
 urlpatterns = [
     path('suppliers/check-prefix/', SupplierPrefixCheckView.as_view(), name='supplier-check-prefix'),

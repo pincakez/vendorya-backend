@@ -48,7 +48,53 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
             for item_data in items_data:
                 SalesInvoiceItem.objects.create(invoice=invoice, **item_data)
             self._recalculate(invoice)
+        self._check_credit_policy(invoice)
         return invoice
+
+    @staticmethod
+    def _check_credit_policy(invoice):
+        """After posting: if unpaid balance exceeds customer credit limit, enforce policy."""
+        from decimal import Decimal
+        unpaid = invoice.grand_total - invoice.paid_amount
+        if unpaid <= 0:
+            return  # fully paid — no credit involved
+
+        customer = invoice.customer
+        store = invoice.store
+        try:
+            settings = store.settings
+        except Exception:
+            return
+
+        effective_limit = customer.credit_limit
+        if effective_limit is None:
+            effective_limit = settings.default_credit_limit
+        if effective_limit is None:
+            return  # no limit configured
+
+        new_balance = customer.balance + unpaid
+        if new_balance <= effective_limit:
+            return
+
+        policy = settings.credit_policy
+        if policy == 'BLOCK':
+            raise serializers.ValidationError(
+                f"Credit limit exceeded for {customer.name}. "
+                f"Limit: {effective_limit}, would-be balance: {new_balance}."
+            )
+        if policy == 'WARN':
+            from notifications.dispatcher import send_notification
+            from notifications.models import Notification
+            send_notification(
+                store=store,
+                title=f"Credit limit exceeded: {customer.name}",
+                body=(
+                    f"Invoice #{invoice.invoice_number} — unpaid {unpaid}. "
+                    f"New balance {new_balance} exceeds limit {effective_limit}."
+                ),
+                priority=Notification.Priority.WARNING,
+                link="/people/customers",
+            )
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)

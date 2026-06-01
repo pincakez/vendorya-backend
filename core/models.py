@@ -197,6 +197,21 @@ class StoreSettings(TimestampedModel):
 
     # 2. Sales Rules
     enable_agel_selling = models.BooleanField(default=True, help_text="Allow selling on credit (Customer Debt).")
+
+    class CreditPolicy(models.TextChoices):
+        ALLOW = 'ALLOW', _('Allow — no enforcement')
+        WARN  = 'WARN',  _('Warn — allow but notify store owner')
+        BLOCK = 'BLOCK', _('Block — reject the sale')
+
+    credit_policy = models.CharField(
+        _("Credit Policy"), max_length=5,
+        choices=CreditPolicy.choices, default=CreditPolicy.ALLOW,
+    )
+    default_credit_limit = models.DecimalField(
+        _("Default Credit Limit"), max_digits=12, decimal_places=2,
+        null=True, blank=True,
+        help_text=_("Max unpaid balance a customer may carry. Null = no limit."),
+    )
     default_tax = models.ForeignKey('inventory.Tax', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
 
     # 3. Number formatting (user-facing display rules)

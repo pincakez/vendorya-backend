@@ -40,6 +40,11 @@ class Customer(TimestampedModel, SoftDeleteModel):
     
     # NEW: Track Debt
     balance = models.DecimalField(_("Current Balance"), max_digits=12, decimal_places=2, default=0.00, help_text="Positive = They owe us. Negative = We owe them.")
+    credit_limit = models.DecimalField(
+        _("Credit Limit"), max_digits=12, decimal_places=2,
+        null=True, blank=True,
+        help_text=_("Per-customer override. Null = use store default."),
+    )
 
     class Meta:
         verbose_name = _("Customer")

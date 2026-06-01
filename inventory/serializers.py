@@ -2,7 +2,8 @@ from rest_framework import serializers
 from core.field_visibility import FieldVisibilityMixin
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
-    ProductVariant, ProductAttribute, StockLevel, Tax, StockAdjustment
+    ProductVariant, ProductAttribute, StockLevel, Tax, StockAdjustment,
+    StockTransfer, StockTransferItem,
 )
 
 # --- BASIC SERIALIZERS ---
@@ -248,3 +249,81 @@ class StockAdjustmentSerializer(serializers.ModelSerializer):
     def get_adjusted_by_name(self, obj):
         u = obj.adjusted_by
         return u.get_full_name() or u.username
+
+
+# --- STOCK TRANSFER SERIALIZERS ---
+class StockTransferItemSerializer(serializers.ModelSerializer):
+    variant_sku  = serializers.CharField(source='variant.sku', read_only=True)
+    product_name = serializers.CharField(source='variant.product.name', read_only=True)
+
+    class Meta:
+        model = StockTransferItem
+        fields = ['id', 'variant', 'variant_sku', 'product_name', 'quantity']
+        read_only_fields = ['id']
+
+
+class StockTransferSerializer(serializers.ModelSerializer):
+    items               = StockTransferItemSerializer(many=True)
+    from_branch_name    = serializers.CharField(source='from_branch.name', read_only=True)
+    to_branch_name      = serializers.CharField(source='to_branch.name', read_only=True)
+    transferred_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockTransfer
+        fields = [
+            'id', 'from_branch', 'from_branch_name',
+            'to_branch', 'to_branch_name',
+            'transferred_by', 'transferred_by_name',
+            'notes', 'items', 'created_at',
+        ]
+        read_only_fields = ['id', 'transferred_by', 'created_at']
+
+    def get_transferred_by_name(self, obj):
+        u = obj.transferred_by
+        return u.get_full_name() or u.username
+
+    def validate(self, data):
+        if data['from_branch'] == data['to_branch']:
+            raise serializers.ValidationError("Source and destination branch must be different.")
+        items = data.get('items', [])
+        if not items:
+            raise serializers.ValidationError("At least one item is required.")
+        for item in items:
+            if item['quantity'] <= 0:
+                raise serializers.ValidationError("All quantities must be greater than zero.")
+        return data
+
+    def create(self, validated_data):
+        from django.db import transaction
+        from inventory.models import StockLevel
+        items_data = validated_data.pop('items')
+        with transaction.atomic():
+            # Validate sufficient stock before touching anything
+            for item_data in items_data:
+                sl = StockLevel.objects.select_for_update().filter(
+                    variant=item_data['variant'],
+                    branch=validated_data['from_branch'],
+                ).first()
+                available = sl.quantity if sl else 0
+                if available < item_data['quantity']:
+                    raise serializers.ValidationError(
+                        f"Insufficient stock for {item_data['variant'].sku}: "
+                        f"available {available}, requested {item_data['quantity']}."
+                    )
+
+            transfer = StockTransfer.objects.create(**validated_data)
+            for item_data in items_data:
+                StockTransferItem.objects.create(transfer=transfer, **item_data)
+                # Deduct from source
+                src, _ = StockLevel.objects.get_or_create(
+                    variant=item_data['variant'], branch=transfer.from_branch
+                )
+                src.quantity -= item_data['quantity']
+                src.save()
+                # Add to destination
+                dst, _ = StockLevel.objects.get_or_create(
+                    variant=item_data['variant'], branch=transfer.to_branch
+                )
+                dst.quantity += item_data['quantity']
+                dst.save()
+        return transfer

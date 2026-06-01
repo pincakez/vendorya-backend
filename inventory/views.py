@@ -6,12 +6,12 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from users.permissions import RoleScopedPermission, IsManagerOrAbove
-from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment
+from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment, StockTransfer
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer, ProductWriteSerializer,
     ProductVariantSerializer,
     CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer, TaxSerializer,
-    StockAdjustmentSerializer,
+    StockAdjustmentSerializer, StockTransferSerializer,
 )
 from core.activity import log_activity
 from core.models import ActivityLog
@@ -263,5 +263,44 @@ class StockAdjustmentViewSet(viewsets.ModelViewSet):
                 'product': adjustment.variant.product.name,
                 'change': str(adjustment.quantity_change),
                 'reason': adjustment.reason,
+            },
+        )
+
+
+class StockTransferViewSet(viewsets.ModelViewSet):
+    serializer_class = StockTransferSerializer
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':     'ADMIN',
+        'retrieve': 'ADMIN',
+        'create':   'ADMIN',
+    }
+    http_method_names = ['get', 'post', 'head', 'options']  # immutable ledger
+
+    def get_queryset(self):
+        return (
+            StockTransfer.objects
+            .filter(store=self.request.user.store)
+            .prefetch_related('items__variant__product')
+            .select_related('from_branch', 'to_branch', 'transferred_by')
+        )
+
+    def perform_create(self, serializer):
+        transfer = serializer.save(
+            store=self.request.user.store,
+            transferred_by=self.request.user,
+        )
+        log_activity(
+            request=self.request,
+            action=f"Stock transfer: {transfer.from_branch.name} → {transfer.to_branch.name} ({transfer.items.count()} item(s))",
+            op_type=ActivityLog.OperationType.ADJUSTMENT,
+            details={
+                'transfer_id': str(transfer.id),
+                'from_branch': transfer.from_branch.name,
+                'to_branch': transfer.to_branch.name,
+                'items': [
+                    {'sku': i.variant.sku, 'qty': str(i.quantity)}
+                    for i in transfer.items.all()
+                ],
             },
         )
