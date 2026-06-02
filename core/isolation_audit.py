@@ -24,52 +24,108 @@ indirect tenancy).
 """
 from rest_framework.test import APIRequestFactory
 from rest_framework.request import Request
+from rest_framework.generics import GenericAPIView
+
+from django.urls import get_resolver
 
 from users.models import User
 
-from inventory.views import (
-    AttributeDefinitionViewSet, ProductViewSet, ProductVariantViewSet,
-    CategoryViewSet, SupplierViewSet, TaxViewSet,
-    StockAdjustmentViewSet, StockTransferViewSet,
-)
-from finance.views import (
-    PaymentMethodViewSet, SalesInvoiceViewSet, PaymentViewSet,
-    PurchaseInvoiceViewSet, ExpenseCategoryViewSet, ExpenseViewSet,
-    WorkShiftViewSet, RefundInvoiceViewSet,
-)
-from core.views import BranchViewSet, ActivityLogViewSet
-from users.views import CustomerViewSet, StaffViewSet
-from notifications.views import NotificationViewSet
-from smart_analysis.views import TablePresetViewSet
-from billing.views import TenantBillingInvoiceViewSet
+
+# ---------------------------------------------------------------------------
+# Auto-discovery: instead of a hand-maintained list (which would re-create the
+# exact "someone forgot to add it" bug we're trying to kill), we read the app's
+# OWN routing table and test every door it finds. A new endpoint added next
+# month shows up here automatically — nothing to remember.
+# ---------------------------------------------------------------------------
+
+def _iter_view_classes(resolver=None, prefix=''):
+    """Walk the URL conf, yielding (view_class, url_prefix) for every route."""
+    resolver = resolver or get_resolver()
+    for entry in resolver.url_patterns:
+        pat = prefix + str(getattr(entry, 'pattern', ''))
+        if hasattr(entry, 'url_patterns'):           # include() — recurse
+            yield from _iter_view_classes(entry, pat)
+        else:
+            cb = entry.callback
+            cls = getattr(cb, 'cls', None) or getattr(cb, 'view_class', None)
+            if cls is not None:
+                yield cls, pat
 
 
-# (human label, ViewSet class, ORM path to the Store FK)
-ISOLATION_REGISTRY = [
-    ('Products',           ProductViewSet,             'store'),
-    ('Product Variants',   ProductVariantViewSet,      'product__store'),
-    ('Categories',         CategoryViewSet,            'store'),
-    ('Suppliers',          SupplierViewSet,            'store'),
-    ('Attributes',         AttributeDefinitionViewSet, 'store'),
-    ('Taxes',              TaxViewSet,                 'store'),
-    ('Stock Adjustments',  StockAdjustmentViewSet,     'store'),
-    ('Stock Transfers',    StockTransferViewSet,       'store'),
-    ('Sales Invoices',     SalesInvoiceViewSet,        'store'),
-    ('Payments',           PaymentViewSet,             'invoice__store'),
-    ('Purchases',          PurchaseInvoiceViewSet,     'store'),
-    ('Expense Categories', ExpenseCategoryViewSet,     'store'),
-    ('Expenses',           ExpenseViewSet,             'store'),
-    ('Work Shifts',        WorkShiftViewSet,           'store'),
-    ('Refunds',            RefundInvoiceViewSet,        'store'),
-    ('Payment Methods',    PaymentMethodViewSet,       'store'),
-    ('Branches',           BranchViewSet,              'store'),
-    ('Activity Logs',      ActivityLogViewSet,         'store'),
-    ('Customers',          CustomerViewSet,            'store'),
-    ('Staff',              StaffViewSet,               'store'),
-    ('Notifications',      NotificationViewSet,        'store'),
-    ('Table Presets',      TablePresetViewSet,         'store'),
-    ('Billing Invoices',   TenantBillingInvoiceViewSet, 'store'),
-]
+def _has_superadmin_perm(cls):
+    names = {p.__name__ for p in getattr(cls, 'permission_classes', [])}
+    return 'IsSuperAdmin' in names
+
+
+def _derive_store_lookup(model):
+    """Find the ORM path from `model` to its Store FK, automatically.
+    Returns 'store', a one-hop path like 'invoice__store', or None if the model
+    isn't tenant-scoped at all."""
+    from core.models import Store
+    fks = [f for f in model._meta.get_fields() if getattr(f, 'many_to_one', False)]
+    # direct FK to Store
+    for f in fks:
+        if f.related_model is Store:
+            return f.name
+    # one hop: a FK whose target itself has a direct Store FK (e.g. Payment→invoice→store)
+    for f in fks:
+        rel = f.related_model
+        if rel is None:
+            continue
+        for f2 in rel._meta.get_fields():
+            if getattr(f2, 'many_to_one', False) and f2.related_model is Store:
+                return f'{f.name}__store'
+    return None
+
+
+def _humanize(cls):
+    n = cls.__name__
+    for suf in ('ViewSet', 'View', 'APIView'):
+        if n.endswith(suf):
+            n = n[:-len(suf)]
+    # camel -> spaced
+    out = ''.join((' ' + c) if c.isupper() and i and not n[i-1].isupper() else c
+                  for i, c in enumerate(n))
+    return out.strip()
+
+
+def discover_endpoints():
+    """Classify every routed endpoint. Returns a dict with:
+       tenant   → [(label, cls, lookup)] CRUD endpoints we can probe
+       admin    → labels of sudo/global endpoints (intentionally cross-store)
+       global   → labels of endpoints whose model has no Store FK
+       manual   → labels of endpoints with no get_queryset (custom logic — a
+                  human must review these; the probe can't reach them)"""
+    tenant, admin, global_, manual = [], [], [], []
+    seen = set()
+    for cls, path in _iter_view_classes():
+        if cls in seen:
+            continue
+        seen.add(cls)
+        label = _humanize(cls)
+
+        # sudo / admin area is meant to span stores — not a leak
+        if 'admin' in path or _has_superadmin_perm(cls):
+            admin.append(label)
+            continue
+        # only generic/queryset views can be probed
+        if not (isinstance(cls, type) and issubclass(cls, GenericAPIView)):
+            continue
+        if cls.get_queryset is GenericAPIView.get_queryset and getattr(cls, 'queryset', None) is None:
+            manual.append(label)        # custom APIView, no queryset to inspect
+            continue
+
+        model = getattr(getattr(cls, 'queryset', None), 'model', None)
+        if model is None:
+            # need to instantiate to find the model; defer — handled at run time
+            tenant.append((label, cls, None))
+            continue
+        lookup = _derive_store_lookup(model)
+        if lookup is None:
+            global_.append(label)       # no Store FK → not tenant data
+        else:
+            tenant.append((label, cls, lookup))
+    return {'tenant': tenant, 'admin': admin, 'global': global_, 'manual': manual}
 
 
 def _probe_request(user):
@@ -91,6 +147,14 @@ def _check_endpoint(label, ViewSetClass, lookup, store_a, req):
 
         qs = vs.get_queryset()
         model = qs.model
+
+        # discovery may not have known the model yet — derive the path now
+        if lookup is None:
+            lookup = _derive_store_lookup(model)
+            row['store_lookup'] = lookup
+        if lookup is None:
+            row['status'] = 'no_store_fk'   # not a tenant model after all
+            return row
 
         returned = qs.count()
         # Rows this endpoint handed back that do NOT belong to store A.
@@ -126,7 +190,7 @@ def _summarize(results, store_a, **extra):
     """
     leaks        = sum(1 for r in results if r['status'] == 'leak')
     isolated     = sum(1 for r in results if r['status'] == 'isolated')
-    inconclusive = sum(1 for r in results if r['status'] == 'no_foreign_data')
+    inconclusive = sum(1 for r in results if r['status'] in ('no_foreign_data', 'no_store_fk'))
     errors       = sum(1 for r in results if r['status'] == 'error')
 
     if leaks:
@@ -148,6 +212,19 @@ def _summarize(results, store_a, **extra):
     }
     report.update(extra)
     return report
+
+
+def _discovery_meta():
+    """The non-tenant doors discovery found — surfaced so they're visible, not
+    silently ignored. `manual` especially: custom endpoints the probe can't
+    reach that a human should eyeball."""
+    d = discover_endpoints()
+    return {
+        'discovered_total': len(d['tenant']) + len(d['admin']) + len(d['global']) + len(d['manual']),
+        'skipped_admin':  sorted(d['admin']),    # sudo/global by design
+        'skipped_global': sorted(d['global']),   # no Store FK — not tenant data
+        'needs_manual':   sorted(d['manual']),   # custom logic — probe can't test
+    }
 
 
 def run_isolation_audit():
@@ -172,9 +249,10 @@ def run_isolation_audit():
 
     store_a = user_a.store
     req = _probe_request(user_a)
+    tenant = discover_endpoints()['tenant']
     results = [_check_endpoint(label, vs, lookup, store_a, req)
-               for label, vs, lookup in ISOLATION_REGISTRY]
-    return _summarize(results, store_a, mode='live')
+               for label, vs, lookup in tenant]
+    return _summarize(results, store_a, mode='live', **_discovery_meta())
 
 
 # ---------------------------------------------------------------------------
@@ -350,10 +428,11 @@ def run_self_contained_audit():
             warnings = _seed_store_data(store_b, user_b)
 
             req = _probe_request(user_a)
+            tenant = discover_endpoints()['tenant']
             results = [_check_endpoint(label, vs, lookup, store_a, req)
-                       for label, vs, lookup in ISOLATION_REGISTRY]
+                       for label, vs, lookup in tenant]
             report = _summarize(results, store_a, mode='self_contained',
-                                seed_warnings=warnings)
+                                seed_warnings=warnings, **_discovery_meta())
             # Don't leave the probe stores behind — undo the entire world.
             raise _Rollback()
     except _Rollback:
