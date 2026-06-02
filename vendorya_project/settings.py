@@ -269,6 +269,11 @@ REFRESH_COOKIE_MAX_AGE = int(SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds(
 # Cookies require credentialed CORS with explicit origins (no allow-all).
 CORS_ALLOW_CREDENTIALS = True
 
+# Behind a TLS-terminating proxy (nginx + Cloudflare on the AWS box): trust the
+# forwarded scheme so request.is_secure(), the Secure cookie flag, and CSRF
+# origin checks work over https. Harmless in local dev (nothing sets this header).
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 JAZZMIN_SETTINGS = {
     # UI Customizer
     "site_title": "Vendorya ERP",
