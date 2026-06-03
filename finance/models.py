@@ -7,6 +7,7 @@ from django.utils.translation import gettext_lazy as _
 from django.db.models.signals import pre_save
 from django.dispatch import receiver
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
+from core.tenancy import TenantScopedManager, TenantSoftDeleteManager
 # ADDED StockLevel here
 from inventory.models import ProductVariant, StockLevel
 from users.models import Customer
@@ -26,6 +27,8 @@ class ExpenseCategory(TimestampedModel, SoftDeleteModel):
     name = models.CharField(max_length=100)
     parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL)
 
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     def __str__(self):
         return self.name
 
@@ -38,13 +41,17 @@ class Expense(TimestampedModel, SoftDeleteModel):
     description = models.TextField(blank=True)
     date = models.DateField()
 
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
 # --- 3. INVOICING ---
 class PaymentMethod(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='payment_methods')
     name = models.CharField(max_length=100)
     is_cash = models.BooleanField(default=False) # To identify Cash Drawer
-    
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     def __str__(self):
         return self.name
 
@@ -71,7 +78,9 @@ class SalesInvoice(TimestampedModel, SoftDeleteModel):
     discount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     grand_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     def save(self, *args, **kwargs):
         if self.status == self.Status.POSTED and not self.invoice_number:
             with transaction.atomic():
@@ -138,7 +147,10 @@ class WorkShift(TimestampedModel):
     # System Calculated (Read Only)
     expected_cash = models.DecimalField(_("Expected Cash"), max_digits=12, decimal_places=2, default=0.00)
     difference = models.DecimalField(_("Difference"), max_digits=12, decimal_places=2, default=0.00)
-    
+
+    objects     = TenantScopedManager()   # secure-by-default
+    all_objects = models.Manager()        # unscoped escape hatch (sudo/audit/commands)
+
     def __str__(self):
         return f"{self.user.username} - {self.start_time.date()}"
 
@@ -184,9 +196,13 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
 
     reason = models.TextField(blank=True)
 
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     def save(self, *args, **kwargs):
         if not self.refund_number:
-            last = RefundInvoice.objects.filter(store=self.store).aggregate(Max('refund_number'))['refund_number__max'] or 0
+            # all_objects: numbering must be correct even outside a request
+            # context (e.g. background jobs) where tenant scope isn't armed.
+            last = RefundInvoice.all_objects.filter(store=self.store).aggregate(Max('refund_number'))['refund_number__max'] or 0
             self.refund_number = last + 1
         super().save(*args, **kwargs)
 
@@ -230,6 +246,8 @@ class PurchaseInvoice(TimestampedModel, SoftDeleteModel):
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     
     notes = models.TextField(blank=True)
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     def __str__(self):
         return f"{self.supplier.name} - {self.vendor_reference or self.id}"

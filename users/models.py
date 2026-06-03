@@ -3,6 +3,7 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils.translation import gettext_lazy as _
 from core.models import Address, TimestampedModel, SoftDeleteModel, Store
+from core.tenancy import TenantSoftDeleteManager
 class User(AbstractUser):
     class Role(models.TextChoices):
         OWNER = 'OWNER', _('Owner')
@@ -45,6 +46,8 @@ class Customer(TimestampedModel, SoftDeleteModel):
         null=True, blank=True,
         help_text=_("Per-customer override. Null = use store default."),
     )
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     class Meta:
         verbose_name = _("Customer")

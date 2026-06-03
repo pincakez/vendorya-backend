@@ -4,6 +4,7 @@ from django.db import models, transaction
 from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
+from core.tenancy import TenantScopedManager, TenantSoftDeleteManager
 
 # --- 1. TAXATION ---
 class Tax(TimestampedModel, SoftDeleteModel):
@@ -11,7 +12,9 @@ class Tax(TimestampedModel, SoftDeleteModel):
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='taxes')
     name = models.CharField(_("Tax Name"), max_length=50)
     rate = models.DecimalField(_("Rate %"), max_digits=5, decimal_places=2)
-    
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     def __str__(self):
         return f"{self.name} ({self.rate}%)"
 
@@ -33,6 +36,8 @@ class Supplier(TimestampedModel, SoftDeleteModel):
         help_text=_("Once locked the prefix can never be changed — it is embedded in all SKUs.")
     )
 
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     class Meta:
         unique_together = [('store', 'code_prefix')]
 
@@ -44,7 +49,9 @@ class Category(TimestampedModel, SoftDeleteModel):
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='categories')
     name = models.CharField(_("Category Name"), max_length=150)
     parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='subcategories')
-    
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     def __str__(self):
         return f"{self.parent.name} > {self.name}" if self.parent else self.name
 
@@ -59,7 +66,9 @@ class AttributeDefinition(TimestampedModel, SoftDeleteModel):
     name = models.CharField(_("Display Name"), max_length=50)
     key = models.SlugField(_("Code Name"), max_length=50)
     input_type = models.CharField(max_length=20, choices=InputType.choices, default=InputType.TEXT)
-    options = models.JSONField(default=list, blank=True) 
+    options = models.JSONField(default=list, blank=True)
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     def __str__(self):
         return self.name
@@ -84,6 +93,8 @@ class Product(TimestampedModel, SoftDeleteModel):
     unit = models.CharField(_("Unit"), max_length=20, default="pcs")
     
     base_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     def __str__(self):
         return self.name
@@ -204,6 +215,9 @@ class StockAdjustment(TimestampedModel):
     # Who did it?
     adjusted_by = models.ForeignKey('users.User', on_delete=models.PROTECT)
 
+    objects     = TenantScopedManager()   # secure-by-default
+    all_objects = models.Manager()        # unscoped escape hatch (sudo/audit/commands)
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         # Update the actual StockLevel
@@ -221,6 +235,9 @@ class StockTransfer(TimestampedModel):
     to_branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='transfers_in')
     transferred_by = models.ForeignKey('users.User', on_delete=models.PROTECT)
     notes = models.TextField(blank=True)
+
+    objects     = TenantScopedManager()   # secure-by-default
+    all_objects = models.Manager()        # unscoped escape hatch (sudo/audit/commands)
 
     class Meta:
         ordering = ['-created_at']

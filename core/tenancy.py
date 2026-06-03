@@ -26,8 +26,26 @@ _state = threading.local()
 # ---------- thread-local helpers ----------
 
 def set_current_request(request):
+    """Stash the request at the very start of the cycle.
+
+    NOTE: we do NOT resolve the store here — middleware runs *before* DRF
+    authenticates, so `request.user` is still anonymous at this point. The
+    store is pushed separately by the authentication layer (see
+    `set_current_store`) once the real user is known. Resolving it here was a
+    latent no-op bug that made the whole tenant manager scope to None (= all
+    rows) forever.
+    """
     _state.request = request
-    _state.store = getattr(getattr(request, 'user', None), 'store', None)
+
+
+def set_current_store(store):
+    """Record the active tenant for the rest of this request.
+
+    Called from `VendoryaJWTAuthentication` right after the user (and, for
+    sudo, the X-Store-ID acting-store) is resolved. This is what actually
+    arms the tenant-scoped managers.
+    """
+    _state.store = store
 
 
 def clear_current_request():
@@ -42,7 +60,18 @@ def get_current_request():
 
 
 def get_current_store():
-    return getattr(_state, 'store', None)
+    """The active tenant, or None outside a request / for un-acting sudo.
+
+    Falls back to resolving from the live request's user if the auth layer
+    hasn't pushed it explicitly (defensive — e.g. session-auth code paths).
+    """
+    store = getattr(_state, 'store', None)
+    if store is not None:
+        return store
+    req = get_current_request()
+    if req is None:
+        return None
+    return getattr(getattr(req, 'user', None), 'store', None)
 
 
 def is_superadmin_context():
@@ -68,6 +97,15 @@ class TenantScopedQuerySet(models.QuerySet):
     #: indirect tenant scoping like `branch__store`).
     tenant_lookup = 'store'
 
+    def _clone(self):
+        # Carry `tenant_lookup` across every chained operation (.filter(),
+        # .all(), .order_by(), ...). Django's _clone() doesn't copy custom
+        # attributes, so without this a single .filter() before current_tenant()
+        # would silently reset the lookup to the class default.
+        clone = super()._clone()
+        clone.tenant_lookup = self.tenant_lookup
+        return clone
+
     def for_tenant(self, store):
         if store is None:
             return self
@@ -86,15 +124,17 @@ class TenantScopedQuerySet(models.QuerySet):
 class TenantScopedManager(models.Manager.from_queryset(TenantScopedQuerySet)):
     """Manager whose default queryset is already scoped to the active tenant.
 
-    Use as an *additional* manager on tenant-scoped models:
+    Intended as the secure-by-default `objects` on tenant-scoped models that
+    do NOT carry soft-delete (plain TimestampedModel):
 
-        class Product(...):
-            objects = models.Manager()           # legacy: no auto-scoping
-            tenant_objects = TenantScopedManager()
+        class WorkShift(TimestampedModel):
+            objects     = TenantScopedManager()   # auto-scoped
+            all_objects = models.Manager()         # escape hatch (cross-tenant)
 
-    `tenant_objects.all()` then returns only the active tenant's rows in a
-    request context.  Outside of a request (management command, migration)
-    it returns everything — same as `.objects`.
+    In a request context `objects.all()` returns only the active tenant's
+    rows; outside a request (command/migration) or for un-acting sudo it
+    returns everything — same as a plain manager. Cross-tenant code (sudo
+    admin API, isolation audit) must go through `all_objects`.
     """
 
     tenant_lookup = 'store'
@@ -108,3 +148,16 @@ class TenantScopedManager(models.Manager.from_queryset(TenantScopedQuerySet)):
         qs = TenantScopedQuerySet(self.model, using=self._db)
         qs.tenant_lookup = self.tenant_lookup
         return qs.current_tenant()
+
+
+class TenantSoftDeleteManager(TenantScopedManager):
+    """`objects` for tenant models that ALSO soft-delete (SoftDeleteModel).
+
+    Combines the two default behaviours that `.objects` already implied on
+    those models — hide `is_deleted=True` rows — with tenant auto-scoping.
+    `all_objects` (the existing GlobalManager on SoftDeleteModel) stays the
+    unscoped, includes-deleted escape hatch used by trash + audit + signals.
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)

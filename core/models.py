@@ -5,6 +5,8 @@ from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
+from core.tenancy import TenantSoftDeleteManager
+
 # --- MANAGERS ---
 class SoftDeleteManager(models.Manager):
     def get_queryset(self):
@@ -130,6 +132,8 @@ class Address(TimestampedModel, SoftDeleteModel):
     city = models.CharField(_("City"), max_length=100)
     country = models.CharField(_("Country"), max_length=100, default=_("Egypt"))
 
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
     def __str__(self):
         return f"{self.street_1}, {self.city}"
 
@@ -141,6 +145,8 @@ class Branch(TimestampedModel, SoftDeleteModel):
     is_main_branch = models.BooleanField(default=False)
     phone_number = models.CharField(_("Phone Number"), max_length=20, blank=True, default='')
     email = models.EmailField(_("Email"), max_length=254, blank=True, default='')
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     class Meta:
         verbose_name = _("Branch")

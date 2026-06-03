@@ -31,6 +31,12 @@ class VendoryaJWTAuthentication(JWTAuthentication):
                 except (Store.DoesNotExist, ValueError):
                     user.store = None
 
+        # Arm the tenant-scoped managers for the rest of this request now that
+        # the real user (and any sudo acting-store) is resolved. For a normal
+        # user this is their store; for un-acting sudo it's None (= all rows).
+        from core.tenancy import set_current_store
+        set_current_store(getattr(user, 'store', None))
+
         return (user, token)
 
 
