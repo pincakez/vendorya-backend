@@ -13,6 +13,7 @@ Public surface:
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -27,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL = 'text-embedding-004'
 DEFAULT_PING_MODEL = 'gemini-2.5-flash'
+
+# Max tool round-trips inside a single user turn. Each hop = one Gemini call +
+# the tools it requested. Caps a misbehaving model from looping forever; a real
+# multi-step answer rarely needs more than 3-4.
+MAX_TOOL_HOPS = 8
 
 
 # ---------- exceptions ----------
@@ -220,20 +226,55 @@ class GeminiService:
             yield {'event': 'error', 'message': f'Bad request: {e}'}
             return
 
-        try:
-            stream = self.client.models.generate_content_stream(
-                model=profile.model_id,
-                contents=contents,
-                config=config,
-            )
-        except Exception as e:  # noqa: BLE001
-            yield {'event': 'error', 'message': f'Gemini call failed: {e}'}
-            return
+        # Agentic tool loop. One hop = one Gemini call. If the model asks for
+        # tools, we run them, append BOTH the model's request and the tool
+        # results to `contents`, and loop — so the next hop the model actually
+        # sees the answer to its own tool call and can finish. Without this the
+        # model dials a tool, never hears back, and stalls on "I'm searching…".
+        usage_totals = {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}
 
-        last_usage: Dict[str, Any] = {}
-        for chunk in stream:
-            # Function calls
-            for fc in self._extract_function_calls(chunk):
+        for hop in range(MAX_TOOL_HOPS):
+            try:
+                stream = self.client.models.generate_content_stream(
+                    model=profile.model_id,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as e:  # noqa: BLE001
+                yield {'event': 'error', 'message': f'Gemini call failed: {e}'}
+                return
+
+            pending_calls: List[Dict[str, Any]] = []
+            hop_text_parts: List[str] = []
+            for chunk in stream:
+                for fc in self._extract_function_calls(chunk):
+                    pending_calls.append(fc)
+                text = getattr(chunk, 'text', None)
+                if text:
+                    hop_text_parts.append(text)
+                    yield {'event': 'token', 'text': text}
+                usage = getattr(chunk, 'usage_metadata', None)
+                if usage:
+                    self._accumulate_usage(usage_totals, usage)
+
+            # No tool calls this hop → the model gave its final answer. Done.
+            if not pending_calls:
+                break
+
+            # Echo the model's turn (any narration + its function calls) back
+            # into the transcript, then run each tool and append the results
+            # as function_response parts so the next hop can use them.
+            model_parts: List[Dict[str, Any]] = []
+            if hop_text_parts:
+                model_parts.append({'text': ''.join(hop_text_parts)})
+            model_parts.extend(
+                {'function_call': {'name': fc.get('name'), 'args': fc.get('args') or {}}}
+                for fc in pending_calls
+            )
+            contents.append({'role': 'model', 'parts': model_parts})
+
+            response_parts: List[Dict[str, Any]] = []
+            for fc in pending_calls:
                 tool_result = self._invoke_tool(fc, tool_context)
                 yield {
                     'event': 'tool',
@@ -241,20 +282,23 @@ class GeminiService:
                     'args': fc.get('args') or {},
                     'result': tool_result,
                 }
-            # Token deltas
-            text = getattr(chunk, 'text', None)
-            if text:
-                yield {'event': 'token', 'text': text}
-            # Usage metadata appears on the final chunk
-            usage = getattr(chunk, 'usage_metadata', None)
-            if usage:
-                last_usage = {
-                    'input_tokens': getattr(usage, 'prompt_token_count', None),
-                    'output_tokens': getattr(usage, 'candidates_token_count', None),
-                    'total_tokens': getattr(usage, 'total_token_count', None),
-                }
+                response_parts.append({
+                    'function_response': {
+                        'name': fc.get('name'),
+                        'response': self._jsonable(tool_result),
+                    }
+                })
+            contents.append({'role': 'user', 'parts': response_parts})
+        else:
+            # Ran out of hops without a final answer — tell the user instead of
+            # ending on a silent half-step.
+            yield {
+                'event': 'token',
+                'text': f"\n\n_(Stopped after {MAX_TOOL_HOPS} tool steps without "
+                        f"finishing. Try narrowing the request.)_",
+            }
 
-        yield {'event': 'done', 'usage': last_usage}
+        yield {'event': 'done', 'usage': usage_totals}
 
     # ---- internals ----
 
@@ -322,6 +366,30 @@ class GeminiService:
                         'args': dict(getattr(fc, 'args', None) or {}),
                     })
         return calls
+
+    @staticmethod
+    def _accumulate_usage(totals: Dict[str, Any], usage) -> None:
+        """Sum token usage across every hop so the saved count reflects the
+        real cost of a multi-step turn, not just the final Gemini call."""
+        totals['input_tokens']  += getattr(usage, 'prompt_token_count', 0) or 0
+        totals['output_tokens'] += getattr(usage, 'candidates_token_count', 0) or 0
+        totals['total_tokens']  += getattr(usage, 'total_token_count', 0) or 0
+
+    @staticmethod
+    def _jsonable(obj: Any) -> Dict[str, Any]:
+        """Coerce a tool result into a plain JSON object for function_response.
+
+        Gemini requires the response to be a JSON object (dict). Tool funcs
+        return arbitrary Python; round-trip through json to strip anything
+        non-serializable, and wrap non-dict results so the shape always fits.
+        """
+        try:
+            coerced = json.loads(json.dumps(obj, default=str))
+        except (TypeError, ValueError):
+            coerced = str(obj)
+        if not isinstance(coerced, dict):
+            return {'result': coerced}
+        return coerced
 
     def _invoke_tool(self, fc: Dict[str, Any], context: Optional[ToolContext]) -> Dict[str, Any]:
         name = fc.get('name')
