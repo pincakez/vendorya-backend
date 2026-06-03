@@ -40,8 +40,8 @@ def _env_required(key):
 # Core security knobs — must be supplied via env (no in-repo fallback).
 SECRET_KEY = _env_required('DJANGO_SECRET_KEY')
 DEBUG = _env_bool('DJANGO_DEBUG', default=False)
-ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '.trycloudflare.com', 'vendorya.gatesinnov.com'])
-CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=['https://vendorya.gatesinnov.com', 'https://*.trycloudflare.com'])
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '.trycloudflare.com', 'vendorya.gatesinnov.com', 'vendoryas-staging.gatesinnov.com'])
+CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=['https://vendorya.gatesinnov.com', 'https://vendoryas-staging.gatesinnov.com', 'https://*.trycloudflare.com'])
 
 
 # Application definition
