@@ -80,19 +80,39 @@ class Product(TimestampedModel, SoftDeleteModel):
         SERVICE = 'SERVICE', _('Service (No Stock)')
         BUNDLE = 'BUNDLE', _('Bundle/Kit')
 
+    class DeleteReason(models.TextChoices):
+        DISCONTINUED = 'DISCONTINUED', _('Discontinued')
+        DUPLICATE    = 'DUPLICATE',    _('Duplicate')
+        MISTAKE      = 'MISTAKE',      _('Created by mistake')
+        OTHER        = 'OTHER',        _('Other')
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='products')
     name = models.CharField(_("Product Name"), max_length=255)
     product_type = models.CharField(max_length=20, choices=ProductType.choices, default=ProductType.STANDARD)
-    
+
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
     tax = models.ForeignKey(Tax, on_delete=models.SET_NULL, null=True, blank=True)
-    
+
     description = models.TextField(blank=True, null=True)
     unit = models.CharField(_("Unit"), max_length=20, default="pcs")
-    
+
     base_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
+    # Ghost = hidden from POS only. Still fully searchable/editable everywhere else.
+    hide_from_pos = models.BooleanField(
+        _("Hide from POS"), default=False,
+        help_text=_("Ghosted: stays in inventory and reports but won't appear in the POS catalog."),
+    )
+
+    # Soft-delete audit (captured on delete; free-text note for OTHER).
+    delete_reason = models.CharField(max_length=20, choices=DeleteReason.choices, blank=True, default='')
+    delete_note   = models.CharField(max_length=255, blank=True, default='')
+    deleted_by    = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='deleted_products',
+    )
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 

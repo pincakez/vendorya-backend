@@ -81,6 +81,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'id', 'name', 'category_name', 'supplier_name',
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'sku_display',
+            'hide_from_pos',
         ]
 
     def get_default_variant_id(self, obj):

@@ -1,7 +1,10 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from django.db import transaction
+from django.utils import timezone
 from django.db.models import Q, Sum, F, Min, Value, OuterRef, Subquery, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets, filters, status
+from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -61,6 +64,11 @@ class ProductViewSet(viewsets.ModelViewSet):
         'update':         'MANAGER',
         'partial_update': 'MANAGER',
         'destroy':        'ADMIN',
+        # bulk + ghost
+        'toggle_ghost':   'MANAGER',
+        'bulk_ghost':     'MANAGER',
+        'bulk_update':    'MANAGER',
+        'bulk_delete':    'ADMIN',
     }
     filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
@@ -121,6 +129,115 @@ class ProductViewSet(viewsets.ModelViewSet):
         from billing.quota import enforce_quota
         enforce_quota(self.request.user.store, 'products')
         serializer.save(store=self.request.user.store)
+
+    # ---- Ghost (hide from POS) ----
+
+    def _store_products(self, ids):
+        """Active products from THIS store matching the given ids. Store-scoped
+        so one tenant can never touch another's rows even by guessing ids."""
+        if not isinstance(ids, list) or not ids:
+            return None
+        return Product.objects.filter(store=self.request.user.store, id__in=ids)
+
+    @action(detail=True, methods=['post'])
+    def toggle_ghost(self, request, pk=None):
+        """Flip a single product's POS visibility (ghost / un-ghost)."""
+        product = self.get_object()
+        product.hide_from_pos = not product.hide_from_pos
+        product.save(update_fields=['hide_from_pos', 'updated_at'])
+        log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
+                     action=f"{'Ghosted' if product.hide_from_pos else 'Un-ghosted'} product '{product.name}'")
+        return Response({'id': str(product.id), 'hide_from_pos': product.hide_from_pos})
+
+    @action(detail=False, methods=['post'])
+    def bulk_ghost(self, request):
+        """Set POS visibility on many products at once. Body: {ids, hide}."""
+        qs = self._store_products(request.data.get('ids'))
+        if qs is None:
+            return Response({'error': 'ids must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
+        hide = bool(request.data.get('hide', True))
+        with transaction.atomic():
+            count = qs.update(hide_from_pos=hide)
+        log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
+                     action=f"Bulk {'ghosted' if hide else 'un-ghosted'} {count} product(s)")
+        return Response({'updated': count, 'hide_from_pos': hide})
+
+    @action(detail=False, methods=['post'])
+    def bulk_update(self, request):
+        """Limited bulk edit — retail price and/or category only (s18 decision).
+
+        Body: {ids, retail_price?, category?}. retail_price is applied to every
+        variant's sell_price; category is set on the product itself.
+        """
+        qs = self._store_products(request.data.get('ids'))
+        if qs is None:
+            return Response({'error': 'ids must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        retail_raw = request.data.get('retail_price', None)
+        category_id = request.data.get('category', None)  # '' / None = leave unchanged
+
+        retail = None
+        if retail_raw not in (None, ''):
+            try:
+                retail = Decimal(str(retail_raw))
+                if retail < 0:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                return Response({'error': 'retail_price must be a non-negative number.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+        category = None
+        if category_id:
+            category = Category.objects.filter(store=request.user.store, id=category_id).first()
+            if category is None:
+                return Response({'error': 'Category not found in this store.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+        if retail is None and category is None and not category_id:
+            return Response({'error': 'Nothing to update — provide retail_price and/or category.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            products = list(qs)
+            if category is not None:
+                qs.update(category=category)
+            if retail is not None:
+                ProductVariant.objects.filter(
+                    product__in=products, product__store=request.user.store
+                ).update(sell_price=retail)
+        log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
+                     action=f"Bulk edited {len(products)} product(s)"
+                     + (f" — retail={retail}" if retail is not None else '')
+                     + (f" — category={category.name}" if category is not None else ''))
+        return Response({'updated': len(products)})
+
+    @action(detail=False, methods=['post'])
+    def bulk_delete(self, request):
+        """Soft-delete many products with an audit reason. Body: {ids, reason, note}."""
+        qs = self._store_products(request.data.get('ids'))
+        if qs is None:
+            return Response({'error': 'ids must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        reason = (request.data.get('reason') or '').strip().upper()
+        valid = {c for c, _ in Product.DeleteReason.choices}
+        if reason not in valid:
+            return Response({'error': f'reason must be one of {sorted(valid)}.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        note = (request.data.get('note') or '').strip()[:255]
+
+        with transaction.atomic():
+            products = list(qs)
+            for p in products:
+                p.is_deleted   = True
+                p.deleted_at   = timezone.now()
+                p.delete_reason = reason
+                p.delete_note   = note
+                p.deleted_by    = request.user
+                p.save(update_fields=['is_deleted', 'deleted_at', 'delete_reason',
+                                      'delete_note', 'deleted_by', 'updated_at'])
+        log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
+                     action=f"Bulk deleted {len(products)} product(s) — reason: {reason}")
+        return Response({'deleted': len(products)})
 
 
 class ProductVariantViewSet(viewsets.ModelViewSet):
