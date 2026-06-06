@@ -988,7 +988,7 @@ def get_activity_log(context, store_id=None, operation_type=None,
             'currency_code': {'type': 'string', 'description': 'e.g. EGP. Optional.'},
             'timezone': {'type': 'string', 'description': 'IANA timezone, defaults to Africa/Cairo.'},
             'default_language': {'type': 'string', 'description': 'e.g. ar, en.'},
-            'branch_name': {'type': 'string', 'description': 'Defaults to "Main Branch".'},
+            'branch_name': {'type': 'string', 'description': 'Defaults to "Main".'},
             'branch_street_1': {'type': 'string'},
             'branch_street_2': {'type': 'string'},
             'branch_city': {'type': 'string'},
@@ -1004,7 +1004,7 @@ def create_store(context, owner_username, owner_password, store_name,
                  owner_email='', owner_first_name='', owner_last_name='',
                  plan='FREE', currency_code=None,
                  timezone='Africa/Cairo', default_language='ar',
-                 branch_name='Main Branch', branch_street_2='',
+                 branch_name='Main', branch_street_2='',
                  branch_country='Egypt'):
     from core.models import Address, Branch, Currency, Store
     from users.models import User

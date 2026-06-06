@@ -78,7 +78,7 @@ class _StoreInputSerializer(serializers.Serializer):
 
 
 class _BranchInputSerializer(serializers.Serializer):
-    name         = serializers.CharField(max_length=150, default='Main Branch')
+    name         = serializers.CharField(max_length=150, default='Main')
     street_1     = serializers.CharField(max_length=255)
     street_2     = serializers.CharField(max_length=255, required=False, allow_blank=True)
     city         = serializers.CharField(max_length=100)

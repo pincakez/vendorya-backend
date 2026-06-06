@@ -230,6 +230,18 @@ class StoreSettings(TimestampedModel):
     thousands_separator = models.BooleanField(default=False,
                                               help_text=_("Show thousand separators in numbers (off by default)."))
 
+    # Terminology — what this store calls a catalog item (label only).
+    class ItemNoun(models.TextChoices):
+        NAME    = 'NAME',    _('Name')
+        PRODUCT = 'PRODUCT', _('Product')
+        ITEM    = 'ITEM',    _('Item')
+        MODEL   = 'MODEL',   _('Model')
+
+    item_noun = models.CharField(
+        _("Items are called"), max_length=10,
+        choices=ItemNoun.choices, default=ItemNoun.NAME,
+        help_text=_("Word used for a catalog item across the UI (display only)."))
+
     # 4. Legal & Receipt Info
     tax_id = models.CharField(_("Tax ID / Betaka"), max_length=50, blank=True)
     print_tax_id = models.BooleanField(
