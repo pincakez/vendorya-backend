@@ -273,8 +273,27 @@ class CategoryViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Category.objects.filter(store=self.request.user.store)
 
+    def _save_or_400(self, serializer, **kwargs):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        try:
+            serializer.save(**kwargs)
+        except DjangoValidationError as exc:
+            # depth / cycle guard from Category.clean() -> clean 400
+            raise DRFValidationError(getattr(exc, 'message_dict', None) or exc.messages)
+
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        self._save_or_400(serializer, store=self.request.user.store)
+
+    def perform_update(self, serializer):
+        self._save_or_400(serializer)
+
+    def perform_destroy(self, instance):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        if Category.objects.filter(parent=instance).exists():
+            raise DRFValidationError(
+                {'detail': 'This category has sub-categories. Move or delete them first.'})
+        instance.delete()
 
 
 class SupplierViewSet(viewsets.ModelViewSet):

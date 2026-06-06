@@ -1319,7 +1319,11 @@ def create_category(context, name, parent_id=None):
         parent = Category.objects.filter(pk=parent_id, store=context.store).first()
         if parent is None:
             raise ToolValidationError(f"Parent category {parent_id} not found.")
-    cat = Category.objects.create(store=context.store, name=name, parent=parent)
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    try:
+        cat = Category.objects.create(store=context.store, name=name, parent=parent)
+    except DjangoValidationError as exc:   # depth / cycle guard
+        raise ToolValidationError(' '.join(exc.messages))
     return {'ok': True, 'id': str(cat.id), 'name': cat.name}
 
 
@@ -1353,7 +1357,11 @@ def update_category(context, category_id, name=None, parent_id=None):
             if parent is None:
                 raise ToolValidationError(f"Parent category {parent_id} not found.")
             cat.parent = parent
-    cat.save()
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    try:
+        cat.save()
+    except DjangoValidationError as exc:   # depth / cycle guard
+        raise ToolValidationError(' '.join(exc.messages))
     return {'ok': True, 'id': str(cat.id)}
 
 

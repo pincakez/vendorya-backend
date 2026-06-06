@@ -44,6 +44,11 @@ class Supplier(TimestampedModel, SoftDeleteModel):
     def __str__(self):
         return f"{self.name} ({self.code_prefix})"
 
+# Max category tree depth (tiers). e.g. Electronics > Computers > Laptops > Gaming
+# = 4 tiers, then you stop and use product attributes for finer distinction.
+MAX_CATEGORY_DEPTH = 4
+
+
 class Category(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='categories')
@@ -54,6 +59,49 @@ class Category(TimestampedModel, SoftDeleteModel):
 
     def __str__(self):
         return f"{self.parent.name} > {self.name}" if self.parent else self.name
+
+    # --- hierarchy guards: keep the tree sane (max depth + no cycles) -------
+    @staticmethod
+    def _ancestor_ids(start_parent):
+        """Ids from `start_parent` up to the root (start_parent included)."""
+        ids, node, guard = [], start_parent, 0
+        while node is not None and guard < 100:
+            ids.append(node.pk)
+            node = node.parent
+            guard += 1
+        return ids
+
+    def _subtree_height(self):
+        """Edges down to the deepest active descendant (0 = leaf, no children)."""
+        height = 0
+        for child in Category.all_objects.filter(parent_id=self.pk, is_deleted=False):
+            height = max(height, 1 + child._subtree_height())
+        return height
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if not self.parent_id:
+            return
+        parent = Category.all_objects.filter(pk=self.parent_id).first()
+        if parent is None:
+            raise ValidationError({'parent': 'Parent category does not exist.'})
+        if parent.store_id != self.store_id:
+            raise ValidationError({'parent': 'Parent category belongs to another store.'})
+
+        chain = self._ancestor_ids(parent)
+        # Cycle: a category cannot sit under itself or one of its own descendants.
+        if self.pk in chain:
+            raise ValidationError(
+                {'parent': 'A category cannot sit under itself or its own sub-category.'})
+        # Depth: parent's tier + this node + this node's existing subtree.
+        deepest_tier = len(chain) + 1 + self._subtree_height()
+        if deepest_tier > MAX_CATEGORY_DEPTH:
+            raise ValidationError(
+                {'parent': f'Categories can be at most {MAX_CATEGORY_DEPTH} levels deep.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()   # single source of truth: API + AI tools + admin all pass here
+        super().save(*args, **kwargs)
 
 class AttributeDefinition(TimestampedModel, SoftDeleteModel):
     class InputType(models.TextChoices):

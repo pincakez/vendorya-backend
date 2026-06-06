@@ -7,6 +7,7 @@ from core.models import Store, StoreSettings, Branch, Address
 from users.models import User
 from inventory.models import (
     Supplier, Product, ProductVariant, StockLevel, StockAdjustment,
+    Category, MAX_CATEGORY_DEPTH,
 )
 
 
@@ -59,3 +60,92 @@ class StockAdjustmentNegativeStockTests(TestCase):
     def test_positive_adjustment_always_ok(self):
         self._adjust('10')
         self.assertEqual(self._stock(), Decimal('15'))
+
+
+class CategoryTreeTests(TestCase):
+    """Category tree is capped at MAX_CATEGORY_DEPTH tiers and rejects cycles."""
+
+    def setUp(self):
+        owner = User.objects.create_user(username='catowner', password='x')
+        self.store = Store.objects.create(name='S1', store_code='200', owner=owner)
+
+    def _cat(self, name, parent=None):
+        return Category.objects.create(store=self.store, name=name, parent=parent)
+
+    def test_depth_cap_blocks_too_deep(self):
+        # Build a chain exactly MAX_CATEGORY_DEPTH deep — all should succeed.
+        node = None
+        chain = []
+        for i in range(MAX_CATEGORY_DEPTH):
+            node = self._cat(f'tier{i+1}', parent=node)
+            chain.append(node)
+        # One more tier under the deepest must be rejected.
+        with self.assertRaises(ValidationError):
+            self._cat('too_deep', parent=chain[-1])
+
+    def test_reparent_pushing_subtree_too_deep_blocked(self):
+        a = self._cat('A')                  # tier 1
+        b = self._cat('B', parent=a)        # tier 2
+        c = self._cat('C', parent=b)        # tier 3  (subtree height of A is 2)
+        # Make a tier-2 node, then try to put A (height 2) under it -> 2+1+2=5 > 4.
+        x = self._cat('X')                  # tier 1
+        y = self._cat('Y', parent=x)        # tier 2
+        a.parent = y
+        with self.assertRaises(ValidationError):
+            a.save()
+
+    def test_cycle_self_parent_blocked(self):
+        a = self._cat('A')
+        a.parent = a
+        with self.assertRaises(ValidationError):
+            a.save()
+
+    def test_cycle_descendant_parent_blocked(self):
+        a = self._cat('A')
+        b = self._cat('B', parent=a)
+        a.parent = b           # b is a's child -> would be a cycle
+        with self.assertRaises(ValidationError):
+            a.save()
+
+    def test_normal_tree_ok(self):
+        a = self._cat('A')
+        b = self._cat('B', parent=a)
+        c = self._cat('C', parent=b)
+        self.assertEqual(c.parent_id, b.id)
+        self.assertEqual(b.parent_id, a.id)
+
+
+class CategoryApiTests(TestCase):
+    """The depth guard must surface as a clean 400 over the API, not a 500."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.owner = User.objects.create_user(username='apiowner', password='x')
+        self.store = Store.objects.create(name='S1', store_code='201', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.role = User.Role.OWNER
+        self.owner.save()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def _post(self, name, parent=None):
+        return self.client.post('/api/inventory/categories/',
+                                {'name': name, 'parent': parent}, format='json')
+
+    def test_too_deep_returns_400(self):
+        ids = []
+        parent = None
+        for i in range(MAX_CATEGORY_DEPTH):
+            r = self._post(f't{i}', parent)
+            self.assertEqual(r.status_code, 201, r.content)
+            parent = r.json()['id']
+            ids.append(parent)
+        # 5th tier -> blocked with a 400, not a server error.
+        r = self._post('too_deep', parent)
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_delete_with_children_blocked(self):
+        a = self._post('A').json()['id']
+        self._post('B', a)
+        r = self.client.delete(f'/api/inventory/categories/{a}/')
+        self.assertEqual(r.status_code, 400, r.content)
