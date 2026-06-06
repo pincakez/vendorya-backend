@@ -193,6 +193,10 @@ class ActivityLog(models.Model):
     def __str__(self):
         return f"{self.user} - {self.action}"
     
+def _default_category_levels():
+    return ['Category', 'Sub-category', 'Sub-category 2', 'Sub-category 3']
+
+
     # --- STORE SETTINGS ---
 class StoreSettings(TimestampedModel):
     """Configuration for a specific store."""
@@ -241,6 +245,10 @@ class StoreSettings(TimestampedModel):
         _("Items are called"), max_length=10,
         choices=ItemNoun.choices, default=ItemNoun.NAME,
         help_text=_("Word used for a catalog item across the UI (display only)."))
+
+    category_level_names = models.JSONField(
+        _("Category level names"), default=_default_category_levels,
+        help_text=_("Display names for the 4 category tiers, e.g. Type / Category / Spec. Label only."))
 
     # 4. Legal & Receipt Info
     tax_id = models.CharField(_("Tax ID / Betaka"), max_length=50, blank=True)

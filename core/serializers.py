@@ -94,7 +94,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         fields = [
             'allow_negative_stock', 'enable_agel_selling',
             'credit_policy', 'default_credit_limit',
-            'decimals', 'thousands_separator', 'item_noun',
+            'decimals', 'thousands_separator', 'item_noun', 'category_level_names',
             'tax_id', 'print_tax_id', 'commercial_reg',
             'receipt_header', 'receipt_footer',
             'default_tax', 'tax_enabled',
@@ -106,6 +106,17 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         if value < 0 or value > 4:
             raise serializers.ValidationError("Decimals must be between 0 and 4.")
         return value
+
+    def validate_category_level_names(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list of names.")
+        defaults = ['Category', 'Sub-category', 'Sub-category 2', 'Sub-category 3']
+        # Normalize to exactly 4 non-empty names, falling back to defaults.
+        out = []
+        for i in range(4):
+            name = (str(value[i]).strip() if i < len(value) and value[i] else '')
+            out.append(name or defaults[i])
+        return out
 
     def validate_session_timeout_minutes(self, value):
         if value < 0 or value > 1440:
