@@ -30,6 +30,18 @@ class AdminStoreSerializer(serializers.ModelSerializer):
         source='currency', queryset=Currency.objects.filter(is_active=True),
         write_only=True, required=False,
     )
+    logo_light_url = serializers.SerializerMethodField()
+    logo_dark_url  = serializers.SerializerMethodField()
+
+    def _abs(self, obj, field):
+        f = getattr(obj, field)
+        if not f:
+            return None
+        req = self.context.get('request')
+        return req.build_absolute_uri(f.url) if req else f.url
+
+    def get_logo_light_url(self, obj): return self._abs(obj, 'logo_light')
+    def get_logo_dark_url(self,  obj): return self._abs(obj, 'logo_dark')
 
     class Meta:
         model = Store
@@ -39,6 +51,7 @@ class AdminStoreSerializer(serializers.ModelSerializer):
             'currency', 'currency_id',
             'default_language', 'timezone',
             'branches_count', 'staff_count',
+            'logo_light_url', 'logo_dark_url',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
