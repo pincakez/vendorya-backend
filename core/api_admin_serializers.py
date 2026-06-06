@@ -1,8 +1,24 @@
 from django.db import transaction
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils.crypto import get_random_string
 from rest_framework import serializers
 from .models import Store, Branch, Address, Currency
 from .serializers import _CurrencyNestedSerializer
 from users.models import User
+
+
+def _run_password_policy(value):
+    """Run Django's full AUTH_PASSWORD_VALIDATORS stack and surface DRF errors.
+
+    Privileged admin/onboarding flows must not be a weaker side-door than the
+    normal user password-change path.
+    """
+    try:
+        validate_password(value)
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(list(exc.messages))
+    return value
 
 
 class AdminStoreSerializer(serializers.ModelSerializer):
@@ -36,6 +52,9 @@ class _OwnerInputSerializer(serializers.Serializer):
     last_name       = serializers.CharField(max_length=150, required=False, allow_blank=True)
     phone_number    = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
     whatsapp_number = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
+
+    def validate_password(self, value):
+        return _run_password_policy(value)
 
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
@@ -186,12 +205,19 @@ class AdminUserSerializer(serializers.ModelSerializer):
         name = f"{obj.first_name} {obj.last_name}".strip()
         return name or obj.username
 
+    def validate_password(self, value):
+        # Blank = "auto-generate a strong random one"; only validate a real password.
+        if value:
+            _run_password_policy(value)
+        return value
+
     def create(self, validated_data):
         password = validated_data.pop('password', None)
         validated_data['is_superadmin'] = True
         validated_data['store'] = None
         user = User(**validated_data)
-        user.set_password(password or User.objects.make_random_password())
+        # make_random_password() was removed in Django 5.1 — generate our own.
+        user.set_password(password or get_random_string(20))
         user.save()
         return user
 

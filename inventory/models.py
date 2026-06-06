@@ -239,11 +239,31 @@ class StockAdjustment(TimestampedModel):
     all_objects = models.Manager()        # unscoped escape hatch (sudo/audit/commands)
 
     def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        # Update the actual StockLevel
-        stock, created = StockLevel.objects.get_or_create(variant=self.variant, branch=self.branch)
-        stock.quantity += self.quantity_change
-        stock.save()
+        # One source of truth for stock safety: a manual adjustment must obey the
+        # store's allow_negative_stock policy exactly like a POS sale does. The
+        # whole thing is atomic + row-locked, so if the policy blocks it nothing
+        # is persisted (neither this ledger row nor the stock move).
+        from django.core.exceptions import ValidationError
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            stock, created = (StockLevel.objects.select_for_update()
+                              .get_or_create(variant=self.variant, branch=self.branch))
+            new_quantity = stock.quantity + self.quantity_change
+            if new_quantity < 0:
+                # Read the policy fresh (avoid a stale cached reverse relation).
+                from core.models import StoreSettings
+                allow_negative = (
+                    StoreSettings.objects.filter(store_id=self.store_id)
+                    .values_list('allow_negative_stock', flat=True).first()
+                ) or False
+                if not allow_negative:
+                    raise ValidationError(
+                        f"Adjustment would drop stock to {new_quantity} at "
+                        f"{self.branch.name}, but this store does not allow "
+                        f"negative stock. Available: {stock.quantity}."
+                    )
+            stock.quantity = new_quantity
+            stock.save()
 
 
 # --- 7. STOCK TRANSFERS ---

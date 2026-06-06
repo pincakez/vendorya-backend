@@ -308,6 +308,17 @@ class AIKnowledgeChunkViewSet(viewsets.ModelViewSet):
         if not file:
             return Response({'error': 'file is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        MAX_UPLOAD_BYTES = 10 * 1024 * 1024   # 10 MB hard cap
+        ALLOWED_EXTENSIONS = ('.txt', '.csv', '.pdf', '.docx')
+        if file.size and file.size > MAX_UPLOAD_BYTES:
+            return Response(
+                {'error': f'File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).'},
+                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        if not (file.name or '').lower().endswith(ALLOWED_EXTENSIONS):
+            return Response(
+                {'error': f'Unsupported file type. Allowed: {", ".join(ALLOWED_EXTENSIONS)}.'},
+                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+
         industries = request.data.get('industries') or []
         if isinstance(industries, str):
             try:
@@ -411,7 +422,12 @@ class AIKnowledgeChunkViewSet(viewsets.ModelViewSet):
         query = (request.data.get('query') or '').strip()
         if not query:
             return Response({'error': 'query is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        limit = int(request.data.get('limit') or 5)
+        try:
+            limit = int(request.data.get('limit') or 5)
+        except (TypeError, ValueError):
+            return Response({'error': 'limit must be an integer.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        limit = max(1, min(limit, 50))   # clamp to a sane range
         industries = request.data.get('industries') or []
 
         service, err = _gemini_or_error()

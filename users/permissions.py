@@ -36,6 +36,7 @@ class IsSuperAdmin(BasePermission):
         return bool(
             user
             and user.is_authenticated
+            and user.is_active
             and getattr(user, 'is_superadmin', False)
         )
 
@@ -49,10 +50,10 @@ class _MinRolePermission(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
+        if not user.is_active:          # inactive == locked out, super-admin included
+            return False
         if getattr(user, 'is_superadmin', False):
             return True
-        if not user.is_active:
-            return False
         return _user_rank(user) >= _required_rank(self.min_role)
 
 
@@ -101,10 +102,10 @@ class RoleScopedPermission(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
+        if not user.is_active:          # inactive == locked out, super-admin included
+            return False
         if getattr(user, 'is_superadmin', False):
             return True
-        if not user.is_active:
-            return False
 
         role_map = getattr(view, 'role_map', None) or {}
         default = getattr(view, 'default_min_role', User.Role.OWNER)

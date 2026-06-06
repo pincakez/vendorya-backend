@@ -243,6 +243,18 @@ class RefundItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'variant', 'quantity', 'refund_amount', 'restock_inventory']
         read_only_fields = ['id']
 
+    def validate_quantity(self, value):
+        # A refund line restocks (+=) inventory; a zero/negative quantity would
+        # be meaningless or quietly subtract stock. Refunded qty must be positive.
+        if value <= 0:
+            raise serializers.ValidationError("Refund quantity must be greater than zero.")
+        return value
+
+    def validate_refund_amount(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Refund amount cannot be negative.")
+        return value
+
 
 class RefundInvoiceSerializer(serializers.ModelSerializer):
     items = RefundItemSerializer(many=True, required=False)

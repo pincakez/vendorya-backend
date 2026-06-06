@@ -16,9 +16,12 @@ def set_refresh_cookie(response, refresh_token):
 
 
 def clear_refresh_cookie(response):
+    # Match the attributes used when the cookie was set, otherwise some
+    # browser/SameSite combinations keep the stale refresh cookie around.
     response.delete_cookie(
         key=settings.REFRESH_COOKIE_NAME,
         path=settings.REFRESH_COOKIE_PATH,
         samesite=settings.REFRESH_COOKIE_SAMESITE,
+        secure=settings.REFRESH_COOKIE_SECURE,
     )
     return response

@@ -369,7 +369,13 @@ class StockAdjustmentViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
-        adjustment = serializer.save(store=self.request.user.store, adjusted_by=self.request.user)
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        try:
+            adjustment = serializer.save(store=self.request.user.store, adjusted_by=self.request.user)
+        except DjangoValidationError as exc:
+            # Negative-stock policy block (raised in StockAdjustment.save) -> clean 400.
+            raise DRFValidationError({'detail': exc.messages})
         log_activity(
             request=self.request,
             action=f"Stock adjustment: {adjustment.variant.sku} ({adjustment.quantity_change:+})",

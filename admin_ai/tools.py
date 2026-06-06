@@ -47,6 +47,20 @@ _MAX_ROWS = 200       # Hard cap so a runaway tool call can't flood the model.
 _DEFAULT_ROWS = 50
 
 
+def _validate_password(value, user=None):
+    """Enforce the full Django password policy on AI-driven password set/reset.
+
+    The AI-admin tool layer must not be a weaker side-door than the normal
+    onboarding path — run AUTH_PASSWORD_VALIDATORS, not just a length check.
+    """
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    try:
+        validate_password(value, user)
+    except DjangoValidationError as exc:
+        raise ToolValidationError(' '.join(exc.messages))
+
+
 def _clamp_limit(limit: Optional[int]) -> int:
     try:
         n = int(limit) if limit else _DEFAULT_ROWS
@@ -995,8 +1009,7 @@ def create_store(context, owner_username, owner_password, store_name,
     from core.models import Address, Branch, Currency, Store
     from users.models import User
 
-    if len(owner_password) < 8:
-        raise ToolValidationError("owner_password must be at least 8 characters.")
+    _validate_password(owner_password)
     if User.objects.filter(username=owner_username).exists():
         raise ToolValidationError(f"Username {owner_username!r} is already taken.")
 
@@ -1724,8 +1737,7 @@ def update_product(context, product_id, name=None, category_id=None, supplier_id
 def create_staff_user(context, username, password, role='CASHIER',
                       first_name='', last_name='', email=''):
     from users.models import User
-    if len(password) < 8:
-        raise ToolValidationError("Password must be at least 8 characters.")
+    _validate_password(password)
     if User.objects.filter(username=username).exists():
         raise ToolValidationError(f"Username {username!r} already taken.")
     role_value = (role or 'CASHIER').upper()
@@ -1782,8 +1794,7 @@ def update_staff_user(context, user_id, first_name=None, last_name=None,
             raise ToolValidationError(f"Invalid role {role!r}.")
         user.role = role_value
     if password:
-        if len(password) < 8:
-            raise ToolValidationError("Password must be at least 8 characters.")
+        _validate_password(password, user)
         user.set_password(password)
     user.save()
     return {'ok': True, 'user_id': user.id}
@@ -2110,15 +2121,20 @@ def create_stock_adjustment(context, variant_id, branch_id, quantity_change,
     if reason_value not in dict(StockAdjustment.Reason.choices):
         raise ToolValidationError(f"Invalid reason {reason!r}.")
 
-    adjustment = StockAdjustment.objects.create(
-        store=context.store,
-        branch=branch,
-        variant=variant,
-        quantity_change=_dec(quantity_change, 'quantity_change'),
-        reason=reason_value,
-        notes=notes or '',
-        adjusted_by=context.user,
-    )
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    try:
+        adjustment = StockAdjustment.objects.create(
+            store=context.store,
+            branch=branch,
+            variant=variant,
+            quantity_change=_dec(quantity_change, 'quantity_change'),
+            reason=reason_value,
+            notes=notes or '',
+            adjusted_by=context.user,
+        )
+    except DjangoValidationError as exc:
+        # Negative-stock policy block (raised in StockAdjustment.save).
+        raise ToolValidationError(' '.join(exc.messages))
     return {
         'ok': True,
         'adjustment_id': str(adjustment.id),
