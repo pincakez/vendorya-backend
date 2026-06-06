@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+from django.db import transaction
 from rest_framework import viewsets, filters, status
 from notifications.dispatcher import send_notification
 from notifications.models import Notification
@@ -6,6 +9,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from users.permissions import RoleScopedPermission
+from inventory.models import StockLevel
 from .models import (
     SalesInvoice, Payment, PaymentMethod,
     PurchaseInvoice,
@@ -54,6 +58,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         'partial_update': 'MANAGER',
         'destroy':        'MANAGER',
         'void':           'MANAGER',
+        'checkout':       'CASHIER',
         'print_data':     'CASHIER',
     }
     filter_backends = [filters.OrderingFilter]
@@ -104,6 +109,80 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'invoice_id': str(invoice.id),
                 'invoice_number': invoice.invoice_number,
                 'grand_total': str(invoice.grand_total),
+            },
+        )
+        return Response(SalesInvoiceSerializer(invoice).data)
+
+    @action(detail=True, methods=['post'])
+    def checkout(self, request, pk=None):
+        """Finalize a DRAFT sale: enforce store policies, then flip DRAFT→POSTED
+        in one atomic step so the existing stock-out + invoice-numbering signals
+        fire. CASHIER-allowed — unlike a raw PATCH to POSTED, which is MANAGER-only.
+        This is the canonical 'complete the sale' call the POS till makes."""
+        invoice = self.get_object()
+        if invoice.status == SalesInvoice.Status.POSTED:
+            return Response({'detail': 'Invoice already posted.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if invoice.status == SalesInvoice.Status.VOID:
+            return Response({'detail': 'Cannot post a voided invoice.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        items = list(invoice.items.select_related('variant__product').all())
+        if not items:
+            return Response({'detail': 'Cannot post an empty invoice.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        settings_obj = getattr(invoice.store, 'settings', None)
+
+        # Policy 1 — credit (agel) selling. Block posting an unpaid invoice when
+        # the owner disabled credit. No race here (reads invoice totals only).
+        allow_agel = getattr(settings_obj, 'enable_agel_selling', True)
+        if not allow_agel and (invoice.grand_total - invoice.paid_amount) > 0:
+            return Response(
+                {'detail': 'Credit sales are disabled for this store. '
+                           'Collect full payment before completing the sale.'},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        allow_negative = getattr(settings_obj, 'allow_negative_stock', False)
+
+        with transaction.atomic():
+            # Policy 2 — overselling. Lock the stock rows we're about to move and
+            # verify availability INSIDE the transaction, so a concurrent checkout
+            # can't slip between the check and the signal's decrement.
+            if not allow_negative:
+                shortages = []
+                for item in items:
+                    stock = (StockLevel.objects.select_for_update()
+                             .filter(variant=item.variant, branch=invoice.branch).first())
+                    available = stock.quantity if stock else Decimal('0')
+                    if item.quantity > available:
+                        shortages.append({
+                            'variant': str(item.variant.id),
+                            'sku': item.variant.sku,
+                            'name': item.variant.product.name,
+                            'requested': str(item.quantity),
+                            'available': str(available),
+                        })
+                if shortages:
+                    raise ValidationError({
+                        'detail': 'Insufficient stock to complete this sale.',
+                        'shortages': shortages,
+                    })
+
+            # Flip to POSTED → fires handle_sale_stock (decrement + COGS snapshot)
+            # and assigns the human-readable invoice_number.
+            invoice.status = SalesInvoice.Status.POSTED
+            invoice.save()
+
+        log_activity(
+            request=request,
+            action=f"Completed Sales Invoice #{invoice.invoice_number}",
+            op_type=ActivityLog.OperationType.SALE,
+            details={
+                'invoice_id': str(invoice.id),
+                'invoice_number': invoice.invoice_number,
+                'grand_total': str(invoice.grand_total),
+                'paid_amount': str(invoice.paid_amount),
             },
         )
         return Response(SalesInvoiceSerializer(invoice).data)
