@@ -101,6 +101,11 @@ class Store(TimestampedModel, SoftDeleteModel):
     whatsapp_number = models.CharField(_("WhatsApp Number"), max_length=20, blank=True, default='')
     city    = models.CharField(_("City"),    max_length=100, blank=True, default='')
     country = models.CharField(_("Country"), max_length=100, blank=True, default='Egypt')
+    address_line = models.CharField(_("Address"), max_length=255, blank=True, default='')
+    email   = models.EmailField(_("Email Address"), blank=True, default='')
+    website = models.URLField(_("Website"), max_length=200, blank=True, default='')
+    fb_page = models.CharField(_("Facebook Page"), max_length=200, blank=True, default='')
+    instagram = models.CharField(_("Instagram"), max_length=200, blank=True, default='')
 
     # Branding logos (480×112px recommended). Two variants so the app can
     # switch automatically when the user toggles dark/light mode.

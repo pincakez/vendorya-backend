@@ -41,6 +41,7 @@ class StoreSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'store_code', 'currency', 'currency_id',
                   'default_language', 'timezone', 'plan', 'is_active',
                   'phone_number', 'whatsapp_number', 'city', 'country',
+                  'address_line', 'email', 'website', 'fb_page', 'instagram',
                   'logo_light_url', 'logo_dark_url']
         read_only_fields = ['id', 'plan', 'is_active', 'store_code',
                             'logo_light_url', 'logo_dark_url']

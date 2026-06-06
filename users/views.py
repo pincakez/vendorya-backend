@@ -138,9 +138,11 @@ class MeView(APIView):
     def patch(self, request):
         data = request.data
         user = request.user
-        for field in ('first_name', 'last_name', 'email'):
+        for field in ('first_name', 'last_name', 'email', 'phone_number', 'whatsapp_number'):
             if field in data:
                 setattr(user, field, data[field])
+        if 'photo' in request.FILES:
+            user.photo = request.FILES['photo']
 
         if 'default_branch' in data:
             branch_id = data['default_branch']
@@ -249,7 +251,7 @@ class StaffViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
-        return User.objects.filter(store=self.request.user.store).order_by('first_name', 'username')
+        return User.objects.filter(store=self.request.user.store, is_superadmin=False).order_by('first_name', 'username')
 
     def perform_create(self, serializer):
         from billing.quota import enforce_quota

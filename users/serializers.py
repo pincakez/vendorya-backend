@@ -43,7 +43,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = ('id', 'username', 'email', 'first_name', 'last_name',
                   'full_name', 'role', 'store', 'photo', 'is_superadmin',
                   'force_password_change', 'default_branch', 'default_branch_name',
-                  'pos_settings')
+                  'pos_settings', 'phone_number', 'whatsapp_number')
         read_only_fields = ('is_superadmin', 'force_password_change', 'default_branch_name')
 
     def get_full_name(self, obj):
