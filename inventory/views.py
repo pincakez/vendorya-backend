@@ -88,8 +88,13 @@ class ProductViewSet(viewsets.ModelViewSet):
         return ProductListSerializer
 
     def get_queryset(self):
-        qs = Product.objects.filter(store=self.request.user.store).prefetch_related(
-            'category', 'supplier',
+        qs = Product.objects.filter(store=self.request.user.store).select_related(
+            # Walk the category parent chain (max 4 tiers) so per-level category
+            # columns don't trigger a query per row.
+            'category', 'category__parent',
+            'category__parent__parent', 'category__parent__parent__parent',
+        ).prefetch_related(
+            'supplier',
             'variants', 'variants__stock_levels',
             'variants__attributes', 'variants__attributes__definition',
         )
@@ -268,10 +273,73 @@ class CategoryViewSet(viewsets.ModelViewSet):
         'update':         'MANAGER',
         'partial_update': 'MANAGER',
         'destroy':        'ADMIN',
+        'contents':       'MANAGER',
+        'resolve_delete': 'ADMIN',
     }
 
     def get_queryset(self):
         return Category.objects.filter(store=self.request.user.store)
+
+    def _descendant_ids(self, category):
+        """Ids of every active category below `category` (not including itself)."""
+        ids, frontier = [], [category.id]
+        while frontier:
+            kids = list(Category.objects.filter(parent_id__in=frontier)
+                        .values_list('id', flat=True))
+            ids.extend(kids)
+            frontier = kids
+        return ids
+
+    @action(detail=True, methods=['get'])
+    def contents(self, request, pk=None):
+        """What's inside a category — drives the delete modal (move vs purge)."""
+        category = self.get_object()
+        desc_ids = self._descendant_ids(category)
+        product_count = Product.objects.filter(
+            category_id__in=[category.id] + desc_ids).count()
+        parent = category.parent
+        return Response({
+            'id': str(category.id),
+            'name': category.name,
+            'parent': {'id': str(parent.id), 'name': parent.name} if parent else None,
+            'subcategory_count': len(desc_ids),
+            'product_count': product_count,
+        })
+
+    @action(detail=True, methods=['post'], url_path='resolve-delete')
+    def resolve_delete(self, request, pk=None):
+        """Delete a non-empty category. mode='move' lifts contents up to the
+        parent; mode='purge' soft-deletes the whole branch + its products
+        (an inventory write-off, so a reason is required)."""
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        category = self.get_object()
+        mode = request.data.get('mode')
+        if mode not in ('move', 'purge'):
+            raise DRFValidationError({'mode': "Must be 'move' or 'purge'."})
+
+        with transaction.atomic():
+            if mode == 'move':
+                parent = category.parent      # None for a top-level category
+                Product.objects.filter(category=category).update(category=parent)
+                Category.objects.filter(parent=category).update(parent=parent)
+                category.delete()             # soft
+                return Response({'detail': 'Contents moved up; category deleted.'})
+
+            # purge
+            reason = (request.data.get('reason') or '').strip()
+            note = (request.data.get('note') or '').strip()[:255]
+            if reason not in dict(Product.DeleteReason.choices):
+                raise DRFValidationError(
+                    {'reason': 'A valid reason is required to delete a category with its items.'})
+            desc_ids = self._descendant_ids(category)
+            now = timezone.now()
+            Product.objects.filter(category_id__in=[category.id] + desc_ids).update(
+                is_deleted=True, deleted_at=now,
+                delete_reason=reason, delete_note=note, deleted_by=request.user,
+            )
+            Category.objects.filter(id__in=desc_ids).update(is_deleted=True, deleted_at=now)
+            category.delete()                 # soft
+            return Response({'detail': 'Category and its contents deleted.'})
 
     def _save_or_400(self, serializer, **kwargs):
         from django.core.exceptions import ValidationError as DjangoValidationError

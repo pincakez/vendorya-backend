@@ -66,6 +66,13 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
     table_id = 'inventory_products'
 
     category_name      = serializers.CharField(source='category.name', read_only=True)
+    # Per-tier category columns, derived from the product's single (deepest)
+    # category by walking its ancestors. Always present (empty when shallower)
+    # so the table's customize-columns can permit/toggle each level.
+    category_l1        = serializers.SerializerMethodField()
+    category_l2        = serializers.SerializerMethodField()
+    category_l3        = serializers.SerializerMethodField()
+    category_l4        = serializers.SerializerMethodField()
     supplier_name      = serializers.CharField(source='supplier.name', read_only=True)
     total_stock        = serializers.SerializerMethodField()
     price_display      = serializers.SerializerMethodField()
@@ -84,7 +91,32 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'default_variant_price',
             'default_variant_stock', 'sku_display', 'hide_from_pos',
+            'category_l1', 'category_l2', 'category_l3', 'category_l4',
         ]
+
+    def _category_path(self, obj):
+        """Names from root -> the product's category. Cached per instance.
+        Relies on the viewset select_related'ing the parent chain (max 4 deep)."""
+        cached = getattr(obj, '_cat_path_cache', None)
+        if cached is not None:
+            return cached
+        names, node, guard = [], obj.category, 0
+        while node is not None and guard < 10:
+            names.append(node.name)
+            node = node.parent
+            guard += 1
+        names.reverse()
+        obj._cat_path_cache = names
+        return names
+
+    def get_category_l1(self, obj):
+        p = self._category_path(obj); return p[0] if len(p) > 0 else ''
+    def get_category_l2(self, obj):
+        p = self._category_path(obj); return p[1] if len(p) > 1 else ''
+    def get_category_l3(self, obj):
+        p = self._category_path(obj); return p[2] if len(p) > 2 else ''
+    def get_category_l4(self, obj):
+        p = self._category_path(obj); return p[3] if len(p) > 3 else ''
 
     def get_default_variant_id(self, obj):
         v = obj.variants.first()

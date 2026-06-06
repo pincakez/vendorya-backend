@@ -149,3 +149,47 @@ class CategoryApiTests(TestCase):
         self._post('B', a)
         r = self.client.delete(f'/api/inventory/categories/{a}/')
         self.assertEqual(r.status_code, 400, r.content)
+
+    def test_contents_counts(self):
+        a = self._post('A').json()['id']
+        b = self._post('B', a).json()['id']
+        Product.objects.create(store=self.store, name='P1', category_id=b)
+        d = self.client.get(f'/api/inventory/categories/{a}/contents/').json()
+        self.assertEqual(d['subcategory_count'], 1)
+        self.assertEqual(d['product_count'], 1)
+        self.assertIsNone(d['parent'])
+
+    def test_move_up_lifts_products_and_subcats(self):
+        a = self._post('A').json()['id']
+        b = self._post('B', a).json()['id']
+        c = self._post('C', b).json()['id']             # A > B > C
+        prod = Product.objects.create(store=self.store, name='P1', category_id=b)
+        r = self.client.post(f'/api/inventory/categories/{b}/resolve-delete/',
+                             {'mode': 'move'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        prod.refresh_from_db()
+        self.assertEqual(str(prod.category_id), a)       # product lifted to A
+        self.assertEqual(str(Category.objects.get(id=c).parent_id), a)  # C lifted to A
+        self.assertFalse(Category.objects.filter(id=b).exists())        # B soft-deleted
+
+    def test_purge_requires_reason(self):
+        a = self._post('A').json()['id']
+        Product.objects.create(store=self.store, name='P1', category_id=a)
+        r = self.client.post(f'/api/inventory/categories/{a}/resolve-delete/',
+                             {'mode': 'purge'}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_purge_soft_deletes_branch_and_products(self):
+        a = self._post('A').json()['id']
+        b = self._post('B', a).json()['id']
+        prod = Product.objects.create(store=self.store, name='P1', category_id=b)
+        r = self.client.post(f'/api/inventory/categories/{a}/resolve-delete/',
+                             {'mode': 'purge', 'reason': 'DISCONTINUED', 'note': 'cleanup'},
+                             format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(Category.objects.filter(id__in=[a, b]).exists())
+        self.assertFalse(Product.objects.filter(id=prod.id).exists())   # soft-deleted
+        archived = Product.all_objects.get(id=prod.id)
+        self.assertTrue(archived.is_deleted)
+        self.assertEqual(archived.delete_reason, 'DISCONTINUED')
+        self.assertEqual(archived.deleted_by_id, self.owner.id)
