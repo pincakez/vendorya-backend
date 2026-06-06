@@ -288,6 +288,7 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         'partial_update': 'MANAGER',
         'destroy':        'ADMIN',
         'receive':        'MANAGER',
+        'label_data':     'MANAGER',
     }
 
     def get_queryset(self):
@@ -331,6 +332,24 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
             },
         )
         return Response(PurchaseInvoiceSerializer(invoice).data)
+
+    @action(detail=True, methods=['get'], url_path='label-data')
+    def label_data(self, request, pk=None):
+        """Returns fully-resolved label payload for all items in this purchase."""
+        invoice = self.get_object()
+        store = invoice.store
+        items = []
+        for item in invoice.items.select_related('variant__product'):
+            v = item.variant
+            items.append({
+                'variant_id':   str(v.id),
+                'product_name': v.product.name,
+                'sku':          v.sku,
+                'barcode':      v.barcode or v.sku,
+                'sell_price':   str(v.sell_price),
+                'quantity':     int(item.quantity),
+            })
+        return Response({'store_name': store.name, 'items': items})
 
 
 class ExpenseCategoryViewSet(viewsets.ModelViewSet):

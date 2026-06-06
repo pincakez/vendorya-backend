@@ -347,3 +347,23 @@ def create_store_settings(sender, instance, created, **kwargs):
                 store=instance, name=m['name'],
                 defaults={'is_cash': m['is_cash'], 'is_agel': m['is_agel']},
             )
+
+
+class LabelPreset(TimestampedModel):
+    """A named label size + field-visibility config for barcode/price label printing."""
+    store      = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='label_presets')
+    name       = models.CharField(max_length=100)
+    width_mm   = models.PositiveSmallIntegerField(default=40)
+    height_mm  = models.PositiveSmallIntegerField(default=20)
+    show_store_name   = models.BooleanField(default=True)
+    show_product_name = models.BooleanField(default=True)
+    show_sku          = models.BooleanField(default=True)
+    show_barcode      = models.BooleanField(default=True)
+    show_price        = models.BooleanField(default=True)
+    is_default = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-is_default', 'name']
+
+    def __str__(self):
+        return f"{self.name} ({self.width_mm}×{self.height_mm}mm)"

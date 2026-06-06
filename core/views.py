@@ -8,10 +8,10 @@ from users.permissions import (
     RoleScopedPermission, IsCashierOrAbove, IsManagerOrAbove, IsOwner,
     IsSuperAdmin,
 )
-from .models import Branch, ActivityLog, Currency
+from .models import Branch, ActivityLog, Currency, LabelPreset
 from .serializers import (
     StoreSerializer, BranchSerializer, StoreSettingsSerializer,
-    ActivityLogSerializer, CurrencySerializer,
+    ActivityLogSerializer, CurrencySerializer, LabelPresetSerializer,
 )
 from users.models import User
 
@@ -269,3 +269,23 @@ class DashboardView(APIView):
             'low_stock_items': low_stock_data,
             'recent_sales': recent_sales,
         })
+
+
+class LabelPresetViewSet(viewsets.ModelViewSet):
+    serializer_class = LabelPresetSerializer
+    permission_classes = [IsManagerOrAbove]
+
+    role_map = {
+        'list':    'CASHIER',
+        'retrieve':'CASHIER',
+        'create':  'MANAGER',
+        'update':  'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy': 'MANAGER',
+    }
+
+    def get_queryset(self):
+        return LabelPreset.objects.filter(store=self.request.user.store)
+
+    def perform_create(self, serializer):
+        serializer.save(store=self.request.user.store)

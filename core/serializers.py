@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Store, Branch, Address, StoreSettings, ActivityLog, Currency
+from .models import Store, Branch, Address, StoreSettings, ActivityLog, Currency, LabelPreset
 
 
 class CurrencySerializer(serializers.ModelSerializer):
@@ -156,3 +156,14 @@ class AdminActivityLogSerializer(ActivityLogSerializer):
 
     class Meta(ActivityLogSerializer.Meta):
         fields = ActivityLogSerializer.Meta.fields + ['store_name']
+
+
+class LabelPresetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LabelPreset
+        fields = [
+            'id', 'name', 'width_mm', 'height_mm',
+            'show_store_name', 'show_product_name', 'show_sku', 'show_barcode', 'show_price',
+            'is_default', 'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
