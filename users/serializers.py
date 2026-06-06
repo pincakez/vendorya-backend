@@ -36,13 +36,15 @@ class StoreMinimalSerializer(serializers.Serializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     store = StoreMinimalSerializer(read_only=True)
     full_name = serializers.SerializerMethodField()
+    default_branch_name = serializers.CharField(source='default_branch.name', read_only=True, allow_null=True)
 
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name',
                   'full_name', 'role', 'store', 'photo', 'is_superadmin',
-                  'force_password_change')
-        read_only_fields = ('is_superadmin', 'force_password_change')
+                  'force_password_change', 'default_branch', 'default_branch_name',
+                  'pos_settings')
+        read_only_fields = ('is_superadmin', 'force_password_change', 'default_branch_name')
 
     def get_full_name(self, obj):
         name = f"{obj.first_name} {obj.last_name}".strip()

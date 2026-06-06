@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     VendoryaTokenObtainView, CookieTokenRefreshView, LogoutView,
     MeView, ChangePasswordView, CustomerViewSet, StaffViewSet,
+    ApplyPosSettingsView,
 )
 from .views_2fa import (
     TwoFactorSetupView, TwoFactorVerifySetupView, TwoFactorStatusView,
@@ -19,6 +20,7 @@ urlpatterns = [
     path('logout/', LogoutView.as_view(), name='logout'),
     path('me/', MeView.as_view(), name='me'),
     path('change-password/', ChangePasswordView.as_view(), name='change_password'),
+    path('apply-pos-settings/', ApplyPosSettingsView.as_view(), name='apply_pos_settings'),
 
     # Two-factor (TOTP)
     path('2fa/setup/', TwoFactorSetupView.as_view(), name='2fa_setup'),

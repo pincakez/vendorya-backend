@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     'notifications',
     'admin_ai',
     'reports',
+    'pos',
 ]
 
 MIDDLEWARE = [

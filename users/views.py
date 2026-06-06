@@ -141,9 +141,44 @@ class MeView(APIView):
         for field in ('first_name', 'last_name', 'email'):
             if field in data:
                 setattr(user, field, data[field])
-        # Password changes go through ChangePasswordView (current-password required).
+
+        if 'default_branch' in data:
+            branch_id = data['default_branch']
+            if branch_id is None:
+                user.default_branch = None
+            else:
+                from core.models import Branch
+                branch = Branch.objects.filter(id=branch_id, store=user.store).first()
+                if not branch:
+                    return Response({'default_branch': 'Branch not found or does not belong to your store.'},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                user.default_branch = branch
+
+        if 'pos_settings' in data:
+            if not isinstance(data['pos_settings'], dict):
+                return Response({'pos_settings': 'Must be a JSON object.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.pos_settings = data['pos_settings']
+
         user.save()
         return Response(UserProfileSerializer(user).data)
+
+
+class ApplyPosSettingsView(APIView):
+    """Copy the requesting user's pos_settings to all staff in the same store.
+    Only OWNER or ADMIN may broadcast settings."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.role not in (User.Role.OWNER, User.Role.ADMIN):
+            return Response({'detail': 'Only owners and admins can apply settings to all staff.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if not user.store:
+            return Response({'detail': 'No store associated with this account.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        settings_to_apply = user.pos_settings
+        updated = User.objects.filter(store=user.store).exclude(id=user.id).update(pos_settings=settings_to_apply)
+        return Response({'applied_to': updated})
 
 
 class ChangePasswordView(APIView):

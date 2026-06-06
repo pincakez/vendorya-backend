@@ -71,22 +71,34 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
     price_display      = serializers.SerializerMethodField()
     profit_display     = serializers.SerializerMethodField()
     attributes_summary = serializers.SerializerMethodField()
-    default_variant_id = serializers.SerializerMethodField()
-    sku_display        = serializers.SerializerMethodField()
-    cost_display       = serializers.SerializerMethodField()
+    default_variant_id    = serializers.SerializerMethodField()
+    default_variant_price = serializers.SerializerMethodField()
+    default_variant_stock = serializers.SerializerMethodField()
+    sku_display           = serializers.SerializerMethodField()
+    cost_display          = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'category_name', 'supplier_name',
             'total_stock', 'price_display', 'cost_display', 'profit_display',
-            'attributes_summary', 'default_variant_id', 'sku_display',
-            'hide_from_pos',
+            'attributes_summary', 'default_variant_id', 'default_variant_price',
+            'default_variant_stock', 'sku_display', 'hide_from_pos',
         ]
 
     def get_default_variant_id(self, obj):
         v = obj.variants.first()
         return str(v.id) if v else None
+
+    def get_default_variant_price(self, obj):
+        v = obj.variants.first()
+        return str(v.sell_price) if v else None
+
+    def get_default_variant_stock(self, obj):
+        v = obj.variants.first()
+        if not v:
+            return 0
+        return sum(s.quantity for s in v.stock_levels.all())
 
     def get_sku_display(self, obj):
         variants = list(obj.variants.all())

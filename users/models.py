@@ -27,6 +27,12 @@ class User(AbstractUser):
     phone_number = models.CharField(_("Phone Number"), max_length=20, blank=True, default='')
     whatsapp_number = models.CharField(_("WhatsApp Number"), max_length=20, blank=True, default='')
 
+    default_branch = models.ForeignKey(
+        'core.Branch', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='default_for_users',
+    )
+    pos_settings = models.JSONField(default=dict, blank=True)
+
     def __str__(self):
         return self.username
 

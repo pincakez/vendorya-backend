@@ -270,6 +270,27 @@ class StoreSettings(TimestampedModel):
                     "Server omits these fields from API responses for that role. "
                     "Empty = use built-in defaults."))
 
+    # 8. POS — Top Selling panel config
+    class TopSellingPeriod(models.TextChoices):
+        TODAY = 'today', _('Today')
+        WEEK  = 'week',  _('This Week')
+        MONTH = 'month', _('This Month')
+        ALL   = 'all',   _('All Time')
+
+    pos_top_selling_period = models.CharField(
+        _("Top Selling Period"), max_length=10,
+        choices=TopSellingPeriod.choices, default=TopSellingPeriod.MONTH,
+    )
+    pos_top_selling_category = models.ForeignKey(
+        'inventory.Category', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+',
+        verbose_name=_("Top Selling Category Filter"),
+    )
+    pos_top_selling_limit = models.PositiveSmallIntegerField(
+        _("Top Selling Limit"), default=8,
+        help_text=_("Max items shown in the POS Top Selling panel (4–10)."),
+    )
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 
@@ -277,14 +298,27 @@ class StoreSettings(TimestampedModel):
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+_DEFAULT_PAYMENT_METHODS = [
+    {'name': 'Cash',        'is_cash': True,  'is_agel': False},
+    {'name': 'InstaPay',    'is_cash': False, 'is_agel': False},
+    {'name': 'E-Wallet',    'is_cash': False, 'is_agel': False},
+    {'name': 'Credit Card', 'is_cash': False, 'is_agel': False},
+    {'name': 'Ajel',        'is_cash': False, 'is_agel': True},
+]
+
+
 @receiver(post_save, sender=Store)
 def create_store_settings(sender, instance, created, **kwargs):
     if created:
         StoreSettings.objects.create(store=instance)
-        # Seed the default Walk-in customer for anonymous POS sales (one per store).
-        # Lazy import — users imports core, so a top-level import would be circular.
         from users.models import Customer
         Customer.objects.get_or_create(
             store=instance, is_walk_in=True,
             defaults={'name': 'Walk-in', 'phone_number': '0000000000'},
         )
+        from finance.models import PaymentMethod
+        for m in _DEFAULT_PAYMENT_METHODS:
+            PaymentMethod.objects.get_or_create(
+                store=instance, name=m['name'],
+                defaults={'is_cash': m['is_cash'], 'is_agel': m['is_agel']},
+            )

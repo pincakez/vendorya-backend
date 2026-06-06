@@ -39,6 +39,7 @@ urlpatterns = [
 
     # Auth URLs (login, refresh, logout, 2FA, me, customers, staff)
     path('api/auth/', include('users.urls')),
+    path('api/pos/',  include('pos.urls')),
 ]
 
 if settings.DEBUG:

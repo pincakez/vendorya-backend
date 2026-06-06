@@ -48,7 +48,8 @@ class PaymentMethod(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='payment_methods')
     name = models.CharField(max_length=100)
-    is_cash = models.BooleanField(default=False) # To identify Cash Drawer
+    is_cash = models.BooleanField(default=False)
+    is_agel = models.BooleanField(default=False, help_text="Agel (credit) sales only. Enforces credit limit and tracks customer debt.")
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 

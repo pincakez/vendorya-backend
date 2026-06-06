@@ -60,7 +60,7 @@ def enforce_credit_policy(invoice):
 class PaymentMethodSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentMethod
-        fields = ['id', 'name', 'is_cash']
+        fields = ['id', 'name', 'is_cash', 'is_agel']
         read_only_fields = ['id']
 
 
