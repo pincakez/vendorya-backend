@@ -52,8 +52,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = ['id', 'name', 'phone_number', 'notes', 'balance', 'credit_limit']
-        read_only_fields = ['id', 'balance']
+        fields = ['id', 'name', 'phone_number', 'notes', 'balance', 'credit_limit', 'is_walk_in']
+        read_only_fields = ['id', 'balance', 'is_walk_in']
 
 
 class StaffSerializer(serializers.ModelSerializer):

@@ -277,3 +277,10 @@ from django.dispatch import receiver
 def create_store_settings(sender, instance, created, **kwargs):
     if created:
         StoreSettings.objects.create(store=instance)
+        # Seed the default Walk-in customer for anonymous POS sales (one per store).
+        # Lazy import — users imports core, so a top-level import would be circular.
+        from users.models import Customer
+        Customer.objects.get_or_create(
+            store=instance, is_walk_in=True,
+            defaults={'name': 'Walk-in', 'phone_number': '0000000000'},
+        )

@@ -47,6 +47,10 @@ class Customer(TimestampedModel, SoftDeleteModel):
         help_text=_("Per-customer override. Null = use store default."),
     )
 
+    # The store's default "Walk-in" customer for anonymous POS sales. One per store,
+    # auto-created on store creation. Not user-editable/deletable; POS auto-selects it.
+    is_walk_in = models.BooleanField(default=False, editable=False)
+
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     class Meta:
