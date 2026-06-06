@@ -291,12 +291,15 @@ class StockAdjustment(TimestampedModel):
         # store's allow_negative_stock policy exactly like a POS sale does. The
         # whole thing is atomic + row-locked, so if the policy blocks it nothing
         # is persisted (neither this ledger row nor the stock move).
+        from decimal import Decimal
         from django.core.exceptions import ValidationError
         with transaction.atomic():
             super().save(*args, **kwargs)
             stock, created = (StockLevel.objects.select_for_update()
                               .get_or_create(variant=self.variant, branch=self.branch))
-            new_quantity = stock.quantity + self.quantity_change
+            # A freshly defaulted StockLevel.quantity can come back as a float;
+            # coerce so float + Decimal never blows up.
+            new_quantity = Decimal(str(stock.quantity)) + self.quantity_change
             if new_quantity < 0:
                 # Read the policy fresh (avoid a stale cached reverse relation).
                 from core.models import StoreSettings

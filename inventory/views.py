@@ -8,7 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from users.permissions import RoleScopedPermission, IsManagerOrAbove
+from users.permissions import RoleScopedPermission, IsManagerOrAbove, IsAdminOrAbove
 from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment, StockTransfer
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer, ProductWriteSerializer,
@@ -514,3 +514,68 @@ class StockTransferViewSet(viewsets.ModelViewSet):
                 ],
             },
         )
+
+
+# ── Catalog Import / Export ─────────────────────────────────────────────
+from django.http import HttpResponse
+from rest_framework.parsers import MultiPartParser, FormParser
+from .import_export import CatalogImporter, parse_csv, export_catalog
+
+
+class _CatalogImportBase(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrAbove]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def _read(self, request):
+        f = request.FILES.get('file')
+        if not f:
+            return None, Response({'detail': 'A CSV file is required.'},
+                                  status=status.HTTP_400_BAD_REQUEST)
+        if not (f.name or '').lower().endswith('.csv'):
+            return None, Response({'detail': 'Only .csv files are accepted.'},
+                                  status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+        if f.size and f.size > 5 * 1024 * 1024:
+            return None, Response({'detail': 'File too large (max 5 MB).'},
+                                  status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        return f.read(), None
+
+
+class CatalogImportValidateView(_CatalogImportBase):
+    """POST a CSV → validate only (no writes). Returns errors / warnings / summary."""
+    def post(self, request):
+        raw, err = self._read(request)
+        if err:
+            return err
+        headers, rows = parse_csv(raw)
+        result = CatalogImporter(request.user.store, request.user).validate(headers, rows)
+        return Response(result, status=status.HTTP_200_OK if result['ok'] else status.HTTP_400_BAD_REQUEST)
+
+
+class CatalogImportCommitView(_CatalogImportBase):
+    """POST a CSV → validate + import in one transaction (rejects on any error)."""
+    def post(self, request):
+        raw, err = self._read(request)
+        if err:
+            return err
+        headers, rows = parse_csv(raw)
+        result = CatalogImporter(request.user.store, request.user).commit(headers, rows)
+        if not result['ok']:
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
+        log_activity(
+            request=request,
+            action=f"Imported {result['summary'].get('created', 0)} products from CSV",
+            op_type=ActivityLog.OperationType.OTHER,
+            details=result['summary'],
+        )
+        return Response(result)
+
+
+class CatalogExportView(APIView):
+    """GET → the store's catalog as a CSV download (same schema as import)."""
+    permission_classes = [IsAuthenticated, IsManagerOrAbove]
+
+    def get(self, request):
+        csv_text = export_catalog(request.user.store)
+        resp = HttpResponse(csv_text, content_type='text/csv')
+        resp['Content-Disposition'] = 'attachment; filename="catalog_export.csv"'
+        return resp

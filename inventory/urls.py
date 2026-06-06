@@ -4,6 +4,7 @@ from .views import (
     ProductViewSet, ProductVariantViewSet,
     CategoryViewSet, SupplierViewSet, AttributeDefinitionViewSet, TaxViewSet,
     StockAdjustmentViewSet, StockTransferViewSet, SupplierPrefixCheckView,
+    CatalogImportValidateView, CatalogImportCommitView, CatalogExportView,
 )
 
 router = DefaultRouter()
@@ -19,5 +20,8 @@ router.register(r'transfers',   StockTransferViewSet,      basename='transfer')
 
 urlpatterns = [
     path('suppliers/check-prefix/', SupplierPrefixCheckView.as_view(), name='supplier-check-prefix'),
+    path('catalog/import/validate/', CatalogImportValidateView.as_view(), name='catalog-import-validate'),
+    path('catalog/import/commit/',   CatalogImportCommitView.as_view(),   name='catalog-import-commit'),
+    path('catalog/export/',          CatalogExportView.as_view(),         name='catalog-export'),
     path('', include(router.urls)),
 ]

@@ -7,7 +7,7 @@ from core.models import Store, StoreSettings, Branch, Address
 from users.models import User
 from inventory.models import (
     Supplier, Product, ProductVariant, StockLevel, StockAdjustment,
-    Category, MAX_CATEGORY_DEPTH,
+    Category, AttributeDefinition, MAX_CATEGORY_DEPTH,
 )
 
 
@@ -113,6 +113,100 @@ class CategoryTreeTests(TestCase):
         c = self._cat('C', parent=b)
         self.assertEqual(c.parent_id, b.id)
         self.assertEqual(b.parent_id, a.id)
+
+
+class CatalogImportTests(TestCase):
+    """The CSV importer: strict validation + transactional create."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='impowner', password='x')
+        self.store = Store.objects.create(name='S1', store_code='300', owner=self.owner)
+        addr = Address.objects.create(store=self.store, street_1='1', city='Cairo')
+        self.branch = Branch.objects.create(store=self.store, name='Main', address=addr)
+        Supplier.objects.create(store=self.store, name='Yakot', code_prefix='400', prefix_locked=True)
+
+    def _imp(self):
+        from inventory.import_export import CatalogImporter
+        return CatalogImporter(self.store, self.owner)
+
+    HEADER = ('M_BRANCH,A_SUPP,M_CAT,S1_CAT,BRAND_DD,MODEL_FT,RAM_DD,Q_QTY,W_PRICE,R_PRICE')
+
+    def _rows(self, *lines):
+        from inventory.import_export import parse_csv
+        return parse_csv(('\n'.join((self.HEADER,) + lines)).encode())
+
+    def test_good_file_imports(self):
+        headers, rows = self._rows(
+            'Main,Yakot,Laptop,Business,DELL,Latitude 5480,16 GB,1,"13,600.00","13,700.00"',
+            'Main,Yakot,Laptop,Workstation,HP,ZBook G6,32 GB,2,"26,600.00","26,700.00"',
+        )
+        res = self._imp().commit(headers, rows)
+        self.assertTrue(res['ok'], res)
+        self.assertEqual(res['summary']['created'], 2)
+        self.assertEqual(Product.objects.filter(store=self.store).count(), 2)
+        self.assertEqual(ProductVariant.all_objects.filter(product__store=self.store).count(), 2)
+        # category tree built: Laptop > Business / Workstation
+        self.assertEqual(Category.objects.filter(store=self.store, parent=None).count(), 1)
+        self.assertEqual(Category.objects.filter(store=self.store).exclude(parent=None).count(), 2)
+        # attributes created (BRAND dropdown collected options)
+        brand = AttributeDefinition.objects.get(store=self.store, key='brand')
+        self.assertEqual(brand.input_type, AttributeDefinition.InputType.SELECT)
+        self.assertCountEqual(brand.options, ['DELL', 'HP'])
+        # stock posted via adjustment
+        p = Product.objects.get(store=self.store, name='DELL Latitude 5480')
+        v = p.variants.first()
+        self.assertEqual(StockLevel.objects.get(variant=v, branch=self.branch).quantity, Decimal('1'))
+        self.assertTrue(v.sku.startswith('300400'))   # store 300 + supplier 400
+
+    def test_unknown_supplier_rejected(self):
+        headers, rows = self._rows(
+            'Main,Ghost,Laptop,Business,DELL,X,16 GB,1,100,200')
+        res = self._imp().validate(headers, rows)
+        self.assertFalse(res['ok'])
+        self.assertTrue(any('does not exist' in e for e in res['errors']))
+
+    def test_duplicate_same_supplier_rejected(self):
+        headers, rows = self._rows(
+            'Main,Yakot,Laptop,Business,DELL,Latitude 5480,16 GB,1,100,200',
+            'Main,Yakot,Laptop,Business,DELL,Latitude 5480,8 GB,1,100,200')
+        res = self._imp().validate(headers, rows)
+        self.assertFalse(res['ok'])
+        self.assertTrue(any('duplicated' in e for e in res['errors']))
+
+    def test_depth_over_4_rejected(self):
+        from inventory.import_export import parse_csv
+        bad = 'M_BRANCH,A_SUPP,M_CAT,S1_CAT,S2_CAT,S3_CAT,S4_CAT,W_PRICE,R_PRICE'
+        headers, rows = parse_csv((bad + '\nMain,Yakot,a,b,c,d,e,1,2').encode())
+        res = self._imp().validate(headers, rows)
+        self.assertFalse(res['ok'])
+        self.assertTrue(any('S4_CAT' in e for e in res['errors']))
+
+    def test_unknown_column_rejected(self):
+        from inventory.import_export import parse_csv
+        bad = 'A_SUPP,M_CAT,WHATEVER,W_PRICE,R_PRICE'
+        headers, rows = parse_csv((bad + '\nYakot,Laptop,x,1,2').encode())
+        res = self._imp().validate(headers, rows)
+        self.assertFalse(res['ok'])
+        self.assertTrue(any('Unknown column' in e for e in res['errors']))
+
+    def test_negative_margin_is_warning_not_error(self):
+        headers, rows = self._rows(
+            'Main,Yakot,Laptop,Business,DELL,Latitude 5480,16 GB,1,"13,700.00","13,600.00"')
+        res = self._imp().validate(headers, rows)
+        self.assertTrue(res['ok'], res)
+        self.assertTrue(any('negative margin' in w for w in res['warnings']))
+
+    def test_export_roundtrips(self):
+        from inventory.import_export import export_catalog, parse_csv
+        headers, rows = self._rows(
+            'Main,Yakot,Laptop,Business,DELL,Latitude 5480,16 GB,3,"13,600.00","13,700.00"')
+        self._imp().commit(headers, rows)
+        csv_text = export_catalog(self.store)
+        self.assertIn('SKU', csv_text)
+        self.assertIn('DELL', csv_text)
+        h2, r2 = parse_csv(csv_text.encode())
+        self.assertEqual(len(r2), 1)
+        self.assertIn('BRAND_DD', h2)
 
 
 class CategoryApiTests(TestCase):
