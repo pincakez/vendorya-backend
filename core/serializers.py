@@ -97,7 +97,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'decimals', 'thousands_separator',
             'tax_id', 'print_tax_id', 'commercial_reg',
             'receipt_header', 'receipt_footer',
-            'default_tax',
+            'default_tax', 'tax_enabled',
             'product_numbering_mode',
             'session_timeout_minutes', 'login_ip_allowlist', 'force_2fa_managers',
         ]

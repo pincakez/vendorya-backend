@@ -219,6 +219,10 @@ class StoreSettings(TimestampedModel):
         help_text=_("Max unpaid balance a customer may carry. Null = no limit."),
     )
     default_tax = models.ForeignKey('inventory.Tax', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    tax_enabled = models.BooleanField(
+        default=True,
+        help_text=_("Master switch. When off, sales charge no tax and POS hides the "
+                    "tax row — regardless of any product/default tax."))
 
     # 3. Number formatting (user-facing display rules)
     decimals = models.PositiveSmallIntegerField(default=2,

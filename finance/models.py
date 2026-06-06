@@ -202,8 +202,15 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
         if not self.refund_number:
             # all_objects: numbering must be correct even outside a request
             # context (e.g. background jobs) where tenant scope isn't armed.
-            last = RefundInvoice.all_objects.filter(store=self.store).aggregate(Max('refund_number'))['refund_number__max'] or 0
-            self.refund_number = last + 1
+            # Lock this store's existing refunds so concurrent inserts serialize.
+            with transaction.atomic():
+                list(RefundInvoice.all_objects.select_for_update()
+                     .filter(store=self.store).values_list('id', flat=True))
+                last = (RefundInvoice.all_objects.filter(store=self.store)
+                        .aggregate(Max('refund_number'))['refund_number__max']) or 0
+                self.refund_number = last + 1
+                super().save(*args, **kwargs)
+                return
         super().save(*args, **kwargs)
 
 class RefundItem(models.Model):
@@ -218,11 +225,12 @@ class RefundItem(models.Model):
         is_new = self._state.adding
         super().save(*args, **kwargs)
         if is_new and self.restock_inventory:
-            stock, _ = StockLevel.objects.get_or_create(
-                variant=self.variant, branch=self.refund.branch
-            )
-            stock.quantity += self.quantity
-            stock.save()
+            with transaction.atomic():
+                stock, _ = StockLevel.objects.select_for_update().get_or_create(
+                    variant=self.variant, branch=self.refund.branch
+                )
+                stock.quantity += self.quantity
+                stock.save()
         total = self.refund.items.aggregate(sum=Sum('refund_amount'))['sum'] or 0
         self.refund.total_refunded = total
         self.refund.save()
@@ -285,6 +293,32 @@ def weighted_avg_cost(variant, store):
     if total_qty > 0:
         return (total_cost / total_qty).quantize(Decimal('0.01'))
     return variant.cost_price or Decimal('0')
+
+
+def customer_outstanding(customer, exclude_invoice_id=None):
+    """A customer's REAL accounts-receivable balance = Σ over their POSTED,
+    non-deleted invoices of (grand_total − paid_amount − refunded).
+
+    This is the source of truth for credit limits. The stored
+    `Customer.balance` field is NOT maintained anywhere, so credit enforcement
+    must compute the live total here (Option A, s31). Mirrors the AR-aging report.
+    """
+    from django.db.models import Q, Value, DecimalField
+    from django.db.models.functions import Coalesce
+    DEC = DecimalField(max_digits=14, decimal_places=2)
+    ZERO = Decimal('0')
+    qs = SalesInvoice.all_objects.filter(
+        customer=customer, status=SalesInvoice.Status.POSTED, is_deleted=False,
+    )
+    if exclude_invoice_id:
+        qs = qs.exclude(id=exclude_invoice_id)
+    qs = qs.annotate(refunded=Coalesce(
+        Sum('refunds__total_refunded', filter=Q(refunds__is_deleted=False)),
+        Value(ZERO), output_field=DEC))
+    total = ZERO
+    for inv in qs:
+        total += (inv.grand_total or ZERO) - (inv.paid_amount or ZERO) - (inv.refunded or ZERO)
+    return total
 
 
 @receiver(pre_save, sender=SalesInvoice)

@@ -143,6 +143,12 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                            'Collect full payment before completing the sale.'},
                 status=status.HTTP_400_BAD_REQUEST)
 
+        # Policy 3 — credit limit. Now that this sale is about to extend credit
+        # (if unpaid), enforce the store's ALLOW/WARN/BLOCK policy against the
+        # customer's REAL outstanding balance. BLOCK raises → stays DRAFT.
+        from .serializers import enforce_credit_policy
+        enforce_credit_policy(invoice)
+
         allow_negative = getattr(settings_obj, 'allow_negative_stock', False)
 
         with transaction.atomic():
