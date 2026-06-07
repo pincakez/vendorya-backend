@@ -1,9 +1,10 @@
 from django.utils import timezone
+from django.db import connection
 from django.db.models import Sum, Count
 from rest_framework import viewsets, status, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from users.permissions import (
     RoleScopedPermission, IsCashierOrAbove, IsManagerOrAbove, IsOwner,
     IsSuperAdmin,
@@ -289,3 +290,19 @@ class LabelPresetViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
+
+
+class HealthView(APIView):
+    """GET /api/health/ — public endpoint for uptime checks and the UI status dot."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        db_ok = True
+        try:
+            connection.ensure_connection()
+        except Exception:
+            db_ok = False
+        s = 'ok' if db_ok else 'degraded'
+        code = status.HTTP_200_OK if db_ok else status.HTTP_503_SERVICE_UNAVAILABLE
+        return Response({'status': s, 'db': db_ok, 'ts': timezone.now().isoformat()}, status=code)

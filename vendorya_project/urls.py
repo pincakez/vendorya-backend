@@ -5,6 +5,7 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path, include, re_path
 from django.http import FileResponse, Http404
+from core.views import HealthView
 
 def serve_vue(request, path=''):
     index = os.path.join(settings.BASE_DIR, '..', 'vendorya-frontend', 'dist', 'index.html')
@@ -18,6 +19,9 @@ def serve_vue(request, path=''):
 
 urlpatterns = [
     path('django-admin/', admin.site.urls),
+
+    # Public health check
+    path('api/health/', HealthView.as_view(), name='health'),
 
     # API URLs
     path('api/core/',      include('core.urls')),

@@ -4,6 +4,7 @@ from .api_admin import (
     AdminStoreViewSet, AdminBranchViewSet, AdminUserViewSet,
     AdminActivityLogViewSet, AdminActivityLogMetaView,
     AdminStoreCodeCheckView, AdminStoreForceLogoutView,
+    AdminStoreUsageView, AdminStoreExportView,
 )
 from .api_admin_trash import AdminTrashListView, AdminTrashRestoreView
 from .api_admin_isolation import AdminIsolationAuditView
@@ -18,6 +19,8 @@ urlpatterns = [
     path('activity-logs/meta/', AdminActivityLogMetaView.as_view(), name='admin-activity-log-meta'),
     path('stores/check-code/',  AdminStoreCodeCheckView.as_view(),  name='admin-store-check-code'),
     path('stores/<uuid:store_id>/force-logout/', AdminStoreForceLogoutView.as_view(), name='admin-store-force-logout'),
+    path('stores/<uuid:store_id>/usage/',        AdminStoreUsageView.as_view(),       name='admin-store-usage'),
+    path('stores/<uuid:store_id>/export/',       AdminStoreExportView.as_view(),       name='admin-store-export'),
     path('trash/',         AdminTrashListView.as_view(),    name='admin-trash-list'),
     path('trash/restore/', AdminTrashRestoreView.as_view(), name='admin-trash-restore'),
     path('isolation-check/', AdminIsolationAuditView.as_view(), name='admin-isolation-check'),
