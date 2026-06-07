@@ -51,10 +51,11 @@ class ProductVariantSerializer(serializers.ModelSerializer):
     attributes   = ProductAttributeSerializer(many=True, read_only=True)
     stock_levels = StockLevelSerializer(many=True, read_only=True)
     total_stock  = serializers.SerializerMethodField()
+    product_name = serializers.CharField(source='product.name', read_only=True)
 
     class Meta:
         model = ProductVariant
-        fields = ['id', 'product', 'sku', 'barcode',
+        fields = ['id', 'product', 'product_name', 'sku', 'barcode',
                   'cost_price', 'sell_price',
                   'attributes', 'stock_levels', 'total_stock']
 
