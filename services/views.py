@@ -27,6 +27,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
         'cancel':             'MANAGER',
         'archive':            'MANAGER',
         'toggle_bell':        'CASHIER',
+        'return_service':     'CASHIER',
         'run_notifications':  'MANAGER',
     }
     filter_backends = [filters.OrderingFilter]
@@ -151,7 +152,21 @@ class ServiceViewSet(viewsets.ModelViewSet):
         service.save(update_fields=['notify_bell', 'updated_at'])
         return Response({'notify_bell': service.notify_bell})
 
+    @action(detail=True, methods=['post'], url_path='return')
+    def return_service(self, request, pk=None):
+        service = self.get_object()
+
+        if service.status != Service.Status.DONE:
+            return Response(
+                {'detail': 'Only completed (Done) services can be returned.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        service.status = Service.Status.RETURNED
+        service.save(update_fields=['status', 'updated_at'])
+        return Response(ServiceSerializer(service, context={'request': request}).data)
+
     @action(detail=False, methods=['post'], url_path='run-notifications')
     def run_notifications(self, request):
-        call_command('check_service_notifications', force=True)
+        call_command('check_service_notifications')
         return Response({'status': 'Notifications check completed.'}, status=status.HTTP_200_OK)

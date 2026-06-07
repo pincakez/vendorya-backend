@@ -24,6 +24,7 @@ class Service(TimestampedModel, SoftDeleteModel):
         DONE      = 'DONE',      _('Done')
         CANCELLED = 'CANCELLED', _('Cancelled')
         ARCHIVED  = 'ARCHIVED',  _('Archived')
+        RETURNED  = 'RETURNED',  _('Returned')
 
     id            = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store         = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='services')
