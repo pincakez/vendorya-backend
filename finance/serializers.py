@@ -69,8 +69,8 @@ class PaymentMethodSerializer(serializers.ModelSerializer):
 class SalesInvoiceItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesInvoiceItem
-        fields = ['id', 'variant', 'quantity', 'unit_price', 'tax_amount', 'total']
-        read_only_fields = ['id', 'total']
+        fields = ['id', 'variant', 'quantity', 'unit_price', 'discount_amount', 'tax_amount', 'total']
+        read_only_fields = ['id', 'tax_amount', 'total']
 
 
 class SalesInvoiceSerializer(serializers.ModelSerializer):
@@ -143,12 +143,13 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         subtotal = Decimal('0')
         tax_total = Decimal('0')
         for item in invoice.items.all():
-            subtotal += item.quantity * item.unit_price
+            line_discount = Decimal(str(item.discount_amount or '0'))
+            subtotal += (item.quantity * item.unit_price) - line_discount
             tax_total += item.tax_amount
-        discount = Decimal(str(invoice.discount or '0'))
+        invoice_discount = Decimal(str(invoice.discount or '0'))
         invoice.subtotal = subtotal
         invoice.tax_total = tax_total
-        invoice.grand_total = subtotal + tax_total - discount
+        invoice.grand_total = subtotal + tax_total - invoice_discount
         invoice.save(update_fields=['subtotal', 'tax_total', 'grand_total'])
 
 

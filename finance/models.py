@@ -98,6 +98,7 @@ class SalesInvoiceItem(models.Model):
     
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     total = models.DecimalField(max_digits=12, decimal_places=2)
 
@@ -106,7 +107,8 @@ class SalesInvoiceItem(models.Model):
     cost_at_sale = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
     def save(self, *args, **kwargs):
-        self.total = (self.quantity * self.unit_price) + self.tax_amount
+        discount = Decimal(str(self.discount_amount or '0'))
+        self.total = (self.quantity * self.unit_price) - discount + self.tax_amount
         super().save(*args, **kwargs)
 
 class Payment(TimestampedModel, SoftDeleteModel):
