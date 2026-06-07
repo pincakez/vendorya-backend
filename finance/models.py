@@ -108,7 +108,8 @@ class SalesInvoiceItem(models.Model):
 
     def save(self, *args, **kwargs):
         discount = Decimal(str(self.discount_amount or '0'))
-        self.total = (self.quantity * self.unit_price) - discount + self.tax_amount
+        tax = Decimal(str(self.tax_amount or '0'))
+        self.total = (self.quantity * self.unit_price) - discount + tax
         super().save(*args, **kwargs)
 
 class Payment(TimestampedModel, SoftDeleteModel):
@@ -190,6 +191,18 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
     date = models.DateTimeField(auto_now_add=True)
     total_refunded = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
+    # Returns policy fields (s41). restocking_fee is deducted from the gross
+    # total_refunded to get the net payout. refund_method records how the payout
+    # was given; STORE_CREDIT accrues to the customer's store_credit wallet.
+    restocking_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
+    class RefundMethod(models.TextChoices):
+        CASH = 'CASH', _('Cash / Original')
+        STORE_CREDIT = 'STORE_CREDIT', _('Store Credit')
+
+    refund_method = models.CharField(
+        max_length=15, choices=RefundMethod.choices, default=RefundMethod.CASH)
+
     # Who processed the return — used for per-cashier returns in reports.
     # Existing rows stay null ("unattributed").
     created_by = models.ForeignKey(
@@ -200,6 +213,11 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
     reason = models.TextField(blank=True)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
+    @property
+    def net_refund(self):
+        """What the customer actually receives = gross items total − restocking fee."""
+        return (self.total_refunded or Decimal('0')) - (self.restocking_fee or Decimal('0'))
 
     def save(self, *args, **kwargs):
         if not self.refund_number:
@@ -330,7 +348,6 @@ def handle_sale_stock(sender, instance, **kwargs):
         try:
             old = SalesInvoice.objects.get(pk=instance.pk)
             if old.status == SalesInvoice.Status.DRAFT and instance.status == SalesInvoice.Status.POSTED:
-                LOW_STOCK_THRESHOLD = 5
                 with transaction.atomic():
                     for item in instance.items.all():
                         stock = StockLevel.objects.select_for_update().filter(
@@ -339,8 +356,9 @@ def handle_sale_stock(sender, instance, **kwargs):
                         if stock:
                             stock.quantity -= item.quantity
                             stock.save()
-                            # Fire low-stock notification once per variant crossing threshold.
-                            if stock.quantity <= LOW_STOCK_THRESHOLD:
+                            # Fire low-stock notification once per variant crossing
+                            # its own reorder_level threshold.
+                            if stock.quantity <= (item.variant.reorder_level or 5):
                                 from notifications.dispatcher import send_notification
                                 from notifications.models import Notification as Notif
                                 send_notification(

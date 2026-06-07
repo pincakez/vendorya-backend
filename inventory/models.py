@@ -182,6 +182,13 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
     cost_price = models.DecimalField(_("Cost (Avg)"), max_digits=12, decimal_places=2, default=0.00)
     sell_price = models.DecimalField(_("Sell Price"), max_digits=12, decimal_places=2, default=0.00)
 
+    # Per-variant low-stock threshold. When on-hand qty (per branch) drops to/below
+    # this, the variant shows in the dashboard "low stock" list and fires a
+    # low-stock notification on sale. Replaces the old hardcoded store-wide 5.
+    reorder_level = models.DecimalField(
+        _("Reorder Level"), max_digits=12, decimal_places=3, default=5,
+        help_text=_("Alert when on-hand stock falls to or below this. Default 5."))
+
     def __str__(self):
         return f"{self.product.name} ({self.sku})"
 

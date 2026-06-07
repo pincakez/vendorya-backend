@@ -233,6 +233,15 @@ class StoreSettings(TimestampedModel):
         help_text=_("Master switch. When off, sales charge no tax and POS hides the "
                     "tax row — regardless of any product/default tax."))
 
+    # 2b. Returns policy
+    return_window_days = models.PositiveIntegerField(
+        _("Return Window (days)"), default=0,
+        help_text=_("Reject returns whose original invoice is older than this many "
+                    "days. 0 = no limit."))
+    restocking_fee_percent = models.DecimalField(
+        _("Restocking Fee (%)"), max_digits=5, decimal_places=2, default=0,
+        help_text=_("Default percentage deducted from a refund payout. 0 = none."))
+
     # 3. Number formatting (user-facing display rules)
     decimals = models.PositiveSmallIntegerField(default=2,
                                                 help_text=_("Number of decimal places shown for prices/totals (0-4)."))

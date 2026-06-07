@@ -34,7 +34,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Q, Sum, F
 
 from .registry import tool, ToolValidationError
 
@@ -249,7 +249,7 @@ def get_store_stats(context, store_id=None):
 
     low_stock_count = (
         StockLevel.objects
-        .filter(branch__store=store, quantity__lte=5,
+        .filter(branch__store=store, quantity__lte=F('variant__reorder_level'),
                 variant__is_deleted=False, variant__product__is_deleted=False)
         .count()
     )

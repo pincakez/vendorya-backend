@@ -52,6 +52,12 @@ class Customer(TimestampedModel, SoftDeleteModel):
         null=True, blank=True,
         help_text=_("Per-customer override. Null = use store default."),
     )
+    # Store-credit wallet. Accrues when a return is paid out as store credit.
+    # Positive = credit the customer can spend. (Redemption at POS is a separate,
+    # owner-policy-driven feature — accrual + display only for now.)
+    store_credit = models.DecimalField(
+        _("Store Credit"), max_digits=12, decimal_places=2, default=0.00,
+        help_text=_("Refund credit the customer can spend in-store."))
 
     # The store's default "Walk-in" customer for anonymous POS sales. One per store,
     # auto-created on store creation. Not user-editable/deletable; POS auto-selects it.

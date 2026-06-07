@@ -1,6 +1,6 @@
 from django.utils import timezone
 from django.db import connection
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, F
 from rest_framework import viewsets, status, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -179,9 +179,6 @@ class ActivityLogMetaView(APIView):
         return Response({'users': users_list, 'operation_types': op_types})
 
 
-LOW_STOCK_THRESHOLD = 5
-
-
 class DashboardView(APIView):
     permission_classes = [IsAuthenticated, IsCashierOrAbove]
 
@@ -221,12 +218,12 @@ class DashboardView(APIView):
                 'user': open_shift_qs.user.get_full_name() or open_shift_qs.user.username,
             }
 
-        # Low stock
+        # Low stock — per-variant reorder_level (falls back to 5 by default)
         low_stock = (
             StockLevel.objects
             .filter(
                 branch__store=store,
-                quantity__lte=LOW_STOCK_THRESHOLD,
+                quantity__lte=F('variant__reorder_level'),
                 variant__is_deleted=False,
                 variant__product__is_deleted=False,
             )

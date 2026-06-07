@@ -56,7 +56,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductVariant
         fields = ['id', 'product', 'product_name', 'sku', 'barcode',
-                  'cost_price', 'sell_price',
+                  'cost_price', 'sell_price', 'reorder_level',
                   'attributes', 'stock_levels', 'total_stock']
 
     def get_total_stock(self, obj):
@@ -196,11 +196,14 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                                           write_only=True, required=False, default=0)
     sell_price = serializers.DecimalField(max_digits=12, decimal_places=2,
                                           write_only=True, required=False, default=0)
+    reorder_level = serializers.DecimalField(max_digits=12, decimal_places=3,
+                                             write_only=True, required=False)
 
     class Meta:
         model = Product
         fields = ['id', 'name', 'description', 'category', 'supplier',
-                  'base_price', 'attributes', 'cost_price', 'sell_price']
+                  'base_price', 'attributes', 'cost_price', 'sell_price',
+                  'reorder_level']
         read_only_fields = ['id']
 
     def create(self, validated_data):
@@ -208,6 +211,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         attrs      = validated_data.pop('attributes', [])
         cost_price = validated_data.pop('cost_price', 0)
         sell_price = validated_data.pop('sell_price', 0)
+        reorder    = validated_data.pop('reorder_level', None)
 
         with transaction.atomic():
             product = Product.objects.create(**validated_data)
@@ -215,6 +219,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                 product=product,
                 cost_price=cost_price,
                 sell_price=sell_price or validated_data.get('base_price', 0),
+                **({'reorder_level': reorder} if reorder is not None else {}),
             )
             for attr in attrs:
                 defn_id = attr.get('definition') or attr.get('definition_id')
@@ -234,6 +239,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         attrs      = validated_data.pop('attributes', None)
         cost_price = validated_data.pop('cost_price', None)
         sell_price = validated_data.pop('sell_price', None)
+        reorder    = validated_data.pop('reorder_level', None)
         # Supplier is locked after creation — the SKU embeds the supplier prefix,
         # so changing it would invalidate every SKU on this product.
         validated_data.pop('supplier', None)
@@ -252,6 +258,8 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                     variant.cost_price = cost_price
                 if sell_price is not None:
                     variant.sell_price = sell_price
+                if reorder is not None:
+                    variant.reorder_level = reorder
                 variant.save()
 
                 if attrs is not None:

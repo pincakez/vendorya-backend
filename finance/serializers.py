@@ -259,25 +259,77 @@ class RefundItemSerializer(serializers.ModelSerializer):
 
 class RefundInvoiceSerializer(serializers.ModelSerializer):
     items = RefundItemSerializer(many=True, required=False)
+    net_refund = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True)
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
 
     class Meta:
         model = RefundInvoice
         fields = [
-            'id', 'branch', 'original_invoice', 'customer', 'refund_number',
-            'date', 'total_refunded', 'reason', 'items',
+            'id', 'branch', 'original_invoice', 'customer', 'customer_name',
+            'refund_number', 'date', 'total_refunded', 'reason', 'items',
+            'restocking_fee', 'refund_method', 'net_refund',
         ]
-        read_only_fields = ['id', 'refund_number', 'date', 'total_refunded']
+        # restocking_fee is computed server-side from the store's policy %, not
+        # client-supplied, so a caller can't zero it out.
+        read_only_fields = ['id', 'refund_number', 'date', 'total_refunded',
+                            'restocking_fee', 'net_refund']
 
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])
         original = validated_data.get('original_invoice')
+        store = validated_data.get('store')
         with transaction.atomic():
             if original is not None:
                 self._validate_against_original(original, items_data)
+                self._validate_return_window(store, original)
             refund = RefundInvoice.objects.create(**validated_data)
             for item_data in items_data:
                 RefundItem.objects.create(refund=refund, **item_data)
+            # RefundItem.save() recomputed total_refunded on a separate instance;
+            # reload so we see the gross total here.
+            refund.refresh_from_db()
+            # Restocking fee = store policy % of the gross refund.
+            pct = self._store_restock_percent(store)
+            if pct:
+                refund.restocking_fee = (
+                    (refund.total_refunded * pct / Decimal('100'))
+                    .quantize(Decimal('0.01'))
+                )
+                refund.save(update_fields=['restocking_fee'])
+            # Store-credit payout accrues to the customer's wallet (net of fee).
+            if (refund.refund_method == RefundInvoice.RefundMethod.STORE_CREDIT
+                    and refund.customer_id):
+                from users.models import Customer
+                cust = (Customer.all_objects.select_for_update()
+                        .get(pk=refund.customer_id))
+                cust.store_credit = (cust.store_credit or Decimal('0')) + refund.net_refund
+                cust.save(update_fields=['store_credit'])
         return refund
+
+    @staticmethod
+    def _store_restock_percent(store):
+        from core.models import StoreSettings
+        pct = (StoreSettings.objects.filter(store=store)
+               .values_list('restocking_fee_percent', flat=True).first())
+        return pct or Decimal('0')
+
+    @staticmethod
+    def _validate_return_window(store, original):
+        """Reject a return if the original invoice is older than the store's
+        return window. 0 = no limit."""
+        from core.models import StoreSettings
+        from django.utils import timezone
+        days = (StoreSettings.objects.filter(store=store)
+                .values_list('return_window_days', flat=True).first()) or 0
+        if days and original and original.date:
+            elapsed = (timezone.now() - original.date).days
+            if elapsed > days:
+                raise serializers.ValidationError(
+                    f"Return window expired: the original invoice is {elapsed} "
+                    f"days old, but this store only accepts returns within "
+                    f"{days} days."
+                )
 
     @staticmethod
     def _validate_against_original(original, items_data):
