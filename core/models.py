@@ -335,6 +335,10 @@ class StoreSettings(TimestampedModel):
         help_text=_("Send ETA notification this many hours before the deadline. 0 = disabled."),
     )
 
+    # 10. Printer Names (used by QZ Tray for direct USB/network printing)
+    label_printer_name   = models.CharField(_("Label Printer Name"),   max_length=120, blank=True)
+    receipt_printer_name = models.CharField(_("Receipt Printer Name"), max_length=120, blank=True)
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 
