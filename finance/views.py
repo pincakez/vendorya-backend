@@ -301,11 +301,11 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         purchase = serializer.save(store=self.request.user.store)
         log_activity(
             request=self.request,
-            action=f"Created Purchase #{purchase.invoice_number}",
+            action=f"Created Purchase {purchase.vendor_reference or str(purchase.id)[:8]}",
             op_type=ActivityLog.OperationType.PURCHASE,
             details={
                 'purchase_id': str(purchase.id),
-                'invoice_number': purchase.invoice_number,
+                'vendor_reference': purchase.vendor_reference or '',
                 'supplier': purchase.supplier.name if purchase.supplier else None,
                 'grand_total': str(purchase.grand_total),
                 'status': purchase.status,

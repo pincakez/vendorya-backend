@@ -344,7 +344,11 @@ _DEFAULT_PAYMENT_METHODS = [
 @receiver(post_save, sender=Store)
 def create_store_settings(sender, instance, created, **kwargs):
     if created:
-        StoreSettings.objects.create(store=instance)
+        StoreSettings.objects.create(
+            store=instance,
+            restocking_fee_percent=0,
+            return_window_days=0,
+        )
         from users.models import Customer
         Customer.objects.get_or_create(
             store=instance, is_walk_in=True,
