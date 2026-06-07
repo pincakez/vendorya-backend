@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     'admin_ai',
     'reports',
     'pos',
+    'services',
 ]
 
 MIDDLEWARE = [

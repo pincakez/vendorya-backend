@@ -1,5 +1,6 @@
 import uuid
 from django.db import models
+from django.db.models import Q
 from django.contrib.auth.models import AbstractUser
 from django.utils.translation import gettext_lazy as _
 from core.models import Address, TimestampedModel, SoftDeleteModel, Store
@@ -40,7 +41,11 @@ class Customer(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='customers')
     name = models.CharField(_("Full Name"), max_length=255)
-    phone_number = models.CharField(_("Phone Number"), max_length=20, help_text=_("Phone number must be unique per store."))
+    GENDER_MALE   = 'MALE'
+    GENDER_FEMALE = 'FEMALE'
+    GENDER_CHOICES = [(GENDER_MALE, _('Male')), (GENDER_FEMALE, _('Female'))]
+
+    phone_number = models.CharField(_("Phone Number"), max_length=20, null=True, blank=True, default=None, help_text=_("Phone number must be unique per store (if provided)."))
     notes = models.TextField(_("Notes"), blank=True, null=True)
     shipping_address = models.ForeignKey(Address, related_name='shipping_customers', on_delete=models.SET_NULL, null=True, blank=True)
     billing_address = models.ForeignKey(Address, related_name='billing_customers', on_delete=models.SET_NULL, null=True, blank=True)
@@ -59,6 +64,9 @@ class Customer(TimestampedModel, SoftDeleteModel):
         _("Store Credit"), max_digits=12, decimal_places=2, default=0.00,
         help_text=_("Refund credit the customer can spend in-store."))
 
+    gender = models.CharField(max_length=6, choices=GENDER_CHOICES, default=GENDER_MALE)
+    email  = models.EmailField(blank=True, default='')
+
     # The store's default "Walk-in" customer for anonymous POS sales. One per store,
     # auto-created on store creation. Not user-editable/deletable; POS auto-selects it.
     is_walk_in = models.BooleanField(default=False, editable=False)
@@ -68,7 +76,13 @@ class Customer(TimestampedModel, SoftDeleteModel):
     class Meta:
         verbose_name = _("Customer")
         verbose_name_plural = _("Customers")
-        unique_together = ('store', 'phone_number')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['store', 'phone_number'],
+                condition=Q(phone_number__isnull=False),
+                name='customer_store_phone_unique',
+            )
+        ]
         ordering = ['name']
 
     def __str__(self):

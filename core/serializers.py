@@ -102,6 +102,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'default_tax', 'tax_enabled',
             'product_numbering_mode',
             'session_timeout_minutes', 'login_ip_allowlist', 'force_2fa_managers',
+            'service_types', 'service_notify_hours',
         ]
 
     def validate_decimals(self, value):

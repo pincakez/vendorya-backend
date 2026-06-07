@@ -258,6 +258,32 @@ class DashboardView(APIView):
             for inv in recent_sales_qs
         ]
 
+        # Upcoming services (next 5 with ETA, not Done/Archived)
+        from services.models import Service
+        upcoming_services_qs = (
+            Service.objects
+            .filter(
+                store=store,
+                no_eta=False,
+                eta_datetime__isnull=False,
+                status=Service.Status.OPEN,
+                is_deleted=False,
+            )
+            .select_related('client')
+            .order_by('eta_datetime')[:5]
+        )
+        upcoming_services = [
+            {
+                'id': str(svc.id),
+                'serial_number': svc.serial_number,
+                'client_name': svc.client.name if svc.client_id else svc.client_name or '—',
+                'service_type': svc.service_type,
+                'eta_datetime': svc.eta_datetime,
+                'cost': str(svc.cost),
+            }
+            for svc in upcoming_services_qs
+        ]
+
         return Response({
             'today_sales_total': str(today_agg['total'] or 0),
             'today_invoices_count': today_agg['count'] or 0,
@@ -266,6 +292,7 @@ class DashboardView(APIView):
             'low_stock_count': len(low_stock_data),
             'low_stock_items': low_stock_data,
             'recent_sales': recent_sales,
+            'upcoming_services': upcoming_services,
         })
 
 

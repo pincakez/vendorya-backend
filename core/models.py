@@ -325,6 +325,16 @@ class StoreSettings(TimestampedModel):
         help_text=_("Max items shown in the POS Top Selling panel (4–10)."),
     )
 
+    # 9. Services Module
+    service_types = models.JSONField(
+        _("Service Types"), default=list, blank=True,
+        help_text=_("List of service type labels shown in the service form dropdown."),
+    )
+    service_notify_hours = models.PositiveSmallIntegerField(
+        _("Notify Before (hours)"), default=1,
+        help_text=_("Send ETA notification this many hours before the deadline. 0 = disabled."),
+    )
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 
@@ -348,6 +358,8 @@ def create_store_settings(sender, instance, created, **kwargs):
             store=instance,
             restocking_fee_percent=0,
             return_window_days=0,
+            service_types=['Hardware', 'Software', 'HW/SW', 'Apps', 'Unknown'],
+            service_notify_hours=1,
         )
         from users.models import Customer
         Customer.objects.get_or_create(
