@@ -4,6 +4,7 @@ from django.db import transaction
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets, filters, serializers, status
+from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -224,6 +225,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         'update':         'CASHIER',
         'partial_update': 'CASHIER',
         'destroy':        'MANAGER',
+        'invoices':       'CASHIER',
     }
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'phone_number']
@@ -233,6 +235,31 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
+
+    @action(detail=True, methods=['get'])
+    def invoices(self, request, pk=None):
+        from rest_framework import serializers as drf_serializers
+        from finance.models import SalesInvoice, Payment
+        from rest_framework.pagination import PageNumberPagination
+        customer = self.get_object()
+        qs = (SalesInvoice.objects
+              .filter(store=request.user.store, customer=customer, is_deleted=False)
+              .order_by('-date'))
+
+        class InvoiceSummarySerializer(drf_serializers.ModelSerializer):
+            payment_method = drf_serializers.SerializerMethodField()
+            class Meta:
+                from finance.models import SalesInvoice as M
+                model = M
+                fields = ['id', 'invoice_number', 'status', 'date', 'grand_total', 'paid_amount', 'discount', 'payment_method', 'created_at']
+            def get_payment_method(self, obj):
+                p = Payment.objects.filter(invoice=obj).select_related('method').first()
+                return p.method.name if p and p.method else None
+
+        pager = PageNumberPagination()
+        pager.page_size = 20
+        page = pager.paginate_queryset(qs, request)
+        return pager.get_paginated_response(InvoiceSummarySerializer(page, many=True).data)
 
 
 class StaffViewSet(viewsets.ModelViewSet):

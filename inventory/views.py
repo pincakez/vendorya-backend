@@ -374,6 +374,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
         'update':         'MANAGER',
         'partial_update': 'MANAGER',
         'destroy':        'ADMIN',
+        'purchases':      'MANAGER',
     }
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'contact_info']
@@ -399,11 +400,31 @@ class SupplierViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         instance = self.get_object()
-        # Prevent changing the prefix once locked
         if instance.prefix_locked and 'code_prefix' in serializer.validated_data:
             from rest_framework.exceptions import ValidationError
             raise ValidationError({'code_prefix': 'Supplier prefix is locked and cannot be changed.'})
         serializer.save()
+
+    @action(detail=True, methods=['get'])
+    def purchases(self, request, pk=None):
+        from rest_framework import serializers as drf_serializers
+        from finance.models import PurchaseInvoice
+        from rest_framework.pagination import PageNumberPagination
+        supplier = self.get_object()
+        qs = (PurchaseInvoice.objects
+              .filter(store=request.user.store, supplier=supplier, is_deleted=False)
+              .order_by('-date'))
+
+        class PurchaseSummarySerializer(drf_serializers.ModelSerializer):
+            class Meta:
+                from finance.models import PurchaseInvoice as M
+                model = M
+                fields = ['id', 'vendor_reference', 'status', 'date', 'total_amount', 'paid_amount', 'notes', 'created_at']
+
+        pager = PageNumberPagination()
+        pager.page_size = 20
+        page = pager.paginate_queryset(qs, request)
+        return pager.get_paginated_response(PurchaseSummarySerializer(page, many=True).data)
 
 
 class SupplierPrefixCheckView(APIView):

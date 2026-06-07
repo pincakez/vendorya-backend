@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone as tz
 from rest_framework import viewsets, filters, status
 from notifications.dispatcher import send_notification
 from notifications.models import Notification
@@ -413,6 +414,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         'partial_update': 'MANAGER',
         'destroy':        'ADMIN',
         'close':          'CASHIER',
+        'summary':        'CASHIER',
     }
 
     def get_queryset(self):
@@ -470,6 +472,44 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
             },
         )
         return Response(WorkShiftSerializer(shift).data)
+
+    @action(detail=True, methods=['get'])
+    def summary(self, request, pk=None):
+        from django.db.models import Sum
+        shift = self.get_object()
+        end = shift.end_time or tz.now()
+        invoices_qs = (SalesInvoice.objects
+                       .filter(store=request.user.store,
+                               branch=shift.branch,
+                               is_deleted=False,
+                               status=SalesInvoice.Status.POSTED,
+                               created_at__gte=shift.start_time,
+                               created_at__lte=end))
+        total_sales = invoices_qs.aggregate(t=Sum('grand_total'))['t'] or Decimal('0')
+        invoice_count = invoices_qs.count()
+
+        payments_qs = (Payment.objects
+                       .filter(invoice__in=invoices_qs)
+                       .values('method__name')
+                       .annotate(total=Sum('amount'))
+                       .order_by('-total'))
+        payment_breakdown = [{'method': p['method__name'] or 'Unknown', 'total': str(p['total'])} for p in payments_qs]
+
+        invoice_list = list(invoices_qs.values('id', 'invoice_number', 'customer__name', 'grand_total', 'paid_amount', 'created_at').order_by('-created_at')[:50])
+        for inv in invoice_list:
+            inv['id'] = str(inv['id'])
+            inv['grand_total'] = str(inv['grand_total'])
+            inv['paid_total'] = str(inv['paid_amount'])
+            inv['customer'] = inv.pop('customer__name') or 'Walk-in'
+            inv['created_at'] = inv['created_at'].isoformat() if inv['created_at'] else None
+
+        return Response({
+            'shift': WorkShiftSerializer(shift).data,
+            'invoice_count': invoice_count,
+            'total_sales': str(total_sales),
+            'payment_breakdown': payment_breakdown,
+            'invoices': invoice_list,
+        })
 
 
 class RefundInvoiceViewSet(viewsets.ModelViewSet):
