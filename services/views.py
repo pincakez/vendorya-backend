@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.management import call_command
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import viewsets, filters, status
@@ -7,7 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from users.permissions import RoleScopedPermission
+from users.permissions import RoleScopedPermission, IsManagerOrAbove
 from .models import Service
 from .serializers import ServiceSerializer
 
@@ -16,16 +17,17 @@ class ServiceViewSet(viewsets.ModelViewSet):
     serializer_class = ServiceSerializer
     permission_classes = [IsAuthenticated, RoleScopedPermission]
     role_map = {
-        'list':           'CASHIER',
-        'retrieve':       'CASHIER',
-        'create':         'CASHIER',
-        'update':         'MANAGER',
-        'partial_update': 'MANAGER',
-        'destroy':        'MANAGER',
-        'done':           'CASHIER',
-        'cancel':         'MANAGER',
-        'archive':        'MANAGER',
-        'toggle_bell':    'CASHIER',
+        'list':               'CASHIER',
+        'retrieve':           'CASHIER',
+        'create':             'CASHIER',
+        'update':             'MANAGER',
+        'partial_update':     'MANAGER',
+        'destroy':            'MANAGER',
+        'done':               'CASHIER',
+        'cancel':             'MANAGER',
+        'archive':            'MANAGER',
+        'toggle_bell':        'CASHIER',
+        'run_notifications':  'MANAGER',
     }
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['receive_date', 'eta_datetime', 'created_at', 'cost', 'serial_number']
@@ -148,3 +150,8 @@ class ServiceViewSet(viewsets.ModelViewSet):
         service.notify_bell = not service.notify_bell
         service.save(update_fields=['notify_bell', 'updated_at'])
         return Response({'notify_bell': service.notify_bell})
+
+    @action(detail=False, methods=['post'], url_path='run-notifications')
+    def run_notifications(self, request):
+        call_command('check_service_notifications', force=True)
+        return Response({'status': 'Notifications check completed.'}, status=status.HTTP_200_OK)
