@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .api_admin import (
     AdminStoreViewSet, AdminBranchViewSet, AdminUserViewSet,
-    AdminActivityLogViewSet, AdminActivityLogMetaView,
+    AdminActivityLogViewSet, AdminActivityLogMetaView, AdminActivityLogPurgeView,
     AdminStoreCodeCheckView, AdminStoreForceLogoutView,
     AdminStoreUsageView, AdminStoreExportView,
 )
@@ -17,6 +17,7 @@ router.register(r'activity-logs',  AdminActivityLogViewSet,  basename='admin-act
 
 urlpatterns = [
     path('activity-logs/meta/', AdminActivityLogMetaView.as_view(), name='admin-activity-log-meta'),
+    path('activity-logs/purge/', AdminActivityLogPurgeView.as_view(), name='admin-activity-log-purge'),
     path('stores/check-code/',  AdminStoreCodeCheckView.as_view(),  name='admin-store-check-code'),
     path('stores/<uuid:store_id>/force-logout/', AdminStoreForceLogoutView.as_view(), name='admin-store-force-logout'),
     path('stores/<uuid:store_id>/usage/',        AdminStoreUsageView.as_view(),       name='admin-store-usage'),

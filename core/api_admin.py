@@ -181,6 +181,58 @@ class AdminActivityLogMetaView(APIView):
         })
 
 
+class AdminActivityLogPurgeView(APIView):
+    """Audit-log retention purge (sudo only). Mirrors the
+    `purge_old_activity_logs` management command, manual-trigger.
+
+      GET  ?years=2  (or ?days=90) → preview: how many rows would be deleted.
+      POST {years|days}            → delete them (batched), logs the purge.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def _cutoff(self, request):
+        days = request.query_params.get('days') or request.data.get('days')
+        years = request.query_params.get('years') or request.data.get('years')
+        if days not in (None, ''):
+            d = int(days)
+            if d < 1:
+                raise ValueError("days must be >= 1")
+            return tz.now() - timedelta(days=d), f"{d} day(s)"
+        y = int(years) if years not in (None, '') else 2
+        if y < 1:
+            raise ValueError("years must be >= 1")
+        return tz.now() - timedelta(days=y * 365), f"{y} year(s)"
+
+    def get(self, request):
+        try:
+            cutoff, window = self._cutoff(request)
+        except (ValueError, TypeError):
+            return Response({'detail': 'Invalid retention window.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        count = ActivityLog.objects.filter(timestamp__lt=cutoff).count()
+        return Response({'window': window, 'cutoff': cutoff.date().isoformat(),
+                         'count': count})
+
+    def post(self, request):
+        try:
+            cutoff, window = self._cutoff(request)
+        except (ValueError, TypeError):
+            return Response({'detail': 'Invalid retention window.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        deleted = 0
+        while True:
+            ids = list(ActivityLog.objects.filter(timestamp__lt=cutoff)
+                       .values_list('pk', flat=True)[:5000])
+            if not ids:
+                break
+            ActivityLog.objects.filter(pk__in=ids).delete()
+            deleted += len(ids)
+        # Note: not self-logged — ActivityLog requires a store FK, and a
+        # cross-store retention purge has no single store to attribute it to.
+        return Response({'deleted': deleted, 'window': window,
+                         'cutoff': cutoff.date().isoformat()})
+
+
 class AdminStoreForceLogoutView(APIView):
     """POST /api/admin/stores/{store_id}/force-logout/
 
