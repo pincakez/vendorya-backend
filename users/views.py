@@ -227,8 +227,10 @@ class CustomerViewSet(viewsets.ModelViewSet):
         'destroy':        'MANAGER',
         'invoices':       'CASHIER',
     }
-    filter_backends = [filters.SearchFilter]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'phone_number']
+    ordering_fields = ['name', 'phone_number', 'balance', 'store_credit', 'created_at']
+    ordering = ['name']
 
     def get_queryset(self):
         return Customer.objects.filter(store=self.request.user.store)

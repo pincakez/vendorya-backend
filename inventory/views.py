@@ -376,8 +376,10 @@ class SupplierViewSet(viewsets.ModelViewSet):
         'destroy':        'ADMIN',
         'purchases':      'MANAGER',
     }
-    filter_backends = [filters.SearchFilter]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'contact_info']
+    ordering_fields = ['name', 'contact_info', 'balance', 'created_at']
+    ordering = ['name']
 
     def get_queryset(self):
         outstanding = ExpressionWrapper(
