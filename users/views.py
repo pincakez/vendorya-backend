@@ -162,6 +162,11 @@ class MeView(APIView):
                 return Response({'pos_settings': 'Must be a JSON object.'}, status=status.HTTP_400_BAD_REQUEST)
             user.pos_settings = data['pos_settings']
 
+        if 'ui_prefs' in data:
+            if not isinstance(data['ui_prefs'], dict):
+                return Response({'ui_prefs': 'Must be a JSON object.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.ui_prefs = data['ui_prefs']
+
         user.save()
         return Response(UserProfileSerializer(user).data)
 

@@ -33,6 +33,9 @@ class User(AbstractUser):
         on_delete=models.SET_NULL, related_name='default_for_users',
     )
     pos_settings = models.JSONField(default=dict, blank=True)
+    # Per-user display prefs: {ui_scale, ui_font, table_font} as multipliers
+    # (e.g. 1.0, 1.25). Applied as zoom on the frontend. (s53d)
+    ui_prefs = models.JSONField(default=dict, blank=True)
 
     def __str__(self):
         return self.username
