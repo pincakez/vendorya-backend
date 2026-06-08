@@ -372,6 +372,18 @@ def handle_sale_stock(sender, instance, **kwargs):
                         # Snapshot COGS at the moment of posting.
                         item.cost_at_sale = weighted_avg_cost(item.variant, instance.store)
                         item.save(update_fields=['cost_at_sale'])
+            elif old.status == SalesInvoice.Status.POSTED and instance.status == SalesInvoice.Status.VOID:
+                # Reversing a posted sale: put the stock back so inventory stays
+                # accurate. Mirrors the DRAFT→POSTED decrement above. (DRAFT→VOID
+                # never decremented, so it must NOT add stock.)
+                with transaction.atomic():
+                    for item in instance.items.all():
+                        stock = StockLevel.objects.select_for_update().filter(
+                            variant=item.variant, branch=instance.branch
+                        ).first()
+                        if stock:
+                            stock.quantity += item.quantity
+                            stock.save()
         except SalesInvoice.DoesNotExist:
             pass
 

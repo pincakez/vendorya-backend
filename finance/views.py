@@ -307,7 +307,7 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
                 'purchase_id': str(purchase.id),
                 'vendor_reference': purchase.vendor_reference or '',
                 'supplier': purchase.supplier.name if purchase.supplier else None,
-                'grand_total': str(purchase.grand_total),
+                'grand_total': str(purchase.total_amount),
                 'status': purchase.status,
             },
         )

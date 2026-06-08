@@ -233,7 +233,11 @@ class CustomerViewSet(viewsets.ModelViewSet):
     ordering = ['name']
 
     def get_queryset(self):
-        return Customer.objects.filter(store=self.request.user.store)
+        qs = Customer.objects.filter(store=self.request.user.store)
+        walk = self.request.query_params.get('is_walk_in')
+        if walk is not None:
+            qs = qs.filter(is_walk_in=walk.lower() in ('true', '1', 'yes'))
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
