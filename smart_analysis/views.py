@@ -19,7 +19,7 @@ class TablePresetViewSet(viewsets.ModelViewSet):
     role_map = {
         'list': 'ADMIN', 'retrieve': 'ADMIN', 'create': 'ADMIN',
         'update': 'ADMIN', 'partial_update': 'ADMIN', 'destroy': 'ADMIN',
-        'effective': 'CASHIER', 'assignments': 'ADMIN',
+        'effective': 'CASHIER', 'assignments': 'ADMIN', 'my_config': 'CASHIER',
     }
 
     def get_queryset(self):
@@ -86,4 +86,26 @@ class TablePresetViewSet(viewsets.ModelViewSet):
         pref.store = store
         pref.assigned_preset = preset
         pref.save()
+        return Response({'ok': True})
+
+    @action(detail=False, methods=['get', 'post'], url_path='my-config')
+    def my_config(self, request):
+        """GET/POST ?table_id= — per-user ad-hoc layout saved server-side.
+        Complements the browser localStorage copy so the layout survives clearing
+        cache or switching devices."""
+        tid = request.query_params.get('table_id') or request.data.get('table_id')
+        store = request.user.store
+        if request.method == 'GET':
+            pref = TablePreference.objects.filter(user=request.user, table_id=tid).first()
+            return Response(pref.config if pref and pref.config else {})
+        cfg = request.data.get('config')
+        if cfg is None:
+            return Response({'detail': 'config is required.'}, status=400)
+        pref, _ = TablePreference.objects.get_or_create(
+            user=request.user, table_id=tid,
+            defaults={'store': store}
+        )
+        pref.store = store
+        pref.config = cfg
+        pref.save(update_fields=['config'])
         return Response({'ok': True})

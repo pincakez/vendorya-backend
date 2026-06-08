@@ -54,6 +54,23 @@ class AttributeDefinitionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
 
+    @action(detail=True, methods=['post'], url_path='add-option')
+    def add_option(self, request, pk=None):
+        """Append a new option to a SELECT attribute's option list."""
+        attr = self.get_object()
+        if attr.input_type != AttributeDefinition.InputType.SELECT:
+            return Response({'detail': 'Only SELECT attributes support options.'}, status=400)
+        value = (request.data.get('value') or '').strip()
+        if not value:
+            return Response({'detail': 'value is required.'}, status=400)
+        current = list(attr.options or [])
+        if value in current:
+            return Response({'detail': 'Option already exists.'}, status=400)
+        current.append(value)
+        attr.options = current
+        attr.save(update_fields=['options'])
+        return Response({'options': attr.options})
+
 
 class ProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, RoleScopedPermission]
@@ -69,6 +86,8 @@ class ProductViewSet(viewsets.ModelViewSet):
         'bulk_ghost':     'MANAGER',
         'bulk_update':    'MANAGER',
         'bulk_delete':    'ADMIN',
+        'upload_image':   'MANAGER',
+        'remove_image':   'MANAGER',
     }
     filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
@@ -143,6 +162,29 @@ class ProductViewSet(viewsets.ModelViewSet):
         if not isinstance(ids, list) or not ids:
             return None
         return Product.objects.filter(store=self.request.user.store, id__in=ids)
+
+    @action(detail=True, methods=['post'], url_path='upload-image', parser_classes=None)
+    def upload_image(self, request, pk=None):
+        """Upload or replace the product image. Send as multipart/form-data with key 'image'."""
+        product = self.get_object()
+        img = request.FILES.get('image')
+        if not img:
+            return Response({'detail': 'image file required.'}, status=400)
+        if product.image:
+            product.image.delete(save=False)
+        product.image = img
+        product.save(update_fields=['image', 'updated_at'])
+        serializer = ProductDetailSerializer(product, context={'request': request})
+        return Response({'image_url': serializer.data.get('image_url')})
+
+    @action(detail=True, methods=['delete'], url_path='remove-image')
+    def remove_image(self, request, pk=None):
+        product = self.get_object()
+        if product.image:
+            product.image.delete(save=False)
+            product.image = None
+            product.save(update_fields=['image', 'updated_at'])
+        return Response({'ok': True})
 
     @action(detail=True, methods=['post'])
     def toggle_ghost(self, request, pk=None):

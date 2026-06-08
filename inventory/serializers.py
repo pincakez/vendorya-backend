@@ -179,6 +179,14 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     variants       = ProductVariantSerializer(many=True, read_only=True)
     category_name  = serializers.CharField(source='category.name', read_only=True)
     supplier_name  = serializers.CharField(source='supplier.name', read_only=True)
+    supplier_contact = serializers.CharField(source='supplier.contact_info', read_only=True)
+    image_url      = serializers.SerializerMethodField()
+
+    def get_image_url(self, obj):
+        if not obj.image:
+            return None
+        request = self.context.get('request')
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
 
     class Meta:
         model = Product

@@ -145,6 +145,7 @@ class Product(TimestampedModel, SoftDeleteModel):
 
     description = models.TextField(blank=True, null=True)
     unit = models.CharField(_("Unit"), max_length=20, default="pcs")
+    image = models.ImageField(upload_to='products/', null=True, blank=True)
 
     base_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
