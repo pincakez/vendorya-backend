@@ -203,6 +203,7 @@ class GeminiService:
         attachments: Optional[List[Dict[str, Any]]] = None,
         tool_context: Optional[ToolContext] = None,
         tool_names: Optional[List[str]] = None,
+        kb_context: Optional[str] = None,
     ) -> Iterable[Dict[str, Any]]:
         """Stream a single user turn back as SSE events.
 
@@ -222,7 +223,8 @@ class GeminiService:
 
         try:
             contents = self._build_contents(history, prompt, attachments)
-            config  = self._build_generate_config(profile, tool_names=tool_names)
+            config  = self._build_generate_config(profile, tool_names=tool_names,
+                                                  kb_context=kb_context)
         except Exception as e:  # noqa: BLE001
             yield {'event': 'error', 'message': f'Bad request: {e}'}
             return
@@ -325,16 +327,30 @@ class GeminiService:
         self,
         profile: AIProfile,
         tool_names: Optional[List[str]] = None,
+        kb_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Construct the `config=` payload for generate_content_stream.
 
         `tool_names` overrides the profile's enabled_tools allowlist when
         the router has pre-selected a relevant subset (saves ~70% of tool
         declaration tokens). None → fall back to profile.enabled_tools.
+
+        `kb_context` is prepended to the system instruction when the RAG
+        retrieval found relevant knowledge base chunks for this turn.
         """
         cfg: Dict[str, Any] = {}
-        if profile.system_instruction:
-            cfg['system_instruction'] = profile.system_instruction
+        base_instruction = profile.system_instruction or ''
+        if kb_context:
+            system_instruction = (
+                f"## Relevant knowledge base context for this query:\n\n"
+                f"{kb_context}\n\n"
+                f"---\n\n"
+                f"{base_instruction}"
+            ).strip()
+        else:
+            system_instruction = base_instruction
+        if system_instruction:
+            cfg['system_instruction'] = system_instruction
         if profile.temperature is not None:
             cfg['temperature'] = profile.temperature
         if profile.top_p is not None:

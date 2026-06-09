@@ -2199,3 +2199,55 @@ def send_in_app_notification(context, title, body='', type='GENERAL',
     )
     return {'ok': True, 'notification_id': str(note.id),
             'target': 'user' if user else 'store-wide'}
+
+
+# ============================================================================
+#  Knowledge base
+# ============================================================================
+
+@tool(
+    name='search_knowledge_base',
+    description='Semantic search over the admin knowledge base. Use when you need '
+                'business rules, store policies, product specs, pricing guidelines, '
+                'SOPs, or any information that may have been uploaded as a document. '
+                'Returns the most relevant text excerpts ranked by relevance.',
+    parameters={
+        'type': 'object',
+        'properties': {
+            'query': {'type': 'string',
+                      'description': 'Natural language query to search for.'},
+            'limit': {'type': 'integer',
+                      'description': 'Max results to return (default 5, max 10).'},
+        },
+        'required': ['query'],
+    },
+)
+def search_knowledge_base(context, query, limit=None):
+    from admin_ai.models import AIKnowledgeChunk
+    from admin_ai.services import GeminiService, GeminiError, NoApiKey
+
+    n = max(1, min(int(limit or 5), 10))
+    try:
+        service = GeminiService.from_settings()
+        vec = service.embed(query)
+    except (NoApiKey, GeminiError) as e:
+        raise ToolValidationError(f"Could not embed query: {e}")
+
+    from pgvector.django import CosineDistance
+    qs = (AIKnowledgeChunk.objects
+          .filter(is_deleted=False, embedding__isnull=False)
+          .annotate(distance=CosineDistance('embedding', vec))
+          .order_by('distance')[:n])
+
+    results = [
+        {
+            'source': c.source_name,
+            'content': c.content,
+            'relevance': round(1 - float(c.distance), 3),
+        }
+        for c in qs
+        if c.distance < 0.7  # skip anything too distant to be useful
+    ]
+    if not results:
+        return [{'note': 'No relevant knowledge base entries found.'}]
+    return results

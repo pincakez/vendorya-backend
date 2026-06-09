@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 _ALWAYS_ON = [
     'get_current_context', 'list_stores', 'get_store_info',
-    'get_store_stats', 'get_activity_log',
+    'get_store_stats', 'get_activity_log', 'search_knowledge_base',
 ]
 
 _TOOL_GROUPS: dict = {
@@ -279,6 +279,7 @@ class AIChatView(APIView):
             request=request,
         )
         tool_names = self._route_tools(prompt)
+        kb_context = self._retrieve_kb_context(service, prompt)
 
         def event_stream():
             # First frame: conversation id so the client can pin subsequent turns.
@@ -296,6 +297,7 @@ class AIChatView(APIView):
                     attachments=attachments,
                     tool_context=tool_ctx,
                     tool_names=tool_names,
+                    kb_context=kb_context,
                 ):
                     kind = ev.get('event')
                     if kind == 'token':
@@ -392,6 +394,36 @@ class AIChatView(APIView):
         for group in matched:
             names.extend(_TOOL_GROUPS[group])
         return names
+
+    @staticmethod
+    def _retrieve_kb_context(service, prompt: str, top_k: int = 4) -> Optional[str]:
+        """Embed the prompt, find the most relevant KB chunks, return them as text.
+
+        Returns None (silently) when KB is empty, embedding fails, or no chunk
+        is close enough (distance ≥ 0.5 = less than 50% cosine similarity).
+        This keeps the fast path free when the KB hasn't been populated yet.
+        """
+        try:
+            from .models import AIKnowledgeChunk
+            if not AIKnowledgeChunk.objects.filter(
+                    is_deleted=False, embedding__isnull=False).exists():
+                return None  # KB is empty — skip the embed call entirely
+
+            from .services import GeminiError
+            from pgvector.django import CosineDistance
+            vec = service.embed(prompt)
+            qs = (AIKnowledgeChunk.objects
+                  .filter(is_deleted=False, embedding__isnull=False)
+                  .annotate(distance=CosineDistance('embedding', vec))
+                  .order_by('distance')[:top_k])
+            relevant = [c for c in qs if c.distance < 0.5]
+            if not relevant:
+                return None
+            parts = [f"[{c.source_name}]\n{c.content}" for c in relevant]
+            return '\n\n'.join(parts)
+        except Exception:  # noqa: BLE001 — never break the chat over a KB miss
+            logger.warning("KB retrieval failed for prompt %r", prompt[:60], exc_info=True)
+            return None
 
 
 # ---------- knowledge base ----------
