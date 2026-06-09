@@ -202,6 +202,7 @@ class GeminiService:
         prompt: str,
         attachments: Optional[List[Dict[str, Any]]] = None,
         tool_context: Optional[ToolContext] = None,
+        tool_names: Optional[List[str]] = None,
     ) -> Iterable[Dict[str, Any]]:
         """Stream a single user turn back as SSE events.
 
@@ -221,7 +222,7 @@ class GeminiService:
 
         try:
             contents = self._build_contents(history, prompt, attachments)
-            config  = self._build_generate_config(profile)
+            config  = self._build_generate_config(profile, tool_names=tool_names)
         except Exception as e:  # noqa: BLE001
             yield {'event': 'error', 'message': f'Bad request: {e}'}
             return
@@ -308,15 +309,8 @@ class GeminiService:
         prompt: str,
         attachments: Optional[List[Dict[str, Any]]],
     ) -> List[Dict[str, Any]]:
-        contents: List[Dict[str, Any]] = []
-        for turn in history:
-            role = turn.get('role') or 'user'
-            # Gemini uses 'user' / 'model' roles; map our enum.
-            mapped_role = 'model' if role.upper() == 'MODEL' else 'user'
-            contents.append({
-                'role': mapped_role,
-                'parts': [{'text': turn.get('content') or ''}],
-            })
+        # history is already [{role, parts}] Gemini-format from _flatten_history.
+        contents: List[Dict[str, Any]] = list(history)
 
         parts: List[Dict[str, Any]] = [{'text': prompt}]
         for att in attachments or []:
@@ -327,12 +321,16 @@ class GeminiService:
         contents.append({'role': 'user', 'parts': parts})
         return contents
 
-    def _build_generate_config(self, profile: AIProfile) -> Dict[str, Any]:
+    def _build_generate_config(
+        self,
+        profile: AIProfile,
+        tool_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """Construct the `config=` payload for generate_content_stream.
 
-        Blank/None values are dropped so the model defaults take over. Tool
-        declarations are pulled from the registry, optionally filtered by
-        the profile's `enabled_tools` allowlist.
+        `tool_names` overrides the profile's enabled_tools allowlist when
+        the router has pre-selected a relevant subset (saves ~70% of tool
+        declaration tokens). None → fall back to profile.enabled_tools.
         """
         cfg: Dict[str, Any] = {}
         if profile.system_instruction:
@@ -346,7 +344,9 @@ class GeminiService:
         if profile.max_output_tokens:
             cfg['max_output_tokens'] = profile.max_output_tokens
 
-        declarations = registry.declarations_for(profile.enabled_tools or None)
+        # tool_names (from router) > profile.enabled_tools > all registered tools
+        names = tool_names if tool_names is not None else (profile.enabled_tools or None)
+        declarations = registry.declarations_for(names)
         if declarations:
             cfg['tools'] = [{'function_declarations': declarations}]
         return cfg

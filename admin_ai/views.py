@@ -19,7 +19,7 @@ Routes (mounted under /api/admin/ai/):
 """
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -42,6 +42,66 @@ from .services import GeminiService, NoApiKey, GeminiError
 from .registry import registry, ToolContext
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+#  Tool routing — send only the relevant tool group instead of all 48.
+#  "Always on" tools orient the model (who am I, what store am I on).
+#  Groups are activated by keyword match against the user's prompt.
+# ---------------------------------------------------------------------------
+
+_ALWAYS_ON = [
+    'get_current_context', 'list_stores', 'get_store_info',
+    'get_store_stats', 'get_activity_log',
+]
+
+_TOOL_GROUPS: dict = {
+    'inventory': [
+        'list_branches', 'update_branch',
+        'list_products', 'get_product_detail',
+        'list_categories', 'create_category', 'update_category',
+        'list_attributes', 'create_attribute', 'update_attribute',
+        'bulk_update_attribute_value',
+        'list_suppliers', 'get_supplier_detail', 'create_supplier', 'update_supplier',
+        'list_stock_adjustments', 'create_stock_adjustment',
+        'create_product', 'update_product',
+    ],
+    'finance': [
+        'list_invoices', 'list_purchases', 'list_expenses',
+        'create_purchase_invoice', 'receive_purchase',
+        'create_sales_invoice', 'create_expense',
+    ],
+    'people': [
+        'list_customers', 'get_customer_detail', 'create_customer', 'update_customer',
+        'list_staff', 'create_staff_user', 'update_staff_user', 'deactivate_staff_user',
+    ],
+    'platform': [
+        'list_admin_users', 'list_subscription_plans', 'list_subscriptions',
+        'create_store', 'update_store', 'toggle_store_active',
+        'update_subscription_plan', 'update_subscription', 'send_in_app_notification',
+    ],
+}
+
+_ROUTING_KEYWORDS: dict = {
+    'inventory': [
+        'product', 'stock', 'inventory', 'item', 'sku', 'barcode', 'laptop', 'phone',
+        'tablet', 'category', 'supplier', 'variant', 'adjustment', 'branch', 'attribute',
+        'season', 'low stock', 'reorder', 'import', 'export', 'quantity', 'cost price',
+        'sell price', 'how many', 'in stock',
+    ],
+    'finance': [
+        'invoice', 'sale', 'purchase', 'expense', 'shift', 'payment', 'revenue',
+        'profit', 'sell', 'sold', 'buy', 'paid', 'debt', 'receivable', 'payable',
+        'income', 'receipt', 'bill', 'cash', 'total',
+    ],
+    'people': [
+        'customer', 'staff', 'cashier', 'employee', 'user', 'client',
+        'worker', 'team', 'member', 'who works',
+    ],
+    'platform': [
+        'subscription', 'plan', 'billing', 'suspend', 'notification', 'notify',
+        'alert', 'all stores', 'list stores', 'admin user',
+    ],
+}
 
 
 def _gemini_or_error():
@@ -218,6 +278,7 @@ class AIChatView(APIView):
             store=getattr(request.user, 'store', None),
             request=request,
         )
+        tool_names = self._route_tools(prompt)
 
         def event_stream():
             # First frame: conversation id so the client can pin subsequent turns.
@@ -234,6 +295,7 @@ class AIChatView(APIView):
                     prompt=prompt,
                     attachments=attachments,
                     tool_context=tool_ctx,
+                    tool_names=tool_names,
                 ):
                     kind = ev.get('event')
                     if kind == 'token':
@@ -267,10 +329,69 @@ class AIChatView(APIView):
 
     @staticmethod
     def _flatten_history(conversation: AIConversation) -> List[Dict[str, Any]]:
-        return [
-            {'role': m.role, 'content': m.content}
-            for m in conversation.messages.exclude(role=AIMessage.Role.SYSTEM)
-        ]
+        """Return conversation history in Gemini's {role, parts} format.
+
+        For model messages that contain tool calls, we reconstruct the
+        function_call + function_response turn pairs Gemini expects. Without
+        this the model loses knowledge of discovered IDs (store UUIDs etc.)
+        between conversation turns, causing it to hallucinate or re-query.
+        """
+        contents: List[Dict[str, Any]] = []
+
+        for m in conversation.messages.exclude(role=AIMessage.Role.SYSTEM):
+            role = 'model' if m.role.upper() == 'MODEL' else 'user'
+
+            if role == 'model' and m.tool_calls:
+                tool_events = [tc for tc in m.tool_calls if tc.get('event') == 'tool']
+                if tool_events:
+                    # Reconstruct the model's function_call turn.
+                    contents.append({
+                        'role': 'model',
+                        'parts': [
+                            {'function_call': {'name': tc['name'], 'args': tc.get('args') or {}}}
+                            for tc in tool_events
+                        ],
+                    })
+                    # Reconstruct the user-side function_response turn.
+                    contents.append({
+                        'role': 'user',
+                        'parts': [
+                            {'function_response': {
+                                'name': tc['name'],
+                                'response': tc.get('result') or {},
+                            }}
+                            for tc in tool_events
+                        ],
+                    })
+                # Then the model's final text answer for this turn.
+                if m.content:
+                    contents.append({'role': 'model', 'parts': [{'text': m.content}]})
+            elif m.content:
+                contents.append({'role': role, 'parts': [{'text': m.content}]})
+
+        return contents
+
+    @staticmethod
+    def _route_tools(prompt: str) -> Optional[List[str]]:
+        """Return a focused tool list based on the prompt's intent.
+
+        Returns None when the intent is ambiguous — the caller then sends all
+        registered tools (safe fallback). When a group matches, sends only the
+        orientation tools + that group: typically ~10 tools vs 48 (~70% saving).
+        """
+        low = prompt.lower()
+        matched: set = set()
+        for group, keywords in _ROUTING_KEYWORDS.items():
+            if any(kw in low for kw in keywords):
+                matched.add(group)
+
+        if not matched:
+            return None  # unclear intent → send all tools
+
+        names: List[str] = list(_ALWAYS_ON)
+        for group in matched:
+            names.extend(_TOOL_GROUPS[group])
+        return names
 
 
 # ---------- knowledge base ----------
