@@ -1,3 +1,7 @@
+import os
+import base64
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from django.utils import timezone
 from django.db import connection
 from django.db.models import Sum, Count, F
@@ -330,3 +334,45 @@ class HealthView(APIView):
         s = 'ok' if db_ok else 'degraded'
         code = status.HTTP_200_OK if db_ok else status.HTTP_503_SERVICE_UNAVAILABLE
         return Response({'status': s, 'db': db_ok, 'ts': timezone.now().isoformat()}, status=code)
+
+
+# ── QZ Tray certificate signing ──────────────────────────────────────────────
+
+def _load_private_key():
+    raw = os.environ.get('QZTRAY_PRIVATE_KEY', '')
+    if not raw:
+        return None
+    pem = raw.replace('\\n', '\n').encode()
+    try:
+        return serialization.load_pem_private_key(pem, password=None)
+    except Exception:
+        return None
+
+
+class QZTrayCertView(APIView):
+    """Return the public certificate so the frontend can pass it to QZ Tray."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        cert_path = os.path.join(os.path.dirname(__file__), '..', '..', 'vendorya-frontend', 'public', 'downloads', 'vendorya-qztray-cert.pem')
+        cert_path = os.path.normpath(cert_path)
+        try:
+            with open(cert_path) as f:
+                return Response({'certificate': f.read()})
+        except FileNotFoundError:
+            return Response({'certificate': ''})
+
+
+class QZTraySignView(APIView):
+    """Sign a QZ Tray challenge string with the RSA private key."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        to_sign = request.data.get('toSign', '')
+        if not to_sign:
+            return Response({'detail': 'toSign is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        key = _load_private_key()
+        if not key:
+            return Response({'detail': 'Signing key not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        sig = key.sign(to_sign.encode(), padding.PKCS1v15(), hashes.SHA512())
+        return Response({'signature': base64.b64encode(sig).decode()})
