@@ -104,6 +104,8 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'session_timeout_minutes', 'login_ip_allowlist', 'force_2fa_managers',
             'service_types', 'service_notify_hours',
             'label_printer_name', 'receipt_printer_name',
+            'pos_print_default', 'pos_double_print_default',
+            'srv_print_default', 'srv_double_print_default',
         ]
 
     def validate_decimals(self, value):

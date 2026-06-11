@@ -339,6 +339,14 @@ class StoreSettings(TimestampedModel):
     label_printer_name   = models.CharField(_("Label Printer Name"),   max_length=120, blank=True)
     receipt_printer_name = models.CharField(_("Receipt Printer Name"), max_length=120, blank=True)
 
+    # 10b. Print defaults — pre-check the per-transaction print boxes so the
+    # cashier never has to tick them every sale/service. (POS = sales receipt,
+    # SRV = service receipt. "double" = print two copies, e.g. client + store.)
+    pos_print_default        = models.BooleanField(_("POS: print receipt by default"),    default=True)
+    pos_double_print_default = models.BooleanField(_("POS: 2x print by default"),          default=False)
+    srv_print_default        = models.BooleanField(_("Service: print receipt by default"), default=True)
+    srv_double_print_default = models.BooleanField(_("Service: 2x print by default"),      default=True)
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 
