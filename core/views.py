@@ -354,13 +354,19 @@ class QZTrayCertView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        cert_path = os.path.join(os.path.dirname(__file__), '..', '..', 'vendorya-frontend', 'public', 'downloads', 'vendorya-qztray-cert.pem')
-        cert_path = os.path.normpath(cert_path)
-        try:
-            with open(cert_path) as f:
-                return Response({'certificate': f.read()})
-        except FileNotFoundError:
-            return Response({'certificate': ''})
+        # The cert lives under the frontend's downloads folder. On prod ONLY the
+        # built `dist/` is deployed (no `public/`); on WSL dev Vite serves `public/`.
+        # Try both so the endpoint returns the cert in either environment — if it
+        # returns empty, QZ Tray sees an "anonymous request" and can't be trusted.
+        base = os.path.join(os.path.dirname(__file__), '..', '..', 'vendorya-frontend')
+        for sub in ('dist', 'public'):
+            cert_path = os.path.normpath(os.path.join(base, sub, 'downloads', 'vendorya-qztray-cert.pem'))
+            try:
+                with open(cert_path) as f:
+                    return Response({'certificate': f.read()})
+            except FileNotFoundError:
+                continue
+        return Response({'certificate': ''})
 
 
 class QZTraySignView(APIView):
