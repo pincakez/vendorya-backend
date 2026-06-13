@@ -37,6 +37,15 @@ class User(AbstractUser):
     # (e.g. 1.0, 1.25). Applied as zoom on the frontend. (s53d)
     ui_prefs = models.JSONField(default=dict, blank=True)
 
+    class Language(models.TextChoices):
+        EN = 'en', _('English')
+        AR = 'ar', _('Arabic')
+
+    language = models.CharField(
+        _("Preferred Language"), max_length=5,
+        choices=Language.choices, default=Language.EN,
+    )
+
     def __str__(self):
         return self.username
 
