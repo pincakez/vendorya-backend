@@ -5,6 +5,7 @@ from .api_admin import (
     AdminActivityLogViewSet, AdminActivityLogMetaView, AdminActivityLogPurgeView,
     AdminStoreCodeCheckView, AdminStoreForceLogoutView,
     AdminStoreUsageView, AdminStoreExportView,
+    AdminSessionsView, AdminUserForceLogoutView,
 )
 from .api_admin_trash import AdminTrashListView, AdminTrashRestoreView
 from .api_admin_isolation import AdminIsolationAuditView
@@ -25,5 +26,7 @@ urlpatterns = [
     path('trash/',         AdminTrashListView.as_view(),    name='admin-trash-list'),
     path('trash/restore/', AdminTrashRestoreView.as_view(), name='admin-trash-restore'),
     path('isolation-check/', AdminIsolationAuditView.as_view(), name='admin-isolation-check'),
+    path('commands/sessions/',    AdminSessionsView.as_view(),        name='admin-commands-sessions'),
+    path('commands/user-logout/', AdminUserForceLogoutView.as_view(), name='admin-commands-user-logout'),
     path('', include(router.urls)),
 ]

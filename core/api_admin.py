@@ -418,3 +418,139 @@ class AdminStoreExportView(APIView):
         response = HttpResponse(content, content_type='application/json')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+
+
+# ── Commands: live session management ────────────────────────────────────────
+
+class AdminSessionsView(APIView):
+    """GET /api/admin/commands/sessions/
+
+    Returns all stores split by whether they have active (non-expired,
+    non-blacklisted) JWT refresh tokens.  Used by the Commands page to show
+    who is currently logged in and allow force-logout.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        from collections import defaultdict
+
+        now = tz.now()
+
+        # All valid outstanding refresh tokens (not expired, not blacklisted)
+        active_tokens = (
+            OutstandingToken.objects
+            .filter(expires_at__gt=now)
+            .exclude(blacklistedtoken__isnull=False)
+            .select_related('user', 'user__store')
+            .order_by('user__store_id', 'user_id', '-created_at')
+        )
+
+        # Group: store_id → user_id → [tokens]
+        store_users = defaultdict(lambda: defaultdict(list))
+        store_meta = {}
+
+        for token in active_tokens:
+            user = token.user
+            if not user.store_id:
+                continue  # skip superadmins — they have no store
+            sid = str(user.store_id)
+            if sid not in store_meta:
+                store_meta[sid] = {
+                    'id': sid,
+                    'name': user.store.name,
+                    'store_code': user.store.store_code,
+                    'is_active': user.store.is_active,
+                }
+            store_users[sid][str(user.id)].append(token)
+
+        # Build active list (stores with at least one valid session)
+        active = []
+        for sid, users_map in store_users.items():
+            user_list = []
+            total = 0
+            for uid, tokens in users_map.items():
+                u = tokens[0].user
+                count = len(tokens)
+                total += count
+                user_list.append({
+                    'id': uid,
+                    'username': u.username,
+                    'full_name': f"{u.first_name} {u.last_name}".strip() or u.username,
+                    'role': u.role,
+                    'active_tokens': count,
+                    'last_token_at': max(t.created_at for t in tokens).isoformat(),
+                })
+            active.append({
+                'store': store_meta[sid],
+                'users': user_list,
+                'total_tokens': total,
+            })
+
+        # Build inactive list (all other non-deleted stores)
+        active_sids = set(store_users.keys())
+        inactive = []
+        for store in Store.objects.filter(is_deleted=False).order_by('name'):
+            sid = str(store.id)
+            if sid not in active_sids:
+                inactive.append({
+                    'store': {
+                        'id': sid,
+                        'name': store.name,
+                        'store_code': store.store_code,
+                        'is_active': store.is_active,
+                    },
+                    'users': [],
+                    'total_tokens': 0,
+                })
+
+        return Response({'active': active, 'inactive': inactive})
+
+
+class AdminUserForceLogoutView(APIView):
+    """POST /api/admin/commands/user-logout/
+
+    Blacklist all valid refresh tokens for a single user, forcing them to
+    re-authenticate on their next API call.
+    Body: { "user_id": "<uuid>" }
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'detail': 'user_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.select_related('store').get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        now = tz.now()
+        tokens = list(
+            OutstandingToken.objects
+            .filter(user=user, expires_at__gt=now)
+            .exclude(blacklistedtoken__isnull=False)
+        )
+        count = len(tokens)
+        if count:
+            BlacklistedToken.objects.bulk_create(
+                [BlacklistedToken(token=t) for t in tokens],
+                ignore_conflicts=True,
+            )
+
+        ActivityLog.all_objects.create(
+            store=user.store,
+            user=request.user,
+            operation_type=ActivityLog.OperationType.OTHER,
+            action=f"Force-logout: user '{user.username}' session terminated",
+            details={
+                'by': request.user.username,
+                'target_user': user.username,
+                'sessions_killed': count,
+            },
+        )
+
+        return Response({
+            'detail': f"Terminated {count} active session(s) for {user.username}.",
+            'sessions_killed': count,
+        })
