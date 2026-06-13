@@ -81,6 +81,7 @@ INSTALLED_APPS = [
     'reports',
     'pos',
     'services',
+    'public_api',
 ]
 
 MIDDLEWARE = [
@@ -219,15 +220,20 @@ from datetime import timedelta
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
+        # API-key auth runs first: if no key header is present it returns None
+        # and JWT takes over, so the first-party app is unaffected.
+        'public_api.authentication.APIKeyAuthentication',
         'users.authentication.VendoryaJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
-    # Only the 'login' scope is used (applied on the token view). No global
-    # throttling — that would rate-limit the whole authenticated app.
+    # 'login' throttles the token endpoint. 'api_key' is per-key (see
+    # public_api.throttling.APIKeyRateThrottle) and only bites API-key traffic —
+    # never the first-party app.
     'DEFAULT_THROTTLE_RATES': {
         'login': '5/min',
+        'api_key': '120/min',
     },
 }
 
