@@ -74,14 +74,14 @@ class AdminStoreViewSet(viewsets.ModelViewSet):
             if grace_days > 0:
                 details['grace_period_days'] = grace_days
                 details['note'] = f'Grace period: {grace_days} days from suspension date. Manual follow-up required.'
-            ActivityLog.objects.create(
+            ActivityLog.all_objects.create(
                 store=store, user=self.request.user,
                 operation_type=ActivityLog.OperationType.OTHER,
                 action="Store suspended by admin",
                 details=details,
             )
         elif not was_active and store.is_active:
-            ActivityLog.objects.create(
+            ActivityLog.all_objects.create(
                 store=store, user=self.request.user,
                 operation_type=ActivityLog.OperationType.OTHER,
                 action="Store reactivated by admin",
@@ -129,7 +129,7 @@ class AdminActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsSuperAdmin]
 
     def get_queryset(self):
-        qs = ActivityLog.objects.all().select_related('user', 'store')
+        qs = ActivityLog.all_objects.all().select_related('user', 'store')
         params = self.request.query_params
 
         store_id = params.get('store')
@@ -209,7 +209,7 @@ class AdminActivityLogPurgeView(APIView):
         except (ValueError, TypeError):
             return Response({'detail': 'Invalid retention window.'},
                             status=status.HTTP_400_BAD_REQUEST)
-        count = ActivityLog.objects.filter(timestamp__lt=cutoff).count()
+        count = ActivityLog.all_objects.filter(timestamp__lt=cutoff).count()
         return Response({'window': window, 'cutoff': cutoff.date().isoformat(),
                          'count': count})
 
@@ -221,11 +221,11 @@ class AdminActivityLogPurgeView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         deleted = 0
         while True:
-            ids = list(ActivityLog.objects.filter(timestamp__lt=cutoff)
+            ids = list(ActivityLog.all_objects.filter(timestamp__lt=cutoff)
                        .values_list('pk', flat=True)[:5000])
             if not ids:
                 break
-            ActivityLog.objects.filter(pk__in=ids).delete()
+            ActivityLog.all_objects.filter(pk__in=ids).delete()
             deleted += len(ids)
         # Note: not self-logged — ActivityLog requires a store FK, and a
         # cross-store retention purge has no single store to attribute it to.
@@ -264,7 +264,7 @@ class AdminStoreForceLogoutView(APIView):
                 ignore_conflicts=True,
             )
 
-        ActivityLog.objects.create(
+        ActivityLog.all_objects.create(
             store=store,
             user=request.user,
             operation_type=ActivityLog.OperationType.OTHER,
@@ -305,12 +305,12 @@ class AdminStoreUsageView(APIView):
         staff_count = U.objects.filter(store=store, is_active=True).count()
 
         # DAU = distinct users with activity log entry today
-        dau = (ActivityLog.objects
+        dau = (ActivityLog.all_objects
                .filter(store=store, timestamp__gte=day_start)
                .values('user').distinct().count())
 
         # MAU = distinct users active in last 30 days
-        mau = (ActivityLog.objects
+        mau = (ActivityLog.all_objects
                .filter(store=store, timestamp__gte=thirty_days_ago)
                .values('user').distinct().count())
 

@@ -124,7 +124,7 @@ class AdminBillingInvoiceCreateSerializer(serializers.Serializer):
 
     def validate_store(self, store_id):
         try:
-            sub = Subscription.objects.select_related('store').get(store_id=store_id)
+            sub = Subscription.all_objects.select_related('store').get(store_id=store_id)  # sudo create, explicit store
         except Subscription.DoesNotExist:
             raise serializers.ValidationError("No subscription found for that store.")
         self.context['subscription'] = sub

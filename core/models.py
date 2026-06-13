@@ -5,7 +5,7 @@ from django.core.validators import RegexValidator
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
-from core.tenancy import TenantSoftDeleteManager
+from core.tenancy import TenantSoftDeleteManager, TenantScopedManager
 
 # --- MANAGERS ---
 class SoftDeleteManager(models.Manager):
@@ -187,6 +187,9 @@ class ActivityLog(models.Model):
 
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    objects     = TenantScopedManager()   # secure-by-default: auto-scopes to the active tenant
+    all_objects = models.Manager()         # escape hatch (sudo audit, analytics, purge command)
 
     class Meta:
         ordering = ['-timestamp']

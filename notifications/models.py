@@ -5,6 +5,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from core.models import Store
+from core.tenancy import TenantScopedManager
 
 SOUND_CHOICES = [('mute', 'Mute')] + [(f's{i:02d}', f'Sound {i:02d}') for i in range(1, 11)]
 
@@ -45,6 +46,9 @@ class Notification(models.Model):
 
     read_at    = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    objects     = TenantScopedManager()   # secure-by-default: auto-scopes to the active tenant
+    all_objects = models.Manager()         # escape hatch (sudo alerts, dispatcher infra, commands)
 
     class Meta:
         ordering = ['-created_at']

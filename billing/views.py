@@ -70,7 +70,7 @@ class AdminSubscriptionViewSet(viewsets.ModelViewSet):
     http_method_names  = ['get', 'patch', 'head', 'options']
 
     def get_queryset(self):
-        qs = (Subscription.objects
+        qs = (Subscription.all_objects   # sudo: every store's subscription
               .select_related('store', 'store__owner', 'plan')
               .filter(store__is_deleted=False))
         status_filter = self.request.query_params.get('status')
@@ -97,7 +97,7 @@ class AdminBillingInvoiceViewSet(viewsets.ModelViewSet):
         return BillingInvoiceSerializer
 
     def get_queryset(self):
-        qs = (BillingInvoice.objects
+        qs = (BillingInvoice.all_objects   # sudo: every store's invoices
               .select_related('store', 'subscription', 'subscription__plan'))
         params = self.request.query_params
         if params.get('store'):

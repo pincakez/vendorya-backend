@@ -14,7 +14,7 @@ def auto_create_subscription(sender, instance, created, **kwargs):
            SubscriptionPlan.objects.filter(is_active=True).order_by('monthly_price', 'name').first()
     if plan is None:
         return  # no plans seeded yet — fresh DB during tests
-    Subscription.objects.get_or_create(
+    Subscription.all_objects.get_or_create(   # store-creation signal; may run in a sudo-acting request
         store=instance,
         defaults={'plan': plan, 'status': Subscription.Status.ACTIVE},
     )
@@ -30,7 +30,7 @@ def notify_on_issue(sender, instance, created, **kwargs):
     # Import here to avoid circular import at app-loading time.
     from notifications.models import Notification
 
-    already = Notification.objects.filter(
+    already = Notification.all_objects.filter(   # dedup keyed by explicit store; may run in sudo context
         store=instance.store,
         type=Notification.Type.BILLING_INVOICE,
         payload__invoice_id=str(instance.id),

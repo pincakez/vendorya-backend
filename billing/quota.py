@@ -35,7 +35,7 @@ _LABEL = {
 
 def _limit_for(store, resource):
     """Return the numeric limit for `resource`, or None if unlimited / no plan."""
-    sub = (Subscription.objects
+    sub = (Subscription.all_objects   # keyed by explicit `store`; callable from sudo context
            .select_related('plan')
            .filter(store=store)
            .first())

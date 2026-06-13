@@ -345,7 +345,7 @@ def list_subscription_plans(context, include_inactive=False):
 )
 def list_subscriptions(context, status=None, store_id=None, limit=None):
     from billing.models import Subscription
-    qs = Subscription.objects.select_related('store', 'plan')
+    qs = Subscription.all_objects.select_related('store', 'plan')  # V-Pilot: cross-store (sudo), own store_id filter below
     if status:
         qs = qs.filter(status=status)
     if store_id:
@@ -946,7 +946,7 @@ def list_stock_adjustments(context, store_id=None, reason=None, limit=None):
 def get_activity_log(context, store_id=None, operation_type=None,
                      user_id=None, since=None, limit=None):
     from core.models import ActivityLog
-    qs = ActivityLog.objects.select_related('user', 'store')
+    qs = ActivityLog.all_objects.select_related('user', 'store')  # V-Pilot: cross-store; acting-store logic below
 
     # store_id explicitly empty/missing AND no acting store = cross-store
     if store_id:
@@ -1258,7 +1258,7 @@ def update_subscription(context, subscription_id, plan_id=None, status=None,
     from django.utils import timezone as djtz
     from billing.models import Subscription, SubscriptionPlan
 
-    sub = Subscription.objects.filter(pk=subscription_id).first()
+    sub = Subscription.all_objects.filter(pk=subscription_id).first()  # sudo: manage any store's subscription
     if sub is None:
         raise ToolValidationError(f"Subscription {subscription_id} not found.")
 

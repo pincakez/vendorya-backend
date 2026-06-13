@@ -53,7 +53,7 @@ class Command(BaseCommand):
         suspended = []
 
         # 1. Expired trials → PAST_DUE
-        trial_qs = Subscription.objects.filter(
+        trial_qs = Subscription.all_objects.filter(
             status=S.TRIAL, trial_ends_at__isnull=False, trial_ends_at__lt=today,
         )
         for sub in trial_qs:
@@ -63,12 +63,12 @@ class Command(BaseCommand):
                 sub.save(update_fields=['status', 'updated_at'])
 
         # 2. Subscriptions with an overdue ISSUED invoice → PAST_DUE (if not already)
-        overdue_invoice_subs = (BillingInvoice.objects
+        overdue_invoice_subs = (BillingInvoice.all_objects
                                 .filter(status=BillingInvoice.Status.ISSUED,
                                         due_at__isnull=False, due_at__lt=today)
                                 .values_list('subscription_id', flat=True)
                                 .distinct())
-        flag_qs = Subscription.objects.filter(
+        flag_qs = Subscription.all_objects.filter(
             id__in=list(overdue_invoice_subs),
         ).exclude(status__in=[S.PAST_DUE, S.CANCELLED])
         for sub in flag_qs.select_related('store'):
@@ -79,7 +79,7 @@ class Command(BaseCommand):
 
         # 3. PAST_DUE longer than grace_days → suspend the store
         grace = timedelta(days=settings_obj.grace_days)
-        pastdue_qs = (Subscription.objects
+        pastdue_qs = (Subscription.all_objects
                       .filter(status=S.PAST_DUE, store__is_active=True, store__is_deleted=False)
                       .select_related('store'))
         for sub in pastdue_qs:

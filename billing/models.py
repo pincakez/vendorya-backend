@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from core.models import Store, TimestampedModel, SoftDeleteModel
+from core.tenancy import TenantScopedManager
 
 
 class BillingSettings(TimestampedModel):
@@ -117,6 +118,9 @@ class Subscription(TimestampedModel):
 
     notes = models.TextField(blank=True, help_text=_("Internal sudo notes — never shown to tenant."))
 
+    objects     = TenantScopedManager()   # secure-by-default: auto-scopes to the active tenant
+    all_objects = models.Manager()         # escape hatch (sudo admin, billing cycle, signals)
+
     class Meta:
         ordering = ['store__name']
 
@@ -168,6 +172,9 @@ class BillingInvoice(TimestampedModel):
     issued_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
                                   null=True, blank=True, related_name='+')
 
+    objects     = TenantScopedManager()   # secure-by-default: auto-scopes to the active tenant
+    all_objects = models.Manager()         # escape hatch (sudo admin, billing cycle, numbering)
+
     class Meta:
         ordering = ['-created_at']
         indexes  = [models.Index(fields=['store', '-created_at'])]
@@ -179,7 +186,8 @@ class BillingInvoice(TimestampedModel):
         year   = timezone.now().year
         prefix = f"INV-{year}-"
         with transaction.atomic():
-            last = (BillingInvoice.objects
+            # Numbering is GLOBAL across the platform → must not be tenant-scoped.
+            last = (BillingInvoice.all_objects
                     .select_for_update()
                     .filter(invoice_number__startswith=prefix)
                     .order_by('-invoice_number')

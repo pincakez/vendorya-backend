@@ -48,7 +48,7 @@ class Command(BaseCommand):
             cutoff = timezone.now() - timedelta(days=yrs * 365)
             window = f"{yrs} year(s)"
 
-        qs = ActivityLog.objects.filter(timestamp__lt=cutoff)
+        qs = ActivityLog.all_objects.filter(timestamp__lt=cutoff)
         total = qs.count()
 
         if options['dry_run']:
@@ -64,11 +64,11 @@ class Command(BaseCommand):
         batch = options['batch_size']
         deleted = 0
         while True:
-            ids = list(ActivityLog.objects.filter(timestamp__lt=cutoff)
+            ids = list(ActivityLog.all_objects.filter(timestamp__lt=cutoff)
                        .values_list('pk', flat=True)[:batch])
             if not ids:
                 break
-            ActivityLog.objects.filter(pk__in=ids).delete()
+            ActivityLog.all_objects.filter(pk__in=ids).delete()
             deleted += len(ids)
 
         self.stdout.write(self.style.SUCCESS(

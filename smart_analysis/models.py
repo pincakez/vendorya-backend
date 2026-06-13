@@ -3,6 +3,7 @@ from django.db import models
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
 from core.models import TimestampedModel, Store
+from core.tenancy import TenantScopedManager
 
 
 class TablePreset(TimestampedModel):
@@ -22,6 +23,9 @@ class TablePreset(TimestampedModel):
                                      help_text=_("Used for users without an explicit assignment."))
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='+')
+
+    objects     = TenantScopedManager()   # secure-by-default: auto-scopes to the active tenant
+    all_objects = models.Manager()         # escape hatch (cross-tenant: sudo / audit / commands)
 
     class Meta:
         unique_together = ('store', 'table_id', 'name')
@@ -45,6 +49,9 @@ class TablePreference(TimestampedModel):
     assigned_preset = models.ForeignKey(TablePreset, on_delete=models.SET_NULL,
                                         null=True, blank=True, related_name='assignments')
     config = models.JSONField(_("Configuration"), default=dict, blank=True)
+
+    objects     = TenantScopedManager()   # secure-by-default: auto-scopes to the active tenant
+    all_objects = models.Manager()         # escape hatch (cross-tenant: sudo / audit / commands)
 
     class Meta:
         unique_together = ('user', 'table_id')

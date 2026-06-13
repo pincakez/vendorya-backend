@@ -139,7 +139,7 @@ class AdminAlertHistoryView(APIView):
             return Response({'detail': 'store_id required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         qs = (
-            Notification.objects
+            Notification.all_objects   # sudo: reads any store's history (explicit store_id)
             .filter(store_id=store_id, priority=Notification.Priority.ADMIN)
             .order_by('-created_at')
         )

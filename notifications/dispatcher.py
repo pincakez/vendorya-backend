@@ -31,18 +31,19 @@ def _purge_after_create(store, priority):
     """
     from .models import Notification
 
+    # Infra keyed by an explicit `store` (may run inside a sudo-acting request) → all_objects.
     if priority == Notification.Priority.ADMIN:
         keep_ids = list(
-            Notification.objects.filter(store=store, priority=Notification.Priority.ADMIN)
+            Notification.all_objects.filter(store=store, priority=Notification.Priority.ADMIN)
             .order_by('-created_at')
             .values_list('id', flat=True)[:100]
         )
-        Notification.objects.filter(
+        Notification.all_objects.filter(
             store=store, priority=Notification.Priority.ADMIN,
         ).exclude(id__in=keep_ids).delete()
     else:
         cutoff = timezone.now() - timezone.timedelta(days=90)
-        Notification.objects.filter(
+        Notification.all_objects.filter(
             store=store,
             priority__in=[
                 Notification.Priority.INFO,
