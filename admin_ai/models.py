@@ -13,6 +13,7 @@ from django.utils.translation import gettext_lazy as _
 from pgvector.django import VectorField, HnswIndex
 
 from core.models import Store, TimestampedModel, SoftDeleteModel
+from core.encryption import EncryptedCharField
 
 
 # ---------- platform-level settings ----------
@@ -21,12 +22,14 @@ class AISettings(TimestampedModel):
     """Singleton holding the Gemini API key and other platform-wide AI knobs.
 
     Enforced single-row via `pk=1` save() override. Edited via the C2 Misc
-    page (sudo-only). Stored in plaintext — DB access already requires
-    DJANGO_SECRET_KEY + DB credentials, so layered encryption adds little.
+    page (sudo-only). The key is encrypted at rest (EncryptedCharField) so it
+    never appears in plaintext in the DB or the committed `backups/*.sql` dumps;
+    the API serializer is already write-only + masked.
     """
 
     id           = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
-    gemini_api_key = models.CharField(_("Gemini API Key"), max_length=200, blank=True, default='')
+    # Encrypted at rest; ciphertext is longer than the raw ~40-char key, so 512.
+    gemini_api_key = EncryptedCharField(_("Gemini API Key"), max_length=512, blank=True, default='')
 
     # Safe, code-free knobs for the auto model-discovery (edited on the Misc page).
     # One model id per line (or comma-separated). Matched against Google's live list.
