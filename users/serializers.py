@@ -52,11 +52,19 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class CustomerSerializer(serializers.ModelSerializer):
+    # Live balance = opening-balance seed + Σ posted-invoice AR. Computed, never
+    # stored (the `balance` column holds only the opening seed). Positive = owes us.
+    balance = serializers.SerializerMethodField()
+
     class Meta:
         model = Customer
         fields = ['id', 'name', 'phone_number', 'email', 'gender', 'notes',
                   'balance', 'credit_limit', 'store_credit', 'is_walk_in']
-        read_only_fields = ['id', 'balance', 'store_credit', 'is_walk_in']
+        read_only_fields = ['id', 'store_credit', 'is_walk_in']
+
+    def get_balance(self, obj):
+        from finance.models import customer_outstanding
+        return str(customer_outstanding(obj))
 
 
 class StaffSerializer(serializers.ModelSerializer):

@@ -53,8 +53,12 @@ class Customer(TimestampedModel, SoftDeleteModel):
     shipping_address = models.ForeignKey(Address, related_name='shipping_customers', on_delete=models.SET_NULL, null=True, blank=True)
     billing_address = models.ForeignKey(Address, related_name='billing_customers', on_delete=models.SET_NULL, null=True, blank=True)
     
-    # NEW: Track Debt
-    balance = models.DecimalField(_("Current Balance"), max_digits=12, decimal_places=2, default=0.00, help_text="Positive = They owe us. Negative = We owe them.")
+    # Opening-balance SEED only — a manual starting figure entered at onboarding
+    # (e.g. a debt migrated from the store's old system). Live invoice activity is
+    # NOT written here; the running balance is computed by
+    # finance.models.customer_outstanding() = this seed + Σ posted-invoice AR.
+    # Read it through customer_outstanding(), never directly. (Positive = owes us.)
+    balance = models.DecimalField(_("Opening Balance (seed)"), max_digits=12, decimal_places=2, default=0.00, help_text="Opening-balance seed only. Live balance = customer_outstanding() (seed + invoice AR).")
     credit_limit = models.DecimalField(
         _("Credit Limit"), max_digits=12, decimal_places=2,
         null=True, blank=True,

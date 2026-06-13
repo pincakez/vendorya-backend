@@ -656,22 +656,29 @@ def get_supplier_detail(context, supplier_id, store_id=None):
 )
 def list_customers(context, store_id=None, search=None, has_balance=False, limit=None):
     from users.models import Customer
+    from finance.models import customer_outstanding
     store = _resolve_store(context, store_id)
     qs = Customer.objects.filter(store=store)
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(phone_number__icontains=search))
-    if has_balance:
-        qs = qs.exclude(balance=0)
-    qs = qs.order_by('name')[:_clamp_limit(limit)]
-    return [
-        {
+    qs = qs.order_by('name')
+    cap = _clamp_limit(limit)
+    rows = []
+    # Balance is computed live (seed + invoice AR), so has_balance must filter
+    # in Python — no stored column to query against.
+    for c in qs:
+        bal = customer_outstanding(c)
+        if has_balance and bal == 0:
+            continue
+        rows.append({
             'id': str(c.id),
             'name': c.name,
             'phone': c.phone_number,
-            'balance': _money(c.balance),
-        }
-        for c in qs
-    ]
+            'balance': _money(bal),
+        })
+        if len(rows) >= cap:
+            break
+    return rows
 
 
 @tool(
@@ -688,7 +695,7 @@ def list_customers(context, store_id=None, search=None, has_balance=False, limit
 )
 def get_customer_detail(context, customer_id, store_id=None):
     from users.models import Customer
-    from finance.models import SalesInvoice
+    from finance.models import SalesInvoice, customer_outstanding
     store = _resolve_store(context, store_id)
     c = Customer.objects.filter(pk=customer_id, store=store).first()
     if c is None:
@@ -701,7 +708,7 @@ def get_customer_detail(context, customer_id, store_id=None):
         'name': c.name,
         'phone': c.phone_number,
         'notes': c.notes or '',
-        'balance': _money(c.balance),
+        'balance': _money(customer_outstanding(c)),
         'recent_invoices': [
             {
                 'id': str(inv.id),

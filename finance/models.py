@@ -317,12 +317,16 @@ def weighted_avg_cost(variant, store):
 
 
 def customer_outstanding(customer, exclude_invoice_id=None):
-    """A customer's REAL accounts-receivable balance = Σ over their POSTED,
+    """A customer's REAL balance = opening-balance seed + Σ over their POSTED,
     non-deleted invoices of (grand_total − paid_amount − refunded).
 
-    This is the source of truth for credit limits. The stored
-    `Customer.balance` field is NOT maintained anywhere, so credit enforcement
-    must compute the live total here (Option A, s31). Mirrors the AR-aging report.
+    This is the single source of truth — for credit-limit enforcement, the
+    Customers list/detail display, and V-Pilot. The stored `Customer.balance`
+    column is the *opening-balance seed* only (a manual starting figure entered
+    at onboarding, e.g. via V-Pilot `create_customer(opening_balance=…)`); live
+    invoice activity is never written back to it, so the running total must be
+    computed here (Option A, s31; opening seed folded in s61). Mirrors the
+    AR-aging report. Positive = they owe us; negative = we owe them.
     """
     from django.db.models import Q, Value, DecimalField
     from django.db.models.functions import Coalesce
@@ -336,7 +340,7 @@ def customer_outstanding(customer, exclude_invoice_id=None):
     qs = qs.annotate(refunded=Coalesce(
         Sum('refunds__total_refunded', filter=Q(refunds__is_deleted=False)),
         Value(ZERO), output_field=DEC))
-    total = ZERO
+    total = customer.balance or ZERO   # opening-balance seed
     for inv in qs:
         total += (inv.grand_total or ZERO) - (inv.paid_amount or ZERO) - (inv.refunded or ZERO)
     return total

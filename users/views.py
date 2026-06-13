@@ -234,7 +234,9 @@ class CustomerViewSet(viewsets.ModelViewSet):
     }
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'phone_number']
-    ordering_fields = ['name', 'phone_number', 'balance', 'store_credit', 'created_at']
+    # 'balance' is computed live (not a real DB column to order by), so it's
+    # intentionally absent here — the Customers table shows it un-sortable.
+    ordering_fields = ['name', 'phone_number', 'store_credit', 'created_at']
     ordering = ['name']
 
     def get_queryset(self):
