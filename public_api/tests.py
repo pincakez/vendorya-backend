@@ -137,3 +137,61 @@ class APIKeyTenantIsolationTests(TestCase):
             self.assertEqual(APIKey.all_objects.count(), 2)
         finally:
             clear_current_request()
+
+
+class APIKeyCRUDTests(TestCase):
+    """The owner-facing mint/list/revoke endpoints."""
+    def setUp(self):
+        from django.conf import settings as dj_settings
+        dj_settings.ALLOWED_HOSTS = ['*']
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+        self.store, self.owner = make_store('Acme', 'ACM', 'owner')
+        self.other_store, self.other_owner = make_store('Other', 'OTH', 'other')
+        self.cashier = User.objects.create_user(username='cash', password='x',
+                                                 store=self.store, role='CASHIER')
+        self.client = APIClient()
+        self._login(self.owner)
+
+    def _login(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(user).access_token))
+
+    def test_mint_returns_raw_key_once(self):
+        r = self.client.post('/api/api-keys/keys/', {'label': 'Zapier', 'scopes': ['inventory:read']}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertIn('raw_key', r.data)
+        self.assertTrue(r.data['raw_key'].startswith('vdy_'))
+        # listing must NOT include the raw secret
+        lst = self.client.get('/api/api-keys/keys/')
+        row = (lst.data['results'] if isinstance(lst.data, dict) else lst.data)[0]
+        self.assertNotIn('raw_key', row)
+        self.assertEqual(row['key_prefix'], r.data['key_prefix'])
+
+    def test_list_is_tenant_scoped(self):
+        APIKey.generate(store=self.store, label='mine', created_by=self.owner)
+        APIKey.generate(store=self.other_store, label='theirs', created_by=self.other_owner)
+        r = self.client.get('/api/api-keys/keys/')
+        rows = r.data['results'] if isinstance(r.data, dict) else r.data
+        self.assertEqual({row['label'] for row in rows}, {'mine'})
+
+    def test_revoke_deactivates(self):
+        key, _ = APIKey.generate(store=self.store, label='k', created_by=self.owner)
+        r = self.client.post(f'/api/api-keys/keys/{key.id}/revoke/')
+        self.assertEqual(r.status_code, 200)
+        key.refresh_from_db()
+        self.assertFalse(key.is_active)
+
+    def test_cashier_cannot_manage_keys(self):
+        self._login(self.cashier)
+        r = self.client.get('/api/api-keys/keys/')
+        self.assertEqual(r.status_code, 403)
+
+    def test_invalid_scopes_rejected(self):
+        r = self.client.post('/api/api-keys/keys/', {'label': 'bad', 'scopes': ['bogus:admin']}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_scope_catalog(self):
+        r = self.client.get('/api/api-keys/scopes/')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('inventory:read', r.data['all_scopes'])
