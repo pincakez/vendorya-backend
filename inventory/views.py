@@ -9,13 +9,19 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from users.permissions import RoleScopedPermission, IsManagerOrAbove, IsAdminOrAbove
-from .models import Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax, StockAdjustment, StockTransfer
+from .models import (
+    Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax,
+    StockAdjustment, StockTransfer,
+    StorageLocation, StorageStock, StorageMovement,
+)
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer, ProductWriteSerializer,
     ProductVariantSerializer,
     CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer, TaxSerializer,
     StockAdjustmentSerializer, StockTransferSerializer,
+    StorageLocationSerializer, StorageStockSerializer, StorageMovementSerializer,
 )
+from . import storage_service
 from core.activity import log_activity
 from core.models import ActivityLog
 from core.field_visibility import hidden_fields_for
@@ -644,3 +650,183 @@ class CatalogExportView(APIView):
         resp = HttpResponse(csv_text, content_type='text/csv')
         resp['Content-Disposition'] = 'attachment; filename="catalog_export.csv"'
         return resp
+
+
+# ── Storage (operational visibility filter) ─────────────────────────────
+from django.core.exceptions import ValidationError as DjangoValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
+from core.models import Branch
+
+
+class StorageLocationViewSet(viewsets.ModelViewSet):
+    """CRUD for storage locations + a `contents` action listing parked layers."""
+    serializer_class = StorageLocationSerializer
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'CASHIER',
+        'retrieve':       'CASHIER',
+        'contents':       'CASHIER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'MANAGER',
+    }
+
+    def get_queryset(self):
+        return StorageLocation.objects.filter(store=self.request.user.store)
+
+    def perform_create(self, serializer):
+        serializer.save(store=self.request.user.store)
+
+    @action(detail=True, methods=['get'])
+    def contents(self, request, pk=None):
+        """Active (non-emptied) cost layers parked at this location."""
+        location = self.get_object()
+        layers = (
+            StorageStock.objects
+            .filter(store=request.user.store, storage_location=location)
+            .select_related('variant__product')
+            .order_by('variant__sku', 'moved_in_at')
+        )
+        return Response(StorageStockSerializer(layers, many=True).data)
+
+
+class _StorageOpsBase(APIView):
+    """Shared helpers for the storage move/retrieve/write-off endpoints."""
+    permission_classes = [IsAuthenticated, IsManagerOrAbove]
+
+    def _store(self):
+        return self.request.user.store
+
+    def _variant(self, data):
+        v = ProductVariant.objects.filter(
+            id=data.get('variant'), product__store=self._store()
+        ).first()
+        if not v:
+            raise DRFValidationError({'variant': 'Unknown or out-of-store variant.'})
+        return v
+
+    def _location(self, data):
+        loc = StorageLocation.objects.filter(
+            id=data.get('storage_location'), store=self._store()
+        ).first()
+        if not loc:
+            raise DRFValidationError({'storage_location': 'Unknown storage location.'})
+        return loc
+
+    def _branch(self, data, key, required=True):
+        bid = data.get(key)
+        if not bid and not required:
+            # default to the main branch (or any branch) for the store
+            b = (Branch.objects.filter(store=self._store(), is_main_branch=True).first()
+                 or Branch.objects.filter(store=self._store()).first())
+            if not b:
+                raise DRFValidationError({key: 'Store has no branch configured.'})
+            return b
+        b = Branch.objects.filter(id=bid, store=self._store()).first()
+        if not b:
+            raise DRFValidationError({key: 'Unknown branch.'})
+        return b
+
+    def _run(self, fn, **kwargs):
+        try:
+            return fn(**kwargs)
+        except DjangoValidationError as exc:
+            raise DRFValidationError({'detail': exc.messages})
+
+
+class MoveToStorageView(_StorageOpsBase):
+    """POST → park active stock into storage. MANAGER+."""
+    def post(self, request):
+        d = request.data
+        variant  = self._variant(d)
+        location = self._location(d)
+        branch   = self._branch(d, 'from_branch')
+        movement = self._run(
+            storage_service.move_to_storage,
+            variant=variant, qty=d.get('quantity'), from_branch=branch,
+            storage_location=location, user=request.user,
+            reason=d.get('reason'), note=d.get('note'),
+        )
+        log_activity(
+            request=request,
+            action=f"Moved {movement.quantity} {variant.sku} → storage ({location.name})",
+            op_type=ActivityLog.OperationType.ADJUSTMENT,
+            details={'movement_id': str(movement.id), 'sku': variant.sku,
+                     'qty': str(movement.quantity), 'location': location.name},
+        )
+        return Response(StorageMovementSerializer(movement).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class RetrieveFromStorageView(_StorageOpsBase):
+    """POST → bring stock back from storage to a branch. MANAGER+."""
+    def post(self, request):
+        d = request.data
+        variant  = self._variant(d)
+        location = self._location(d)
+        branch   = self._branch(d, 'to_branch')
+        movement = self._run(
+            storage_service.retrieve_from_storage,
+            variant=variant, qty=d.get('quantity'), storage_location=location,
+            to_branch=branch, user=request.user,
+            reason=d.get('reason'), note=d.get('note'),
+        )
+        log_activity(
+            request=request,
+            action=f"Retrieved {movement.quantity} {variant.sku} from storage ({location.name})",
+            op_type=ActivityLog.OperationType.ADJUSTMENT,
+            details={'movement_id': str(movement.id), 'sku': variant.sku,
+                     'qty': str(movement.quantity), 'location': location.name},
+        )
+        return Response(StorageMovementSerializer(movement).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class WriteOffStorageView(_StorageOpsBase):
+    """POST → write off (damage/dispose) stock in storage. ADMIN+."""
+    permission_classes = [IsAuthenticated, IsAdminOrAbove]
+
+    def post(self, request):
+        d = request.data
+        variant  = self._variant(d)
+        location = self._location(d)
+        branch   = self._branch(d, 'branch', required=False)
+        movement = self._run(
+            storage_service.write_off_from_storage,
+            variant=variant, qty=d.get('quantity'), storage_location=location,
+            branch=branch, reason=d.get('reason') or 'Storage write-off',
+            user=request.user, note=d.get('note'),
+        )
+        log_activity(
+            request=request,
+            action=f"Wrote off {movement.quantity} {variant.sku} from storage ({location.name})",
+            op_type=ActivityLog.OperationType.ADJUSTMENT,
+            details={'movement_id': str(movement.id), 'sku': variant.sku,
+                     'qty': str(movement.quantity), 'location': location.name,
+                     'adjustment_id': str(movement.related_adjustment_id)},
+        )
+        return Response(StorageMovementSerializer(movement).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class StorageMovementsView(APIView):
+    """GET → storage movement log, newest first. Filters: storage_location,
+    variant, direction. MANAGER+."""
+    permission_classes = [IsAuthenticated, IsManagerOrAbove]
+
+    def get(self, request):
+        qs = (StorageMovement.objects
+              .filter(store=request.user.store)
+              .select_related('variant__product', 'storage_location',
+                              'from_branch', 'to_branch', 'created_by'))
+        loc = request.query_params.get('storage_location')
+        if loc:
+            qs = qs.filter(storage_location_id=loc)
+        variant = request.query_params.get('variant')
+        if variant:
+            qs = qs.filter(variant_id=variant)
+        direction = request.query_params.get('direction')
+        if direction:
+            qs = qs.filter(direction=direction)
+        return Response(StorageMovementSerializer(qs, many=True).data)

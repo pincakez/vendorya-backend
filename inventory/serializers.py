@@ -1,9 +1,12 @@
 from rest_framework import serializers
+from django.db.models import Sum
 from core.field_visibility import FieldVisibilityMixin
+from django.utils import timezone
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
     ProductVariant, ProductAttribute, StockLevel, Tax, StockAdjustment,
     StockTransfer, StockTransferItem,
+    StorageLocation, StorageStock, StorageMovement,
 )
 
 # --- BASIC SERIALIZERS ---
@@ -51,16 +54,27 @@ class ProductVariantSerializer(serializers.ModelSerializer):
     attributes   = ProductAttributeSerializer(many=True, read_only=True)
     stock_levels = StockLevelSerializer(many=True, read_only=True)
     total_stock  = serializers.SerializerMethodField()
+    storage_qty  = serializers.SerializerMethodField()
     product_name = serializers.CharField(source='product.name', read_only=True)
 
     class Meta:
         model = ProductVariant
         fields = ['id', 'product', 'product_name', 'sku', 'barcode',
                   'cost_price', 'sell_price', 'reorder_level',
-                  'attributes', 'stock_levels', 'total_stock']
+                  'attributes', 'stock_levels', 'total_stock', 'storage_qty']
 
     def get_total_stock(self, obj):
         return sum(s.quantity for s in obj.stock_levels.all())
+
+    def get_storage_qty(self, obj):
+        # Sum of active (non-deleted) storage layers for this variant — the
+        # off-floor quantity surfaced in the valuation table (Phase 5).
+        total = (
+            StorageStock.objects
+            .filter(variant=obj, is_deleted=False)
+            .aggregate(t=Sum('quantity_remaining'))['t']
+        )
+        return total or 0
 
 # --- PRODUCT LIST SERIALIZER (optimised for table) ---
 class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
@@ -391,3 +405,56 @@ class StockTransferSerializer(serializers.ModelSerializer):
                 dst.quantity += item_data['quantity']
                 dst.save()
         return transfer
+
+
+# --- STORAGE SERIALIZERS ---
+class StorageLocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StorageLocation
+        fields = ['id', 'name', 'description', 'is_active', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class StorageStockSerializer(serializers.ModelSerializer):
+    variant_sku           = serializers.CharField(source='variant.sku', read_only=True)
+    product_name          = serializers.CharField(source='variant.product.name', read_only=True)
+    storage_location_name = serializers.CharField(source='storage_location.name', read_only=True)
+    days_in_storage       = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StorageStock
+        fields = [
+            'id', 'variant', 'variant_sku', 'product_name',
+            'storage_location', 'storage_location_name',
+            'quantity_remaining', 'cost_at_move', 'moved_in_at', 'days_in_storage',
+        ]
+        read_only_fields = fields
+
+    def get_days_in_storage(self, obj):
+        return (timezone.now() - obj.moved_in_at).days
+
+
+class StorageMovementSerializer(serializers.ModelSerializer):
+    variant_sku           = serializers.CharField(source='variant.sku', read_only=True)
+    product_name          = serializers.CharField(source='variant.product.name', read_only=True)
+    storage_location_name = serializers.CharField(source='storage_location.name', read_only=True)
+    direction_display     = serializers.CharField(source='get_direction_display', read_only=True)
+    from_branch_name      = serializers.CharField(source='from_branch.name', read_only=True, default=None)
+    to_branch_name        = serializers.CharField(source='to_branch.name', read_only=True, default=None)
+    created_by_name       = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StorageMovement
+        fields = [
+            'id', 'variant', 'variant_sku', 'product_name',
+            'storage_location', 'storage_location_name',
+            'direction', 'direction_display', 'quantity', 'cost_at_move',
+            'from_branch', 'from_branch_name', 'to_branch', 'to_branch_name',
+            'moved_at', 'created_by', 'created_by_name',
+            'reason', 'note', 'related_adjustment',
+        ]
+        read_only_fields = fields
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        return (u.get_full_name() or u.username) if u else None

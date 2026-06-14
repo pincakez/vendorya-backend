@@ -4,6 +4,8 @@ from .views import (
     SalesReportView, ProfitMarginView, ARAgingView, APAgingView,
     ProfitLossView, ExpenseReportView, StockLedgerView,
     CashierPerformanceView, TaxReportView,
+    StorageAgingView, StorageValueView, StorageMovementsReportView,
+    StorageReconciliationView,
 )
 
 urlpatterns = [
@@ -16,4 +18,8 @@ urlpatterns = [
     path('stock-ledger/', StockLedgerView.as_view(), name='report-stock-ledger'),
     path('cashier-performance/', CashierPerformanceView.as_view(), name='report-cashier'),
     path('tax/', TaxReportView.as_view(), name='report-tax'),
+    path('storage-aging/', StorageAgingView.as_view(), name='report-storage-aging'),
+    path('storage-value/', StorageValueView.as_view(), name='report-storage-value'),
+    path('storage-movements/', StorageMovementsReportView.as_view(), name='report-storage-movements'),
+    path('storage-reconciliation/', StorageReconciliationView.as_view(), name='report-storage-reconciliation'),
 ]

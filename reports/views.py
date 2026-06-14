@@ -27,7 +27,10 @@ from finance.models import (
     PurchaseInvoice, PurchaseItem,
     Expense, RefundInvoice, RefundItem, WorkShift,
 )
-from inventory.models import StockAdjustment, ProductVariant
+from inventory.models import (
+    StockAdjustment, ProductVariant, StockLevel,
+    StorageLocation, StorageStock, StorageMovement,
+)
 
 DEC = DecimalField(max_digits=18, decimal_places=2)
 ZERO = Decimal('0.00')
@@ -495,50 +498,109 @@ class StockLedgerView(_StoreMixin, APIView):
                             status=status.HTTP_404_NOT_FOUND)
         df, dt = self.date_range(request)
         branch = self.branch_id(request)
+        scope = request.query_params.get('scope', 'active')
+        if scope not in ('active', 'storage', 'combined'):
+            scope = 'active'
 
-        moves = []  # each: {datetime, type, qty (signed), ref, note, branch}
+        # Each move carries deltas for BOTH pools so we can show any scope:
+        #   active_delta  -> change to active StockLevel
+        #   storage_delta -> change to StorageStock on-hand
+        #   pools         -> which scopes this row appears in
+        # active scope shows active_delta; storage shows storage_delta;
+        # combined shows their sum (a to/from-storage transfer nets to zero).
+        moves = []
 
-        # Purchases IN (RECEIVED)
+        def add(dt_, type_, ref, note, branch_name, *, active=ZERO, storage=ZERO, pools=()):
+            moves.append({'dt': dt_, 'type': type_, 'ref': ref, 'note': note,
+                          'branch': branch_name, 'active': Decimal(active),
+                          'storage': Decimal(storage), 'pools': set(pools)})
+
+        # Write-off creates a round-trip DAMAGE adjustment (active nets to zero);
+        # exclude those adjustments here and represent the write-off via its
+        # storage movement instead — keeps every scope reconciling.
+        writeoff_adj_ids = set(
+            StorageMovement.objects.filter(
+                store=store, variant_id=variant_id,
+                direction=StorageMovement.Direction.WRITE_OFF,
+                related_adjustment__isnull=False,
+            ).values_list('related_adjustment_id', flat=True)
+        )
+
+        # Purchases IN (RECEIVED) — active only
         pf = Q(invoice__store=store, invoice__status=PurchaseInvoice.Status.RECEIVED,
                invoice__is_deleted=False, variant_id=variant_id)
         if branch:
             pf &= Q(invoice__branch_id=branch)
         for it in PurchaseItem.objects.filter(pf).select_related('invoice', 'invoice__supplier', 'invoice__branch'):
-            moves.append({'dt': it.invoice.date, 'type': 'PURCHASE', 'qty': it.quantity,
-                          'ref': it.invoice.vendor_reference or str(it.invoice_id),
-                          'note': it.invoice.supplier.name if it.invoice.supplier else '',
-                          'branch': it.invoice.branch.name})
+            add(it.invoice.date, 'PURCHASE',
+                it.invoice.vendor_reference or str(it.invoice_id),
+                it.invoice.supplier.name if it.invoice.supplier else '',
+                it.invoice.branch.name, active=it.quantity, pools=('active',))
 
-        # Sales OUT (POSTED)
+        # Sales OUT (POSTED) — active only
         sf = Q(invoice__store=store, invoice__status=SalesInvoice.Status.POSTED,
                invoice__is_deleted=False, variant_id=variant_id)
         if branch:
             sf &= Q(invoice__branch_id=branch)
         for it in SalesInvoiceItem.objects.filter(sf).select_related('invoice', 'invoice__customer', 'invoice__branch'):
-            moves.append({'dt': it.invoice.date, 'type': 'SALE', 'qty': -it.quantity,
-                          'ref': f"#{it.invoice.invoice_number}" if it.invoice.invoice_number else str(it.invoice_id),
-                          'note': it.invoice.customer.name if it.invoice.customer else '',
-                          'branch': it.invoice.branch.name})
+            add(it.invoice.date, 'SALE',
+                f"#{it.invoice.invoice_number}" if it.invoice.invoice_number else str(it.invoice_id),
+                it.invoice.customer.name if it.invoice.customer else '',
+                it.invoice.branch.name, active=-it.quantity, pools=('active',))
 
-        # Adjustments (signed)
+        # Adjustments (signed) — active only, minus write-off artifacts
         af = Q(store=store, variant_id=variant_id)
         if branch:
             af &= Q(branch_id=branch)
         for adj in StockAdjustment.objects.filter(af).select_related('branch'):
-            moves.append({'dt': adj.created_at, 'type': 'ADJUSTMENT', 'qty': adj.quantity_change,
-                          'ref': adj.get_reason_display(), 'note': adj.notes or '',
-                          'branch': adj.branch.name})
+            if adj.id in writeoff_adj_ids:
+                continue
+            add(adj.created_at, 'ADJUSTMENT', adj.get_reason_display(), adj.notes or '',
+                adj.branch.name, active=adj.quantity_change, pools=('active',))
 
-        # Returns IN (restock only)
+        # Returns IN (restock only) — active only
         rf = Q(refund__store=store, refund__is_deleted=False, variant_id=variant_id,
                restock_inventory=True)
         if branch:
             rf &= Q(refund__branch_id=branch)
         for it in RefundItem.objects.filter(rf).select_related('refund', 'refund__branch'):
-            moves.append({'dt': it.refund.date, 'type': 'RETURN', 'qty': it.quantity,
-                          'ref': f"R#{it.refund.refund_number}" if it.refund.refund_number else str(it.refund_id),
-                          'note': it.refund.reason or '', 'branch': it.refund.branch.name})
+            add(it.refund.date, 'RETURN',
+                f"R#{it.refund.refund_number}" if it.refund.refund_number else str(it.refund_id),
+                it.refund.reason or '', it.refund.branch.name,
+                active=it.quantity, pools=('active',))
 
+        # Storage movements — shuffle between pools (and write-offs leave storage)
+        smf = Q(store=store, variant_id=variant_id)
+        if branch:
+            smf &= (Q(from_branch_id=branch) | Q(to_branch_id=branch))
+        D = StorageMovement.Direction
+        for mv in StorageMovement.objects.filter(smf).select_related(
+                'storage_location', 'from_branch', 'to_branch'):
+            br = (mv.from_branch.name if mv.from_branch else
+                  (mv.to_branch.name if mv.to_branch else ''))
+            if mv.direction == D.TO_STORAGE:
+                add(mv.moved_at, 'STORAGE_OUT', mv.storage_location.name, mv.reason or '',
+                    br, active=-mv.quantity, storage=mv.quantity, pools=('active', 'storage'))
+            elif mv.direction == D.FROM_STORAGE:
+                add(mv.moved_at, 'STORAGE_IN', mv.storage_location.name, mv.reason or '',
+                    br, active=mv.quantity, storage=-mv.quantity, pools=('active', 'storage'))
+            else:  # WRITE_OFF — leaves storage, no active effect
+                add(mv.moved_at, 'STORAGE_WRITE_OFF', mv.storage_location.name, mv.reason or '',
+                    br, storage=-mv.quantity, pools=('storage',))
+
+        def row_qty(m):
+            if scope == 'active':
+                return m['active']
+            if scope == 'storage':
+                return m['storage']
+            return m['active'] + m['storage']   # combined
+
+        def in_scope(m):
+            if scope == 'combined':
+                return True
+            return scope in m['pools']
+
+        moves = [m for m in moves if in_scope(m)]
         moves.sort(key=lambda m: m['dt'])
 
         # Opening balance = sum of movements strictly before date_from
@@ -547,24 +609,26 @@ class StockLedgerView(_StoreMixin, APIView):
         for m in moves:
             mdate = timezone.localtime(m['dt']).date()
             if mdate < df:
-                opening += m['qty']
+                opening += row_qty(m)
             elif mdate <= dt:
                 in_range.append(m)
 
         running = opening
         rows = []
         for m in in_range:
-            running += m['qty']
+            q = row_qty(m)
+            running += q
             rows.append({
                 'date': m['dt'],
                 'type': m['type'],
-                'qty': str(Decimal(m['qty']).normalize()),
+                'qty': str(Decimal(q).normalize()),
                 'balance': str(Decimal(running).normalize()),
                 'ref': m['ref'],
                 'note': m['note'],
                 'branch': m['branch'],
             })
-        return Response({'variant_id': variant_id, 'date_from': df, 'date_to': dt,
+        return Response({'variant_id': variant_id, 'scope': scope,
+                         'date_from': df, 'date_to': dt,
                          'opening_balance': str(Decimal(opening).normalize()),
                          'closing_balance': str(Decimal(running).normalize()),
                          'rows': rows})
@@ -673,3 +737,227 @@ class TaxReportView(_StoreMixin, APIView):
         return Response({'date_from': df, 'date_to': dt, 'granularity': g,
                          'by_rate': rate_rows, 'by_period': period_rows,
                          'total_collected': _q(total)})
+
+
+# ============================================================
+# 10. STORAGE AGING — parked layers by age bucket
+# ============================================================
+
+_AGING_BUCKETS = [
+    ('b0_30',    0,   30),
+    ('b31_60',   31,  60),
+    ('b61_90',   61,  90),
+    ('b91_180',  91,  180),
+    ('b180_plus', 181, None),   # write-down candidate
+]
+
+
+def _aging_bucket(days):
+    for key, lo, hi in _AGING_BUCKETS:
+        if days >= lo and (hi is None or days <= hi):
+            return key
+    return 'b0_30'
+
+
+class StorageAgingView(_StoreMixin, APIView):
+    """Active storage layers grouped into age buckets by days-in-storage.
+    The 180+ bucket is flagged as an NRV write-down candidate."""
+    def get(self, request):
+        store = self.get_store(request)
+        if not store:
+            return _no_store()
+        today = timezone.localdate()
+        location = request.query_params.get('storage_location')
+
+        qs = (StorageStock.objects
+              .filter(store=store, is_deleted=False)
+              .select_related('variant__product', 'storage_location'))
+        if location:
+            qs = qs.filter(storage_location_id=location)
+
+        buckets = {key: {'qty': ZERO, 'value': ZERO, 'items': 0}
+                   for key, _, _ in _AGING_BUCKETS}
+        for layer in qs:
+            days = (today - timezone.localtime(layer.moved_in_at).date()).days
+            b = buckets[_aging_bucket(days)]
+            qty = Decimal(layer.quantity_remaining or 0)
+            b['qty'] += qty
+            b['value'] += qty * Decimal(layer.cost_at_move or 0)
+            b['items'] += 1
+
+        rows = [{
+            'bucket': key,
+            'qty': str(buckets[key]['qty'].normalize()),
+            'value': _q(buckets[key]['value']),
+            'items': buckets[key]['items'],
+            'write_down_candidate': key == 'b180_plus',
+        } for key, _, _ in _AGING_BUCKETS]
+        totals = {
+            'qty': str(sum((buckets[k]['qty'] for k, _, _ in _AGING_BUCKETS), ZERO).normalize()),
+            'value': _q(sum((buckets[k]['value'] for k, _, _ in _AGING_BUCKETS), ZERO)),
+            'items': sum(buckets[k]['items'] for k, _, _ in _AGING_BUCKETS),
+        }
+        return Response({'as_of': today, 'rows': rows, 'totals': totals})
+
+
+# ============================================================
+# 11. STORAGE VALUE — by location, then category / supplier
+# ============================================================
+
+class StorageValueView(_StoreMixin, APIView):
+    """Storage inventory value Σ(qty_remaining × cost_at_move), grouped by
+    storage location then by category (default) or supplier."""
+    def get(self, request):
+        store = self.get_store(request)
+        if not store:
+            return _no_store()
+        group_by = request.query_params.get('group_by', 'category')
+        if group_by not in ('category', 'supplier'):
+            group_by = 'category'
+        sub_id = (f'variant__product__{group_by}__id')
+        sub_name = (f'variant__product__{group_by}__name')
+
+        qs = (StorageStock.objects
+              .filter(store=store, is_deleted=False)
+              .values('storage_location__id', 'storage_location__name', sub_id, sub_name)
+              .annotate(
+                  qty=Coalesce(Sum('quantity_remaining'), Value(ZERO),
+                               output_field=DecimalField(max_digits=18, decimal_places=3)),
+                  value=Coalesce(Sum(F('quantity_remaining') * F('cost_at_move')),
+                                 Value(ZERO), output_field=DEC))
+              .order_by('storage_location__name', '-value'))
+
+        locations = {}
+        for r in qs:
+            loc_id = str(r['storage_location__id'])
+            loc = locations.setdefault(loc_id, {
+                'storage_location_id': loc_id,
+                'name': r['storage_location__name'],
+                'qty': ZERO, 'value': ZERO, 'groups': [],
+            })
+            loc['groups'].append({
+                'id': str(r[sub_id]) if r[sub_id] else None,
+                'name': r[sub_name] or '(Unassigned)',
+                'qty': str(Decimal(r['qty'] or 0).normalize()),
+                'value': _q(r['value']),
+            })
+            loc['qty'] += Decimal(r['qty'] or 0)
+            loc['value'] += Decimal(r['value'] or 0)
+
+        rows = []
+        for loc in locations.values():
+            loc['qty'] = str(loc['qty'].normalize())
+            loc['value'] = _q(loc['value'])
+            rows.append(loc)
+        grand = sum(Decimal(g['value']) for loc in rows for g in loc['groups'])
+        return Response({'group_by': group_by, 'rows': rows, 'total_value': _q(grand)})
+
+
+# ============================================================
+# 12. STORAGE MOVEMENTS — the audit log as a report
+# ============================================================
+
+class StorageMovementsReportView(_StoreMixin, APIView):
+    """Storage movement history with date-range + location/variant/user/direction
+    filters. Mirrors the other report date presets."""
+    def get(self, request):
+        store = self.get_store(request)
+        if not store:
+            return _no_store()
+        df, dt = self.date_range(request)
+
+        qs = (StorageMovement.objects
+              .filter(store=store, moved_at__date__gte=df, moved_at__date__lte=dt)
+              .select_related('variant__product', 'storage_location',
+                              'from_branch', 'to_branch', 'created_by')
+              .order_by('-moved_at'))
+        loc = request.query_params.get('storage_location')
+        if loc:
+            qs = qs.filter(storage_location_id=loc)
+        variant = request.query_params.get('variant')
+        if variant:
+            qs = qs.filter(variant_id=variant)
+        user = request.query_params.get('user')
+        if user:
+            qs = qs.filter(created_by_id=user)
+        direction = request.query_params.get('direction')
+        if direction:
+            qs = qs.filter(direction=direction)
+
+        rows = [{
+            'id': str(mv.id),
+            'date': mv.moved_at,
+            'direction': mv.direction,
+            'direction_display': mv.get_direction_display(),
+            'sku': mv.variant.sku,
+            'product': mv.variant.product.name,
+            'storage_location': mv.storage_location.name,
+            'qty': str(Decimal(mv.quantity or 0).normalize()),
+            'cost_at_move': _q(mv.cost_at_move),
+            'value': _q(Decimal(mv.quantity or 0) * Decimal(mv.cost_at_move or 0)),
+            'from_branch': mv.from_branch.name if mv.from_branch else None,
+            'to_branch': mv.to_branch.name if mv.to_branch else None,
+            'user': (mv.created_by.get_full_name() or mv.created_by.username) if mv.created_by else None,
+            'reason': mv.reason or '',
+            'note': mv.note or '',
+        } for mv in qs]
+        return Response({'date_from': df, 'date_to': dt, 'rows': rows,
+                         'count': len(rows)})
+
+
+# ============================================================
+# 13. STORAGE RECONCILIATION — storage-pool integrity check
+# ============================================================
+
+class StorageReconciliationView(_StoreMixin, APIView):
+    """Per variant, assert current storage on-hand (Σ active layers) equals the
+    net of signed storage movements (TO_STORAGE − FROM_STORAGE − WRITE_OFF).
+    Any mismatch is a data-integrity failure and is listed."""
+    def get(self, request):
+        store = self.get_store(request)
+        if not store:
+            return _no_store()
+
+        # Current storage on-hand per variant (active layers only).
+        on_hand = defaultdict(lambda: ZERO)
+        for r in (StorageStock.objects.filter(store=store, is_deleted=False)
+                  .values('variant_id')
+                  .annotate(q=Coalesce(Sum('quantity_remaining'), Value(ZERO),
+                                       output_field=DecimalField(max_digits=18, decimal_places=3)))):
+            on_hand[str(r['variant_id'])] = Decimal(r['q'] or 0)
+
+        # Net of signed storage movements per variant.
+        D = StorageMovement.Direction
+        net = defaultdict(lambda: ZERO)
+        for r in (StorageMovement.objects.filter(store=store)
+                  .values('variant_id', 'direction')
+                  .annotate(q=Coalesce(Sum('quantity'), Value(ZERO),
+                                       output_field=DecimalField(max_digits=18, decimal_places=3)))):
+            vid = str(r['variant_id'])
+            q = Decimal(r['q'] or 0)
+            if r['direction'] == D.TO_STORAGE:
+                net[vid] += q
+            else:  # FROM_STORAGE or WRITE_OFF both leave storage
+                net[vid] -= q
+
+        variant_ids = set(on_hand) | set(net)
+        meta = {str(vid): (sku, pname) for vid, sku, pname in
+                ProductVariant.objects.filter(id__in=variant_ids)
+                .values_list('id', 'sku', 'product__name')}
+
+        failures = []
+        for vid in variant_ids:
+            expected = net[vid]
+            actual = on_hand[vid]
+            if expected != actual:
+                sku, pname = meta.get(vid, (None, None))
+                failures.append({
+                    'variant_id': vid,
+                    'sku': sku,
+                    'product': pname,
+                    'on_hand': str(actual.normalize()),
+                    'expected': str(expected.normalize()),
+                    'difference': str((actual - expected).normalize()),
+                })
+        return Response({'checked': len(variant_ids), 'reconciles': not failures,
+                         'failures': failures})

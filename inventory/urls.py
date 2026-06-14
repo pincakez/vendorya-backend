@@ -5,6 +5,8 @@ from .views import (
     CategoryViewSet, SupplierViewSet, AttributeDefinitionViewSet, TaxViewSet,
     StockAdjustmentViewSet, StockTransferViewSet, SupplierPrefixCheckView,
     CatalogImportValidateView, CatalogImportCommitView, CatalogExportView,
+    StorageLocationViewSet, MoveToStorageView, RetrieveFromStorageView,
+    WriteOffStorageView, StorageMovementsView,
 )
 
 router = DefaultRouter()
@@ -17,9 +19,14 @@ router.register(r'attribute-definitions', AttributeDefinitionViewSet, basename='
 router.register(r'taxes',       TaxViewSet,                 basename='tax')
 router.register(r'adjustments', StockAdjustmentViewSet,    basename='adjustment')
 router.register(r'transfers',   StockTransferViewSet,      basename='transfer')
+router.register(r'storage-locations', StorageLocationViewSet, basename='storage-location')
 
 urlpatterns = [
     path('suppliers/check-prefix/', SupplierPrefixCheckView.as_view(), name='supplier-check-prefix'),
+    path('storage/move-to/',   MoveToStorageView.as_view(),       name='storage-move-to'),
+    path('storage/retrieve/',  RetrieveFromStorageView.as_view(), name='storage-retrieve'),
+    path('storage/write-off/', WriteOffStorageView.as_view(),     name='storage-write-off'),
+    path('storage/movements/', StorageMovementsView.as_view(),    name='storage-movements'),
     path('catalog/import/validate/', CatalogImportValidateView.as_view(), name='catalog-import-validate'),
     path('catalog/import/commit/',   CatalogImportCommitView.as_view(),   name='catalog-import-commit'),
     path('catalog/export/',          CatalogExportView.as_view(),         name='catalog-export'),
