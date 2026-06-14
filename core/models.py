@@ -350,6 +350,11 @@ class StoreSettings(TimestampedModel):
     srv_print_default        = models.BooleanField(_("Service: print receipt by default"), default=True)
     srv_double_print_default = models.BooleanField(_("Service: 2x print by default"),      default=True)
 
+    # 10c. Receipt printer output controls (QZ Tray ESC/POS direct-print path)
+    receipt_copies   = models.PositiveSmallIntegerField(_("Receipt copies (1–5)"), default=1)
+    receipt_auto_cut = models.BooleanField(_("Auto-cut after print"), default=True)
+    receipt_cut_feed = models.PositiveSmallIntegerField(_("Cut feed distance mm (0–20)"), default=0)
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 
