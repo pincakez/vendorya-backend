@@ -709,18 +709,18 @@ class VAInsightsView(APIView):
                 is_deleted=False, customer__isnull=False,
             )
             .values('customer__name')
-            .annotate(spent=Sum('total_amount'), visits=Count('id'))
+            .annotate(spent=Sum('grand_total'), visits=Count('id'))
             .order_by('-spent')[:4]
         )
 
         now_sales = SalesInvoice.objects.filter(
             store=store, status=posted, date__gte=ago30, is_deleted=False,
-        ).aggregate(total=Sum('total_amount'), cnt=Count('id'))
+        ).aggregate(total=Sum('grand_total'), cnt=Count('id'))
 
         prev_sales = SalesInvoice.objects.filter(
             store=store, status=posted,
             date__gte=ago60, date__lt=ago30, is_deleted=False,
-        ).aggregate(total=Sum('total_amount'), cnt=Count('id'))
+        ).aggregate(total=Sum('grand_total'), cnt=Count('id'))
 
         low_stock = list(
             StockLevel.objects
