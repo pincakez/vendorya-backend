@@ -2,6 +2,7 @@ import uuid
 import random as _random
 from django.db import models, transaction
 from django.core.validators import RegexValidator
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
 from core.tenancy import TenantScopedManager, TenantSoftDeleteManager
@@ -353,3 +354,89 @@ class StockTransferItem(models.Model):
     transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name='items')
     variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
+
+
+# --- 8. STORAGE (operational visibility filter) ---------------------------
+# Storage parks inactive stock off the floor: out of POS, low-stock alerts and
+# live "active" views, but still owned and valued on the balance sheet. Moving
+# to/from storage NEVER touches P&L or cost basis — only a write-off does (via
+# a StockAdjustment(DAMAGE)). See Storageplan.md for the accounting audit.
+
+class StorageLocation(TimestampedModel, SoftDeleteModel):
+    """A named place to park stock. Branch-agnostic — one storage can serve
+    multiple branches. Each store auto-gets a default 'Storage' on migration."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='storage_locations')
+    name = models.CharField(_("Storage Name"), max_length=100)
+    description = models.TextField(_("Description"), blank=True, null=True)
+    is_active = models.BooleanField(_("Active"), default=True)
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
+    def __str__(self):
+        return self.name
+
+
+class StorageStock(TimestampedModel, SoftDeleteModel):
+    """One row per move-in event (a *cost layer*), NOT a rolling quantity.
+
+    Layers are required for accurate aging (days per batch), correct AVCO cost
+    snapshots (frozen at the moment of move) and FIFO retrieval/write-off.
+    `quantity_remaining` shrinks as a layer is consumed; an emptied layer is
+    soft-deleted. `cost_at_move` never changes after creation."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='storage_stock')
+    storage_location = models.ForeignKey(StorageLocation, on_delete=models.PROTECT, related_name='layers')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT, related_name='storage_layers')
+
+    quantity_remaining = models.DecimalField(_("Qty Remaining"), max_digits=12, decimal_places=3)
+    cost_at_move = models.DecimalField(_("Cost Snapshot"), max_digits=12, decimal_places=2)
+    moved_in_at = models.DateTimeField(_("Moved In At"), default=timezone.now)
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
+    class Meta:
+        ordering = ['moved_in_at']        # FIFO by default
+
+    def __str__(self):
+        return f"{self.variant.sku} @ {self.storage_location.name}: {self.quantity_remaining}"
+
+
+class StorageMovement(TimestampedModel):
+    """Immutable audit log of every storage move. Insert-only — never mutated.
+    Drives the storage movement-history report and reconciliation."""
+    class Direction(models.TextChoices):
+        TO_STORAGE   = 'TO_STORAGE',   _('To Storage')
+        FROM_STORAGE = 'FROM_STORAGE', _('From Storage')
+        WRITE_OFF    = 'WRITE_OFF',    _('Write-Off')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='storage_movements')
+    storage_location = models.ForeignKey(StorageLocation, on_delete=models.PROTECT, related_name='movements')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT, related_name='storage_movements')
+
+    direction = models.CharField(max_length=20, choices=Direction.choices)
+    quantity = models.DecimalField(max_digits=12, decimal_places=3)
+    cost_at_move = models.DecimalField(max_digits=12, decimal_places=2)
+
+    from_branch = models.ForeignKey(Branch, on_delete=models.PROTECT, null=True, blank=True,
+                                    related_name='storage_moves_out')  # set on TO_STORAGE
+    to_branch = models.ForeignKey(Branch, on_delete=models.PROTECT, null=True, blank=True,
+                                  related_name='storage_moves_in')     # set on FROM_STORAGE
+
+    moved_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey('users.User', on_delete=models.PROTECT, related_name='storage_movements')
+    reason = models.TextField(blank=True, null=True)
+    note = models.TextField(blank=True, null=True)
+    # Links a WRITE_OFF to its P&L document (the StockAdjustment).
+    related_adjustment = models.ForeignKey(StockAdjustment, on_delete=models.SET_NULL,
+                                           null=True, blank=True, related_name='storage_movements')
+
+    objects     = TenantScopedManager()   # secure-by-default
+    all_objects = models.Manager()        # unscoped escape hatch (sudo/audit/commands)
+
+    class Meta:
+        ordering = ['-moved_at']
+
+    def __str__(self):
+        return f"{self.get_direction_display()} {self.variant.sku} ×{self.quantity}"
