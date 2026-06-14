@@ -694,7 +694,7 @@ class VAInsightsView(APIView):
             SalesInvoiceItem.objects
             .filter(
                 invoice__store=store, invoice__status=posted,
-                invoice__invoice_date__gte=ago30, is_deleted=False,
+                invoice__date__gte=ago30, is_deleted=False,
             )
             .values('variant__product__name')
             .annotate(qty=Sum('quantity'), rev=Sum(F('quantity') * F('unit_price')))
@@ -704,7 +704,7 @@ class VAInsightsView(APIView):
         top_customers = list(
             SalesInvoice.objects
             .filter(
-                store=store, status=posted, invoice_date__gte=ago30,
+                store=store, status=posted, date__gte=ago30,
                 is_deleted=False, customer__isnull=False,
             )
             .values('customer__name')
@@ -713,12 +713,12 @@ class VAInsightsView(APIView):
         )
 
         now_sales = SalesInvoice.objects.filter(
-            store=store, status=posted, invoice_date__gte=ago30, is_deleted=False,
+            store=store, status=posted, date__gte=ago30, is_deleted=False,
         ).aggregate(total=Sum('total_amount'), cnt=Count('id'))
 
         prev_sales = SalesInvoice.objects.filter(
             store=store, status=posted,
-            invoice_date__gte=ago60, invoice_date__lt=ago30, is_deleted=False,
+            date__gte=ago60, date__lt=ago30, is_deleted=False,
         ).aggregate(total=Sum('total_amount'), cnt=Count('id'))
 
         low_stock = list(
