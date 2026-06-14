@@ -28,6 +28,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from rest_framework.permissions import IsAuthenticated
+
 from users.permissions import IsSuperAdmin
 
 from .models import (
@@ -624,3 +626,209 @@ class AIToolListView(APIView):
             }
             for s in registry.all()
         ])
+
+
+# ---------- V-Agent: store-level AI insights ----------
+
+class VAInsightsView(APIView):
+    """Store-scoped AI insight widget. Reads only request.user.store — no cross-store access.
+
+    GET /api/admin-ai/vagent/insights/
+    Returns {"insights": [{type, title, body}, ...]} — 4 items, Egyptian Arabic.
+    """
+    permission_classes = [IsAuthenticated]
+
+    PROFILE_NAME = 'V-Agent'
+
+    SYSTEM_PROMPT = """أنت V-Agent، مساعد ذكاء اصطناعي متخصص في تحليل بيانات المتاجر وإعطاء نصائح تجارية عملية ومفيدة.
+
+قواعد ثابتة:
+- تكلم بالعربية المصرية الواضحة مباشرةً لصاحب المتجر
+- كل نصيحة: عنوان قصير (5 كلمات أقصى) + 2-3 جمل عملية فقط
+- تنوع في النصائح في كل مرة، لا تكرر نفس النوع مرتين في نفس الرد
+- استند على الأرقام الحقيقية من البيانات المقدمة
+- أسلوب ودي، مشجع، ومباشر
+
+أنواع النصائح المتاحة (اختار 4 أنواع مختلفة في كل رد):
+• top_product — تحليل الأكثر مبيعاً وكيف تزيد الاستفادة منه
+• best_customer — أفضل العملاء وأفكار لمكافأتهم والاحتفاظ بهم
+• bundle_idea — اقتراح باقة أو عرض تجميعي بناءً على المنتجات
+• marketing — فكرة تسويقية مناسبة للمنتجات والموسم الحالي
+• stock_alert — تنبيه مخزون منخفض وأولوية الشراء
+• slow_mover — منتج راكد وطريقة ذكية لتصريفه
+• trend — مقارنة المبيعات واتجاه النمو أو التراجع
+
+رد بـ JSON فقط بدون أي نص خارجه — بالضبط 4 عناصر بهذا الشكل:
+[{"type":"top_product","title":"عنوان قصير","body":"النصيحة هنا"},{"type":"...","title":"...","body":"..."},...]"""
+
+    def _get_or_create_profile(self) -> "AIProfile":
+        profile, _ = AIProfile.objects.get_or_create(
+            name=self.PROFILE_NAME,
+            defaults={
+                'is_active': False,
+                'system_instruction': self.SYSTEM_PROMPT,
+                'model_id': 'gemini-2.5-flash',
+                'temperature': 0.9,
+                'max_output_tokens': 1200,
+                'enabled_tools': [],
+                'global_knowledge': False,
+            },
+        )
+        return profile
+
+    def _gather_context(self, store) -> str:
+        from datetime import date, timedelta
+        from django.db.models import Count, F, Sum
+
+        from finance.models import SalesInvoice, SalesInvoiceItem
+        from inventory.models import StockLevel, StorageStock
+        from users.models import Customer
+
+        today = date.today()
+        ago30 = today - timedelta(days=30)
+        ago60 = today - timedelta(days=60)
+
+        posted = SalesInvoice.Status.POSTED
+
+        top_products = list(
+            SalesInvoiceItem.objects
+            .filter(
+                invoice__store=store, invoice__status=posted,
+                invoice__invoice_date__gte=ago30, is_deleted=False,
+            )
+            .values('variant__product__name')
+            .annotate(qty=Sum('quantity'), rev=Sum(F('quantity') * F('unit_price')))
+            .order_by('-qty')[:6]
+        )
+
+        top_customers = list(
+            SalesInvoice.objects
+            .filter(
+                store=store, status=posted, invoice_date__gte=ago30,
+                is_deleted=False, customer__isnull=False,
+            )
+            .values('customer__name')
+            .annotate(spent=Sum('total_amount'), visits=Count('id'))
+            .order_by('-spent')[:4]
+        )
+
+        now_sales = SalesInvoice.objects.filter(
+            store=store, status=posted, invoice_date__gte=ago30, is_deleted=False,
+        ).aggregate(total=Sum('total_amount'), cnt=Count('id'))
+
+        prev_sales = SalesInvoice.objects.filter(
+            store=store, status=posted,
+            invoice_date__gte=ago60, invoice_date__lt=ago30, is_deleted=False,
+        ).aggregate(total=Sum('total_amount'), cnt=Count('id'))
+
+        low_stock = list(
+            StockLevel.objects
+            .filter(store=store, is_deleted=False, quantity__lte=F('reorder_level'))
+            .exclude(reorder_level=0)
+            .select_related('variant__product')
+            .values('variant__product__name', 'quantity', 'reorder_level')[:8]
+        )
+
+        storage_items = list(
+            StorageStock.objects
+            .filter(store=store, is_deleted=False, quantity_remaining__gt=0)
+            .values('variant__product__name')
+            .annotate(total=Sum('quantity_remaining'))
+            .order_by('-total')[:5]
+        )
+
+        customer_count = Customer.objects.filter(store=store, is_deleted=False).count()
+
+        lines = [
+            f"اسم المتجر: {store.name}",
+            f"تاريخ اليوم: {today.strftime('%Y-%m-%d')}",
+            "",
+            "=== المبيعات آخر 30 يوم ===",
+            f"الإجمالي: {now_sales['total'] or 0:.2f}  |  الفواتير: {now_sales['cnt'] or 0}",
+            f"الفترة السابقة (60-30 يوم): {prev_sales['total'] or 0:.2f}  |  الفواتير: {prev_sales['cnt'] or 0}",
+            f"إجمالي العملاء: {customer_count}",
+            "",
+            "=== أكثر المنتجات مبيعاً ===",
+        ]
+        for p in top_products:
+            lines.append(f"- {p['variant__product__name']}: {p['qty']} قطعة، إيراد {p['rev']:.2f}")
+
+        lines += ["", "=== أفضل العملاء ==="]
+        if top_customers:
+            for c in top_customers:
+                lines.append(f"- {c['customer__name']}: {c['spent']:.2f} ({c['visits']} زيارة)")
+        else:
+            lines.append("لا توجد مبيعات بعملاء مسجلين في هذه الفترة")
+
+        lines += ["", "=== المخزون المنخفض ==="]
+        if low_stock:
+            for item in low_stock:
+                lines.append(f"- {item['variant__product__name']}: متاح {item['quantity']}، حد الطلب {item['reorder_level']}")
+        else:
+            lines.append("لا توجد منتجات دون حد الطلب")
+
+        if storage_items:
+            lines += ["", "=== البضاعة في التخزين ==="]
+            for s in storage_items:
+                lines.append(f"- {s['variant__product__name']}: {s['total']} قطعة")
+
+        return "\n".join(lines)
+
+    def get(self, request):
+        store = getattr(request.user, 'store', None)
+        if not store:
+            return Response({'error': 'no store'}, status=400)
+
+        try:
+            settings_row = AISettings.load()
+            service = GeminiService(settings_row.gemini_api_key)
+        except (NoApiKey, Exception):
+            return Response({'error': 'AI not configured'}, status=503)
+
+        profile = self._get_or_create_profile()
+        store_context = self._gather_context(store)
+
+        user_prompt = (
+            f"بناءً على بيانات المتجر التالية، قدم 4 نصائح تجارية متنوعة ومفيدة:\n\n"
+            f"{store_context}\n\n"
+            f"تذكر: رد بـ JSON فقط كما هو محدد، 4 عناصر، أنواع مختلفة."
+        )
+
+        try:
+            from google import genai as _genai
+
+            response = service.client.models.generate_content(
+                model=profile.model_id or 'gemini-2.5-flash',
+                contents=user_prompt,
+                config=_genai.types.GenerateContentConfig(
+                    system_instruction=profile.system_instruction or self.SYSTEM_PROMPT,
+                    temperature=profile.temperature if profile.temperature is not None else 0.9,
+                    max_output_tokens=profile.max_output_tokens or 1200,
+                    response_mime_type='application/json',
+                ),
+            )
+
+            raw = response.text or '[]'
+            # Strip markdown fences if present
+            if raw.strip().startswith('```'):
+                raw = raw.strip().lstrip('`').split('\n', 1)[-1].rsplit('```', 1)[0]
+
+            insights = json.loads(raw)
+            if not isinstance(insights, list):
+                raise ValueError("unexpected shape")
+
+            # Normalise and cap at 4
+            clean = [
+                {
+                    'type': str(item.get('type', 'insight')),
+                    'title': str(item.get('title', '')),
+                    'body': str(item.get('body', '')),
+                }
+                for item in insights[:4]
+                if item.get('title') and item.get('body')
+            ]
+            return Response({'insights': clean})
+
+        except Exception as e:
+            logger.exception("V-Agent insights error: %s", e)
+            return Response({'error': str(e)}, status=500)

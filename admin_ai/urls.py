@@ -6,6 +6,7 @@ from .views import (
     AIProfileViewSet, AIModelCacheViewSet,
     AIConversationViewSet, AIChatView,
     AIKnowledgeChunkViewSet, AIToolListView,
+    VAInsightsView,
 )
 
 router = DefaultRouter()
@@ -18,6 +19,7 @@ urlpatterns = [
     path('settings/', AISettingsView.as_view(), name='ai-settings'),
     path('status/',   AIStatusView.as_view(),   name='ai-status'),
     path('chat/',     AIChatView.as_view(),     name='ai-chat'),
-    path('tools/',    AIToolListView.as_view(), name='ai-tools'),
+    path('tools/',             AIToolListView.as_view(),  name='ai-tools'),
+    path('vagent/insights/',   VAInsightsView.as_view(),  name='vagent-insights'),
     path('', include(router.urls)),
 ]
