@@ -107,6 +107,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'pos_print_default', 'pos_double_print_default',
             'srv_print_default', 'srv_double_print_default',
             'receipt_copies', 'receipt_auto_cut', 'receipt_cut_feed',
+            'field_visibility',
         ]
 
     def validate_decimals(self, value):
