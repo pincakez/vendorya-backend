@@ -680,13 +680,14 @@ class VAInsightsView(APIView):
         from datetime import date, timedelta
         from django.db.models import Count, F, Sum
 
+        from django.utils import timezone as tz
         from finance.models import SalesInvoice, SalesInvoiceItem
         from inventory.models import StockLevel, StorageStock
         from users.models import Customer
 
-        today = date.today()
-        ago30 = today - timedelta(days=30)
-        ago60 = today - timedelta(days=60)
+        now   = tz.now()
+        ago30 = now - timedelta(days=30)
+        ago60 = now - timedelta(days=60)
 
         posted = SalesInvoice.Status.POSTED
 
@@ -694,7 +695,7 @@ class VAInsightsView(APIView):
             SalesInvoiceItem.objects
             .filter(
                 invoice__store=store, invoice__status=posted,
-                invoice__date__gte=ago30, is_deleted=False,
+                invoice__date__gte=ago30,
             )
             .values('variant__product__name')
             .annotate(qty=Sum('quantity'), rev=Sum(F('quantity') * F('unit_price')))
