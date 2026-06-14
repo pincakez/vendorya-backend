@@ -283,6 +283,13 @@ CORS_ALLOW_CREDENTIALS = True
 # origin checks work over https. Harmless in local dev (nothing sets this header).
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
+# HTTPS-only cookie flags and HSTS — active in prod (DEBUG=False), safe in dev.
+SESSION_COOKIE_SECURE   = not DEBUG
+CSRF_COOKIE_SECURE      = not DEBUG
+SECURE_SSL_REDIRECT     = not DEBUG   # proxy header above prevents loops
+SECURE_HSTS_SECONDS     = 0 if DEBUG else 31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+
 JAZZMIN_SETTINGS = {
     # UI Customizer
     "site_title": "Vendorya ERP",
@@ -394,4 +401,4 @@ JAZZMIN_SETTINGS = {
     "custom_css": "css/admin_fix.css",
     "show_ui_builder": False,
 }
-X_FRAME_OPTIONS = 'SAMEORIGIN'
+X_FRAME_OPTIONS = 'DENY'
