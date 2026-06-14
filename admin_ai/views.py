@@ -745,7 +745,7 @@ class VAInsightsView(APIView):
 
         lines = [
             f"اسم المتجر: {store.name}",
-            f"تاريخ اليوم: {today.strftime('%Y-%m-%d')}",
+            f"تاريخ اليوم: {now.strftime('%Y-%m-%d')}",
             "",
             "=== المبيعات آخر 30 يوم ===",
             f"الإجمالي: {now_sales['total'] or 0:.2f}  |  الفواتير: {now_sales['cnt'] or 0}",
