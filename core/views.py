@@ -6,6 +6,7 @@ from django.utils import timezone
 from django.db import connection
 from django.db.models import Sum, Count, F
 from rest_framework import viewsets, status, filters
+from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -126,6 +127,59 @@ class BranchViewSet(viewsets.ModelViewSet):
         from billing.quota import enforce_quota
         enforce_quota(self.request.user.store, 'branches')
         serializer.save(store=self.request.user.store)
+
+    @action(detail=True, methods=['get'], url_path='detail-data')
+    def detail_data(self, request, pk=None):
+        from finance.models import SalesInvoice
+        from inventory.models import StockLevel
+
+        branch = self.get_object()
+        today = timezone.localdate()
+
+        today_qs = SalesInvoice.objects.filter(
+            store=request.user.store,
+            branch=branch,
+            status=SalesInvoice.Status.POSTED,
+            date__date=today,
+        )
+        today_agg = today_qs.aggregate(total=Sum('grand_total'), count=Count('id'))
+
+        staff = [
+            {
+                'id': str(u.id),
+                'username': u.username,
+                'full_name': f"{u.first_name} {u.last_name}".strip() or u.username,
+                'role': u.role,
+            }
+            for u in User.objects.filter(store=request.user.store, default_branch=branch)
+        ]
+
+        levels = list(StockLevel.objects.filter(
+            branch=branch,
+            variant__product__store=request.user.store,
+            variant__product__is_deleted=False,
+        ).select_related('variant'))
+
+        total_units = sum(sl.quantity for sl in levels)
+        variants_in_stock = sum(1 for sl in levels if sl.quantity > 0)
+        low_stock_count = sum(
+            1 for sl in levels
+            if sl.quantity <= (sl.variant.reorder_level or 5)
+        )
+
+        return Response({
+            'branch': BranchSerializer(branch).data,
+            'today_sales': {
+                'total': str(today_agg['total'] or 0),
+                'count': today_agg['count'] or 0,
+            },
+            'staff': staff,
+            'stock_summary': {
+                'variants_in_stock': int(variants_in_stock),
+                'total_units': float(total_units),
+                'low_stock_count': int(low_stock_count),
+            },
+        })
 
 
 class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
