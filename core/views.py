@@ -4,7 +4,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from django.utils import timezone
 from django.db import connection
-from django.db.models import Sum, Count, F
+from django.db.models import Sum, Count, F, DecimalField
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.views import APIView
@@ -246,7 +246,7 @@ class DashboardView(APIView):
             return Response({'detail': 'User has no store assigned.'}, status=status.HTTP_403_FORBIDDEN)
 
         from finance.models import SalesInvoice, WorkShift
-        from inventory.models import StockLevel
+        from inventory.models import StockLevel, StorageStock
 
         today = timezone.localdate()
 
@@ -297,6 +297,27 @@ class DashboardView(APIView):
             }
             for sl in low_stock
         ]
+
+        # Inventory value — active (on-floor) + storage (off-floor, still owned).
+        # Storage is an operational visibility filter, not an accounting boundary:
+        # the balance-sheet figure is active + storage.
+        _dec = DecimalField(max_digits=18, decimal_places=2)
+        active_value = (
+            StockLevel.objects
+            .filter(
+                branch__store=store,
+                variant__is_deleted=False,
+                variant__product__is_deleted=False,
+            )
+            .aggregate(v=Sum(F('quantity') * F('variant__cost_price'), output_field=_dec))['v']
+            or 0
+        )
+        storage_value = (
+            StorageStock.objects
+            .filter(store=store, is_deleted=False)
+            .aggregate(v=Sum(F('quantity_remaining') * F('cost_at_move'), output_field=_dec))['v']
+            or 0
+        )
 
         # Recent sales (last 8 posted)
         recent_sales_qs = (
@@ -349,6 +370,9 @@ class DashboardView(APIView):
             'open_shift': open_shift,
             'low_stock_count': len(low_stock_data),
             'low_stock_items': low_stock_data,
+            'inventory_value_active': str(active_value),
+            'inventory_value_storage': str(storage_value),
+            'inventory_value_total': str(active_value + storage_value),
             'recent_sales': recent_sales,
             'upcoming_services': upcoming_services,
         })
