@@ -108,7 +108,22 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'srv_print_default', 'srv_double_print_default',
             'receipt_copies', 'receipt_auto_cut', 'receipt_cut_feed',
             'field_visibility',
+            'pos_top_selling_period', 'pos_top_selling_category', 'pos_top_selling_limit',
+            'pos_cart_display_fields',
         ]
+
+    def validate_pos_cart_display_fields(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list of field tokens.")
+        # Dedupe, drop blanks, cap at 4 — these render as sub-labels on each cart line.
+        out = []
+        for tok in value:
+            tok = str(tok).strip()
+            if tok and tok not in out:
+                out.append(tok)
+        if len(out) > 4:
+            raise serializers.ValidationError("Choose at most 4 fields.")
+        return out
 
     def validate_decimals(self, value):
         if value < 0 or value > 4:

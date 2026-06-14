@@ -327,6 +327,11 @@ class StoreSettings(TimestampedModel):
         _("Top Selling Limit"), default=8,
         help_text=_("Max items shown in the POS Top Selling panel (4–10)."),
     )
+    pos_cart_display_fields = models.JSONField(
+        _("POS Cart Display Fields"), default=list, blank=True,
+        help_text=_("Up to 4 fields shown under each line in the POS cart. "
+                    "Tokens: 'category' or 'attr:<attribute_key>'."),
+    )
 
     # 9. Services Module
     service_types = models.JSONField(
