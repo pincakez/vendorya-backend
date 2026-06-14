@@ -724,10 +724,13 @@ class VAInsightsView(APIView):
 
         low_stock = list(
             StockLevel.objects
-            .filter(store=store, is_deleted=False, quantity__lte=F('reorder_level'))
-            .exclude(reorder_level=0)
-            .select_related('variant__product')
-            .values('variant__product__name', 'quantity', 'reorder_level')[:8]
+            .filter(
+                variant__product__store=store,
+                variant__is_deleted=False,
+                variant__reorder_level__gt=0,
+                quantity__lte=F('variant__reorder_level'),
+            )
+            .values('variant__product__name', 'quantity', 'variant__reorder_level')[:8]
         )
 
         storage_items = list(
@@ -764,7 +767,7 @@ class VAInsightsView(APIView):
         lines += ["", "=== المخزون المنخفض ==="]
         if low_stock:
             for item in low_stock:
-                lines.append(f"- {item['variant__product__name']}: متاح {item['quantity']}، حد الطلب {item['reorder_level']}")
+                lines.append(f"- {item['variant__product__name']}: متاح {item['quantity']}، حد الطلب {item['variant__reorder_level']}")
         else:
             lines.append("لا توجد منتجات دون حد الطلب")
 
