@@ -93,9 +93,8 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             invoice = SalesInvoice.objects.create(**validated_data)
             for item_data in items_data:
-                self._apply_line_tax(invoice, item_data)
                 SalesInvoiceItem.objects.create(invoice=invoice, **item_data)
-            self._recalculate(invoice)
+            self._recalculate(invoice)  # authoritative: sets every line's tax + invoice totals
         # Only enforce credit when the invoice is created already-POSTED (legacy
         # direct-post path). The POS flow creates a DRAFT cart then posts via the
         # checkout action, which runs enforce_credit_policy at the real post moment.
@@ -104,25 +103,16 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         return invoice
 
     @staticmethod
-    def _apply_line_tax(invoice, item_data):
-        """Server-side tax: set the line's tax_amount from the product's tax
-        (or the store default), or 0 when tax is disabled for the store.
-        Single source of truth — POS and the invoice screen both rely on this
-        instead of trusting a client-supplied tax_amount."""
+    def _line_tax_rate(invoice, variant):
+        """The tax rate (%) that applies to a line: the product's own tax, else the
+        store default, else 0 — and always 0 when tax is disabled for the store."""
         settings = getattr(invoice.store, 'settings', None)
         if settings is not None and not getattr(settings, 'tax_enabled', True):
-            item_data['tax_amount'] = Decimal('0')
-            return
-        variant = item_data.get('variant')
+            return Decimal('0')
         tax = getattr(getattr(variant, 'product', None), 'tax', None)
         if tax is None and settings is not None:
             tax = settings.default_tax
-        if tax is None:
-            item_data['tax_amount'] = Decimal('0')
-            return
-        qty = item_data.get('quantity') or Decimal('0')
-        unit = item_data.get('unit_price') or Decimal('0')
-        item_data['tax_amount'] = (qty * unit * tax.rate / Decimal('100')).quantize(Decimal('0.01'))
+        return tax.rate if tax is not None else Decimal('0')
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)
@@ -133,23 +123,49 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
             if items_data is not None:
                 instance.items.all().delete()
                 for item_data in items_data:
-                    self._apply_line_tax(instance, item_data)
                     SalesInvoiceItem.objects.create(invoice=instance, **item_data)
             self._recalculate(instance)
         return instance
 
     @staticmethod
     def _recalculate(invoice):
-        subtotal = Decimal('0')
-        tax_total = Decimal('0')
-        for item in invoice.items.all():
-            line_discount = Decimal(str(item.discount_amount or '0'))
-            subtotal += (item.quantity * item.unit_price) - line_discount
-            tax_total += item.tax_amount
+        """Authoritative totals. Tax is charged on the NET price after discounts
+        (Egyptian VAT Law 67/2016: VAT base = actual consideration paid; unconditional
+        invoice discounts are excluded from the base). So:
+          • each line is first netted of its own discount, then
+          • the whole-invoice discount is allocated pro-rata across lines, and
+          • VAT is computed on what remains.
+        """
+        items = list(invoice.items.all())
+        line_nets = [
+            (it.quantity * it.unit_price) - Decimal(str(it.discount_amount or '0'))
+            for it in items
+        ]
+        discounted_subtotal = sum(line_nets, Decimal('0'))
+
         invoice_discount = Decimal(str(invoice.discount or '0'))
-        invoice.subtotal = subtotal
+        # never discount below zero
+        if invoice_discount < 0:
+            invoice_discount = Decimal('0')
+        if discounted_subtotal <= 0:
+            invoice_discount = Decimal('0')
+        elif invoice_discount > discounted_subtotal:
+            invoice_discount = discounted_subtotal
+
+        tax_total = Decimal('0')
+        for item, line_net in zip(items, line_nets):
+            share = (invoice_discount * line_net / discounted_subtotal) if discounted_subtotal > 0 else Decimal('0')
+            taxable = line_net - share
+            rate = SalesInvoiceSerializer._line_tax_rate(invoice, item.variant)
+            tax = (taxable * rate / Decimal('100')).quantize(Decimal('0.01'))
+            if Decimal(str(item.tax_amount or '0')) != tax:
+                item.tax_amount = tax
+                item.save(update_fields=['tax_amount', 'total'])  # save() recomputes total
+            tax_total += tax
+
+        invoice.subtotal = discounted_subtotal
         invoice.tax_total = tax_total
-        invoice.grand_total = subtotal + tax_total - invoice_discount
+        invoice.grand_total = discounted_subtotal - invoice_discount + tax_total
         invoice.save(update_fields=['subtotal', 'tax_total', 'grand_total'])
 
 
