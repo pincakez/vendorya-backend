@@ -4,7 +4,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from django.utils import timezone
 from django.db import connection
-from django.db.models import Sum, Count, F, DecimalField
+from decimal import Decimal
+from datetime import timedelta
+from django.db.models import Sum, Count, F, DecimalField, Q, Value
+from django.db.models.functions import Coalesce, TruncDate, ExtractHour
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.views import APIView
@@ -245,10 +248,14 @@ class DashboardView(APIView):
         if not store:
             return Response({'detail': 'User has no store assigned.'}, status=status.HTTP_403_FORBIDDEN)
 
-        from finance.models import SalesInvoice, WorkShift
-        from inventory.models import StockLevel, StorageStock
+        from finance.models import SalesInvoice, SalesInvoiceItem, WorkShift
+        from inventory.models import StockLevel, StorageStock, ProductAttribute
+        from users.models import Customer
+        from services.models import Service
 
-        today = timezone.localdate()
+        today      = timezone.localdate()
+        week_start = today - timedelta(days=6)
+        month_start = today.replace(day=1)
 
         # Today's posted sales
         today_invoices = SalesInvoice.objects.filter(
@@ -265,15 +272,23 @@ class DashboardView(APIView):
             qty=Sum('items__quantity')
         )['qty'] or 0
 
-        # Open shift
+        # Open shift + live shift stats
         open_shift_qs = WorkShift.objects.filter(store=store, status=WorkShift.Status.OPEN).first()
         open_shift = None
         if open_shift_qs:
+            shift_agg = SalesInvoice.objects.filter(
+                store=store,
+                status=SalesInvoice.Status.POSTED,
+                is_deleted=False,
+                date__gte=open_shift_qs.start_time,
+            ).aggregate(total=Sum('grand_total'), cnt=Count('id'))
             open_shift = {
                 'id': str(open_shift_qs.id),
                 'start_time': open_shift_qs.start_time,
                 'starting_cash': str(open_shift_qs.starting_cash),
                 'user': open_shift_qs.user.get_full_name() or open_shift_qs.user.username,
+                'invoices_count': shift_agg['cnt'] or 0,
+                'sales_total': str(shift_agg['total'] or 0),
             }
 
         # Low stock — per-variant reorder_level (falls back to 5 by default)
@@ -338,7 +353,6 @@ class DashboardView(APIView):
         ]
 
         # Upcoming services (next 5 with ETA, not Done/Archived)
-        from services.models import Service
         upcoming_services_qs = (
             Service.objects
             .filter(
@@ -363,18 +377,154 @@ class DashboardView(APIView):
             for svc in upcoming_services_qs
         ]
 
+        # ── Top sellers this week ────────────────────────────────
+        top_sellers_qs = (
+            SalesInvoiceItem.objects
+            .filter(
+                invoice__store=store,
+                invoice__status=SalesInvoice.Status.POSTED,
+                invoice__is_deleted=False,
+                invoice__date__date__gte=week_start,
+            )
+            .values('variant__product__name')
+            .annotate(qty=Sum('quantity'), revenue=Sum('total'))
+            .order_by('-qty')[:5]
+        )
+        top_sellers = [
+            {'name': r['variant__product__name'], 'qty': str(r['qty']), 'revenue': str(r['revenue'])}
+            for r in top_sellers_qs
+        ]
+
+        # ── Customer debt — top 5 outstanding balances ───────────
+        DEC2 = DecimalField(max_digits=14, decimal_places=2)
+        debtors_qs = (
+            Customer.objects
+            .filter(store=store, is_deleted=False)
+            .annotate(
+                invoice_net=Coalesce(
+                    Sum(
+                        F('invoices__grand_total') - F('invoices__paid_amount'),
+                        filter=Q(invoices__status='POSTED', invoices__is_deleted=False),
+                        output_field=DEC2,
+                    ),
+                    Value(Decimal('0')), output_field=DEC2,
+                )
+            )
+            .annotate(
+                outstanding=F('invoice_net') + Coalesce(F('balance'), Value(Decimal('0')), output_field=DEC2)
+            )
+            .filter(outstanding__gt=0)
+            .order_by('-outstanding')[:5]
+            .values('name', 'outstanding')
+        )
+        customer_debt = [
+            {'name': r['name'], 'outstanding': str(r['outstanding'])}
+            for r in debtors_qs
+        ]
+
+        # ── Sales by category this week (horizontal bar chart) ───
+        sales_by_cat_qs = (
+            SalesInvoiceItem.objects
+            .filter(
+                invoice__store=store,
+                invoice__status=SalesInvoice.Status.POSTED,
+                invoice__is_deleted=False,
+                invoice__date__date__gte=week_start,
+            )
+            .values(cat_name=Coalesce(F('variant__product__category__name'), Value('Other')))
+            .annotate(total=Sum('total'))
+            .order_by('-total')[:5]
+        )
+        sales_by_category = [
+            {'name': r['cat_name'], 'total': str(r['total'])}
+            for r in sales_by_cat_qs
+        ]
+
+        # ── Best of the month — 4 facts ──────────────────────────
+        month_qs = SalesInvoice.objects.filter(
+            store=store, status=SalesInvoice.Status.POSTED,
+            is_deleted=False, date__date__gte=month_start,
+        )
+
+        # Best category by revenue
+        best_cat_row = (
+            SalesInvoiceItem.objects
+            .filter(invoice__in=month_qs)
+            .values('variant__product__category__name')
+            .annotate(total=Sum('total'))
+            .order_by('-total')
+            .first()
+        )
+        best_category = best_cat_row['variant__product__category__name'] if best_cat_row else None
+
+        # Best day by revenue
+        best_day_row = (
+            month_qs
+            .annotate(day=TruncDate('date'))
+            .values('day')
+            .annotate(total=Sum('grand_total'))
+            .order_by('-total')
+            .first()
+        )
+        best_day = None
+        if best_day_row and best_day_row['day']:
+            best_day = best_day_row['day'].strftime('%A, %b %-d')
+
+        # Peak selling hour range (busiest hour + next)
+        best_hr_row = (
+            month_qs
+            .annotate(hr=ExtractHour('date'))
+            .values('hr')
+            .annotate(cnt=Count('id'))
+            .order_by('-cnt')
+            .first()
+        )
+        best_hour = None
+        if best_hr_row and best_hr_row['hr'] is not None:
+            def _fmt_hr(x):
+                x = x % 24
+                if x == 0:    return '12am'
+                elif x < 12:  return f'{x}am'
+                elif x == 12: return '12pm'
+                else:          return f'{x - 12}pm'
+            h = best_hr_row['hr']
+            best_hour = f"{_fmt_hr(h)} – {_fmt_hr(h + 2)}"
+
+        # Best-selling attribute value this month
+        best_attr_row = (
+            ProductAttribute.objects
+            .filter(variant__salesinvoiceitem__invoice__in=month_qs)
+            .values('definition__name', 'value')
+            .annotate(cnt=Count('variant__salesinvoiceitem'))
+            .order_by('-cnt')
+            .first()
+        )
+        best_attribute = (
+            f"{best_attr_row['definition__name']}: {best_attr_row['value']}"
+            if best_attr_row else None
+        )
+
         return Response({
-            'today_sales_total': str(today_agg['total'] or 0),
-            'today_invoices_count': today_agg['count'] or 0,
-            'today_items_sold': float(items_sold),
-            'open_shift': open_shift,
-            'low_stock_count': len(low_stock_data),
-            'low_stock_items': low_stock_data,
+            'today_sales_total':      str(today_agg['total'] or 0),
+            'today_invoices_count':   today_agg['count'] or 0,
+            'today_items_sold':       float(items_sold),
+            'open_shift':             open_shift,
+            'low_stock_count':        len(low_stock_data),
+            'low_stock_items':        low_stock_data,
             'inventory_value_active': str(active_value),
-            'inventory_value_storage': str(storage_value),
-            'inventory_value_total': str(active_value + storage_value),
-            'recent_sales': recent_sales,
-            'upcoming_services': upcoming_services,
+            'inventory_value_storage':str(storage_value),
+            'inventory_value_total':  str(active_value + storage_value),
+            'recent_sales':           recent_sales,
+            'upcoming_services':      upcoming_services,
+            'top_sellers':            top_sellers,
+            'customer_debt':          customer_debt,
+            'sales_by_category':      sales_by_category,
+            'best_of_month': {
+                'attribute': best_attribute,
+                'category':  best_category,
+                'day':       best_day,
+                'hours':     best_hour,
+            },
         })
 
 
