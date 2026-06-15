@@ -17,9 +17,23 @@ class InvoiceSequence(models.Model):
     """Tracks the last invoice number for each store."""
     store = models.ForeignKey(Store, on_delete=models.CASCADE)
     last_number = models.PositiveIntegerField(default=0)
-    
+
     class Meta:
         unique_together = ('store',)
+
+
+class PurchaseSequence(models.Model):
+    """Tracks the last internal purchase number per (store, supplier).
+
+    Purchase numbers are human-readable per supplier: the supplier's 3-digit
+    code_prefix followed by a running 2-digit (min) counter — e.g. 40001, 40002.
+    """
+    store = models.ForeignKey(Store, on_delete=models.CASCADE)
+    supplier = models.ForeignKey('inventory.Supplier', on_delete=models.CASCADE)
+    last_number = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ('store', 'supplier')
 
 # --- 2. EXPENSES ---
 class ExpenseCategory(TimestampedModel, SoftDeleteModel):
@@ -267,16 +281,38 @@ class PurchaseInvoice(TimestampedModel, SoftDeleteModel):
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT)
     supplier = models.ForeignKey('inventory.Supplier', on_delete=models.PROTECT, related_name='purchases', null=True, blank=True)
     
+    purchase_number = models.CharField(
+        _("Purchase #"), max_length=20, blank=True, default='',
+        help_text="Our internal number (supplier prefix + running counter). Auto-filled when a supplier is set and left blank.")
     vendor_reference = models.CharField(_("Supplier Invoice #"), max_length=100, blank=True, help_text="The number on the paper invoice they gave you.")
     date = models.DateTimeField()
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
-    
+
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    
+
     notes = models.TextField(blank=True)
 
+    # Staged NEW-product lines that have no supplier yet (so no SKU). Each entry:
+    # {name, category, attributes:[{definition, value}], quantity, base_price, retail_price}.
+    # Materialized into real Product + ProductVariant + PurchaseItem the moment a
+    # supplier is assigned (see PurchaseInvoiceSerializer).
+    draft_items = models.JSONField(default=list, blank=True)
+
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
+    def save(self, *args, **kwargs):
+        # Auto-assign our internal purchase number once a supplier exists and the
+        # field is still blank. Format: supplier.code_prefix + zero-padded counter.
+        if self.supplier_id and not self.purchase_number:
+            with transaction.atomic():
+                seq, _created = PurchaseSequence.objects.select_for_update().get_or_create(
+                    store=self.store, supplier_id=self.supplier_id,
+                )
+                seq.last_number += 1
+                seq.save()
+                self.purchase_number = f"{self.supplier.code_prefix}{seq.last_number:02d}"
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.supplier.name} - {self.vendor_reference or self.id}"

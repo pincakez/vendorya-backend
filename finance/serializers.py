@@ -170,43 +170,172 @@ class PurchaseItemSerializer(serializers.ModelSerializer):
 
 
 class PurchaseInvoiceSerializer(serializers.ModelSerializer):
-    items = PurchaseItemSerializer(many=True, required=False)
+    """Purchase = restock existing products AND/OR onboard brand-new ones.
+
+    WRITE: send `lines` — a flat list of row dicts. Two shapes:
+      - existing/materialized:  {variant:<uuid>, quantity, base_price, retail_price?}
+      - new product:            {name, category, subcategory?, attributes:[...],
+                                 quantity, base_price, retail_price}
+    A new-product line materializes into a real Product+Variant+PurchaseItem only
+    when the invoice has a supplier (SKU embeds the supplier prefix). With no
+    supplier it is STAGED into `draft_items` and materialized later, the moment a
+    supplier is assigned.
+
+    READ: `items` = materialized lines (with sku/product_name); `draft_items` =
+    staged new-product lines awaiting a supplier.
+    """
+    items         = serializers.SerializerMethodField()
+    lines         = serializers.ListField(child=serializers.DictField(), write_only=True, required=False)
     supplier_name = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseInvoice
         fields = [
-            'id', 'supplier', 'supplier_name', 'branch', 'vendor_reference', 'date', 'status',
-            'total_amount', 'paid_amount', 'notes', 'items', 'created_at',
+            'id', 'supplier', 'supplier_name', 'branch', 'purchase_number',
+            'vendor_reference', 'date', 'status', 'total_amount', 'paid_amount',
+            'notes', 'items', 'draft_items', 'lines', 'created_at',
         ]
-        read_only_fields = ['id', 'total_amount', 'created_at', 'supplier_name']
-        extra_kwargs = {'supplier': {'required': False, 'allow_null': True}}
+        # purchase_number is writable: blank → auto-assigned in model.save();
+        # a typed value is kept as-is.
+        read_only_fields = ['id', 'total_amount', 'created_at',
+                            'supplier_name', 'items', 'draft_items']
+        extra_kwargs = {
+            'supplier': {'required': False, 'allow_null': True},
+            'branch':   {'required': False},  # resolved server-side in the view
+        }
 
     def get_supplier_name(self, obj):
         return obj.supplier.name if obj.supplier else None
 
+    def get_items(self, obj):
+        out = []
+        for it in obj.items.select_related('variant__product'):
+            v = it.variant
+            out.append({
+                'id': str(it.id),
+                'variant': str(v.id),
+                'sku': v.sku,
+                'product_name': v.product.name,
+                'quantity': str(it.quantity),
+                'unit_cost': str(it.unit_cost),
+                'retail_price': str(v.sell_price),
+                'kind': 'existing',
+            })
+        return out
+
+    # ── write helpers ──────────────────────────────────────────────────────
+    @staticmethod
+    def _dec(val, default='0'):
+        try:
+            return Decimal(str(val if val not in (None, '') else default))
+        except Exception:
+            return Decimal(default)
+
+    def _materialize_new(self, invoice, name, category_id, attributes, base, retail):
+        """Create a real Product+Variant (SKU generated) under the invoice's
+        supplier, then a PurchaseItem. Caller guarantees invoice.supplier_id."""
+        from inventory.product_service import create_product_with_variant
+        from inventory.models import Category
+        category = None
+        if category_id:
+            category = Category.objects.filter(id=category_id, store=invoice.store).first()
+        product = create_product_with_variant(
+            invoice.store, name=name, supplier=invoice.supplier, category=category,
+            base_price=base, cost_price=base, sell_price=retail,
+            attributes=attributes or [],
+        )
+        return product.variants.first()
+
+    def _apply_lines(self, invoice, lines):
+        from inventory.models import ProductVariant
+        staged = []
+        for line in lines:
+            variant_id = line.get('variant')
+            name       = (line.get('name') or '').strip()
+            if not variant_id and not name:
+                continue  # blank trailing row → counts as nothing
+            qty  = self._dec(line.get('quantity'), '1')
+            if qty <= 0:
+                qty = Decimal('1')
+            base   = self._dec(line.get('base_price') or line.get('unit_cost'))
+            retail = line.get('retail_price')
+
+            if variant_id:
+                # existing product (or a previously-materialized new product)
+                variant = ProductVariant.objects.filter(
+                    id=variant_id, product__store=invoice.store
+                ).first()
+                if not variant:
+                    continue
+                if retail not in (None, ''):
+                    variant.sell_price = self._dec(retail)
+                    variant.save(update_fields=['sell_price'])
+                PurchaseItem.objects.create(invoice=invoice, variant=variant,
+                                            quantity=qty, unit_cost=base)
+            elif invoice.supplier_id:
+                # new product, supplier present → materialize now
+                cat_id  = line.get('subcategory') or line.get('category')
+                variant = self._materialize_new(
+                    invoice, name, cat_id, line.get('attributes'),
+                    base, self._dec(retail),
+                )
+                PurchaseItem.objects.create(invoice=invoice, variant=variant,
+                                            quantity=qty, unit_cost=base)
+            else:
+                # new product, NO supplier → stage it (no SKU, not real inventory)
+                staged.append({
+                    'name': name,
+                    'category': line.get('category'),
+                    'subcategory': line.get('subcategory'),
+                    'attributes': line.get('attributes') or [],
+                    'quantity': str(qty),
+                    'base_price': str(base),
+                    'retail_price': str(self._dec(retail)),
+                })
+        invoice.draft_items = staged
+        invoice.save(update_fields=['draft_items'])
+
+    def _materialize_staged(self, invoice):
+        """Supplier just assigned → turn every staged draft line into a real
+        Product+Variant+PurchaseItem, then clear the staging area."""
+        for line in (invoice.draft_items or []):
+            cat_id  = line.get('subcategory') or line.get('category')
+            base    = self._dec(line.get('base_price'))
+            variant = self._materialize_new(
+                invoice, line.get('name') or 'Unnamed', cat_id,
+                line.get('attributes'), base, self._dec(line.get('retail_price')),
+            )
+            PurchaseItem.objects.create(
+                invoice=invoice, variant=variant,
+                quantity=self._dec(line.get('quantity'), '1'), unit_cost=base,
+            )
+        invoice.draft_items = []
+        invoice.save(update_fields=['draft_items'])
+
     def create(self, validated_data):
-        items_data = validated_data.pop('items', [])
+        lines = validated_data.pop('lines', [])
         with transaction.atomic():
             invoice = PurchaseInvoice.objects.create(**validated_data)
-            for item_data in items_data:
-                PurchaseItem.objects.create(invoice=invoice, **item_data)
+            self._apply_lines(invoice, lines)
         return invoice
 
     def update(self, instance, validated_data):
-        items_data = validated_data.pop('items', None)
+        lines = validated_data.pop('lines', None)
         with transaction.atomic():
+            had_supplier = bool(instance.supplier_id)
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
-            instance.save()
-            if items_data is not None:
-                if instance.status == PurchaseInvoice.Status.RECEIVED:
-                    raise serializers.ValidationError(
-                        'Cannot modify items on a received purchase.'
-                    )
+            instance.save()  # may auto-assign purchase_number now
+            if instance.status == PurchaseInvoice.Status.RECEIVED and lines is not None:
+                raise serializers.ValidationError(
+                    'Cannot modify items on a received purchase.'
+                )
+            if lines is not None:
                 instance.items.all().delete()
-                for item_data in items_data:
-                    PurchaseItem.objects.create(invoice=instance, **item_data)
+                self._apply_lines(instance, lines)
+            elif not had_supplier and instance.supplier_id and instance.draft_items:
+                # supplier assigned with no new rows → materialize the staged ones
+                self._materialize_staged(instance)
         return instance
 
 

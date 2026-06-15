@@ -26,7 +26,7 @@ from .serializers import (
     RefundInvoiceSerializer,
 )
 from core.activity import log_activity
-from core.models import ActivityLog
+from core.models import ActivityLog, Branch
 
 
 class PaymentMethodViewSet(viewsets.ModelViewSet):
@@ -313,10 +313,18 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        purchase = serializer.save(store=self.request.user.store)
+        # Resolve branch server-side: prefer a submitted valid branch, else the
+        # user's default branch, else the store's first branch.
+        store = self.request.user.store
+        branch = serializer.validated_data.get('branch')
+        if branch is None or branch.store_id != store.id:
+            branch = getattr(self.request.user, 'default_branch', None)
+        if branch is None or branch.store_id != store.id:
+            branch = Branch.objects.filter(store=store).order_by('created_at').first()
+        purchase = serializer.save(store=store, branch=branch)
         log_activity(
             request=self.request,
-            action=f"Created Purchase {purchase.vendor_reference or str(purchase.id)[:8]}",
+            action=f"Created Purchase {purchase.purchase_number or purchase.vendor_reference or str(purchase.id)[:8]}",
             op_type=ActivityLog.OperationType.PURCHASE,
             details={
                 'purchase_id': str(purchase.id),
@@ -344,11 +352,11 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         invoice.save()
         log_activity(
             request=request,
-            action=f"Received Purchase #{invoice.invoice_number}",
+            action=f"Received Purchase {invoice.purchase_number or str(invoice.id)[:8]}",
             op_type=ActivityLog.OperationType.PURCHASE,
             details={
                 'purchase_id': str(invoice.id),
-                'invoice_number': invoice.invoice_number,
+                'purchase_number': invoice.purchase_number,
                 'supplier': invoice.supplier.name if invoice.supplier else None,
             },
         )

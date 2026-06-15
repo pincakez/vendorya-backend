@@ -229,32 +229,25 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
     def create(self, validated_data):
-        from django.db import transaction
+        from .product_service import create_product_with_variant
         attrs      = validated_data.pop('attributes', [])
         cost_price = validated_data.pop('cost_price', 0)
         sell_price = validated_data.pop('sell_price', 0)
         reorder    = validated_data.pop('reorder_level', None)
 
-        with transaction.atomic():
-            product = Product.objects.create(**validated_data)
-            variant = ProductVariant.objects.create(
-                product=product,
-                cost_price=cost_price,
-                sell_price=sell_price or validated_data.get('base_price', 0),
-                **({'reorder_level': reorder} if reorder is not None else {}),
-            )
-            for attr in attrs:
-                defn_id = attr.get('definition') or attr.get('definition_id')
-                value   = attr.get('value', '')
-                if defn_id and value:
-                    defn = AttributeDefinition.objects.filter(
-                        id=defn_id, store=product.store
-                    ).first()
-                    if defn:
-                        ProductAttribute.objects.create(
-                            variant=variant, definition=defn, value=value
-                        )
-        return product
+        store    = validated_data.pop('store')
+        name     = validated_data.pop('name')
+        supplier = validated_data.pop('supplier', None)
+        category = validated_data.pop('category', None)
+        base     = validated_data.pop('base_price', 0)
+
+        return create_product_with_variant(
+            store, name=name, supplier=supplier, category=category,
+            base_price=base, cost_price=cost_price, sell_price=sell_price,
+            attributes=attrs, reorder_level=reorder,
+            # any remaining Product fields (e.g. description, tax, unit) pass through
+            extra_product_fields=validated_data,
+        )
 
     def update(self, instance, validated_data):
         from django.db import transaction
