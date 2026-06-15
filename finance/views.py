@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone as tz
 from rest_framework import viewsets, filters, status
 from notifications.dispatcher import send_notification
@@ -293,9 +293,24 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return PurchaseInvoice.objects.filter(
+        qs = PurchaseInvoice.objects.filter(
             store=self.request.user.store
         ).prefetch_related('items').select_related('supplier', 'branch')
+        p = self.request.query_params
+        if q := p.get('q'):
+            qs = qs.filter(
+                models.Q(vendor_reference__icontains=q) |
+                models.Q(supplier__name__icontains=q)
+            )
+        if s := p.get('status'):
+            qs = qs.filter(status=s)
+        if sup := p.get('supplier'):
+            qs = qs.filter(supplier_id=sup)
+        if date_from := p.get('date_from'):
+            qs = qs.filter(date__date__gte=date_from)
+        if date_to := p.get('date_to'):
+            qs = qs.filter(date__date__lte=date_to)
+        return qs
 
     def perform_create(self, serializer):
         purchase = serializer.save(store=self.request.user.store)
@@ -318,6 +333,11 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         if invoice.status != PurchaseInvoice.Status.DRAFT:
             return Response(
                 {'detail': 'Only DRAFT invoices can be received.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not invoice.supplier_id:
+            return Response(
+                {'detail': 'A supplier must be assigned before receiving stock.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         invoice.status = PurchaseInvoice.Status.RECEIVED

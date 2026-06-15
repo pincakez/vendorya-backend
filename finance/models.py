@@ -265,7 +265,7 @@ class PurchaseInvoice(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='purchases')
     branch = models.ForeignKey(Branch, on_delete=models.PROTECT)
-    supplier = models.ForeignKey('inventory.Supplier', on_delete=models.PROTECT, related_name='purchases')
+    supplier = models.ForeignKey('inventory.Supplier', on_delete=models.PROTECT, related_name='purchases', null=True, blank=True)
     
     vendor_reference = models.CharField(_("Supplier Invoice #"), max_length=100, blank=True, help_text="The number on the paper invoice they gave you.")
     date = models.DateTimeField()

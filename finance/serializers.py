@@ -171,14 +171,19 @@ class PurchaseItemSerializer(serializers.ModelSerializer):
 
 class PurchaseInvoiceSerializer(serializers.ModelSerializer):
     items = PurchaseItemSerializer(many=True, required=False)
+    supplier_name = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseInvoice
         fields = [
-            'id', 'supplier', 'branch', 'vendor_reference', 'date', 'status',
+            'id', 'supplier', 'supplier_name', 'branch', 'vendor_reference', 'date', 'status',
             'total_amount', 'paid_amount', 'notes', 'items', 'created_at',
         ]
-        read_only_fields = ['id', 'total_amount', 'created_at']
+        read_only_fields = ['id', 'total_amount', 'created_at', 'supplier_name']
+        extra_kwargs = {'supplier': {'required': False, 'allow_null': True}}
+
+    def get_supplier_name(self, obj):
+        return obj.supplier.name if obj.supplier else None
 
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])
