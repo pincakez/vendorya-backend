@@ -23,6 +23,7 @@ class Notification(models.Model):
         BILLING_PAID      = 'BILLING_PAID',       _('Payment Received')
         SUBSCRIPTION      = 'SUBSCRIPTION',       _('Subscription')
         LOW_STOCK         = 'LOW_STOCK',          _('Low Stock')
+        EXPIRY            = 'EXPIRY',             _('Expiring / Expired Stock')
         SHIFT_DIFFERENCE  = 'SHIFT_DIFFERENCE',   _('Shift Difference')
         INVOICE_VOIDED    = 'INVOICE_VOIDED',     _('Invoice Voided')
         ADMIN_NOTE        = 'ADMIN_NOTE',         _('Admin Note')

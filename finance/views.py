@@ -178,6 +178,44 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                         'shortages': shortages,
                     })
 
+            # Policy 4 — expired stock (FEFO). When the store blocks expired sales,
+            # peek at the batches this checkout would draw (earliest-expiry first) and
+            # reject if covering the line forces a draw from an expired batch. WARN/
+            # ALLOW fall through (the POS surfaces the warning pre-checkout).
+            expired_policy = getattr(settings_obj, 'expired_sale_policy', 'WARN')
+            if expired_policy == 'BLOCK':
+                from inventory.models import is_expiry_tracked, StockBatch
+                from django.db.models import F
+                from django.utils import timezone as _tz
+                today = _tz.now().date()
+                blocked = []
+                for item in items:
+                    if not is_expiry_tracked(item.variant):
+                        continue
+                    need = Decimal(str(item.quantity)) * Decimal(str(item.unit_factor or 1))
+                    batches = (StockBatch.objects.select_for_update()
+                               .filter(variant=item.variant, branch=invoice.branch,
+                                       quantity_remaining__gt=0)
+                               .order_by(F('expiry_date').asc(nulls_last=True), 'received_date'))
+                    for b in batches:
+                        if need <= 0:
+                            break
+                        take = min(Decimal(str(b.quantity_remaining)), need)
+                        if b.expiry_date and b.expiry_date < today:
+                            blocked.append({
+                                'variant': str(item.variant.id),
+                                'sku': item.variant.sku,
+                                'name': item.variant.product.name,
+                                'expiry_date': b.expiry_date.isoformat(),
+                            })
+                            break
+                        need -= take
+                if blocked:
+                    raise ValidationError({
+                        'detail': 'This sale would draw from expired stock, which this store blocks.',
+                        'expired': blocked,
+                    })
+
             # Flip to POSTED → fires handle_sale_stock (decrement + COGS snapshot)
             # and assigns the human-readable invoice_number.
             invoice.status = SalesInvoice.Status.POSTED

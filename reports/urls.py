@@ -6,6 +6,7 @@ from .views import (
     CashierPerformanceView, TaxReportView,
     StorageAgingView, StorageValueView, StorageMovementsReportView,
     StorageReconciliationView,
+    ExpiryReportView, ExpiryScanView,
 )
 
 urlpatterns = [
@@ -22,4 +23,6 @@ urlpatterns = [
     path('storage-value/', StorageValueView.as_view(), name='report-storage-value'),
     path('storage-movements/', StorageMovementsReportView.as_view(), name='report-storage-movements'),
     path('storage-reconciliation/', StorageReconciliationView.as_view(), name='report-storage-reconciliation'),
+    path('expiry/', ExpiryReportView.as_view(), name='report-expiry'),
+    path('expiry/scan/', ExpiryScanView.as_view(), name='report-expiry-scan'),
 ]

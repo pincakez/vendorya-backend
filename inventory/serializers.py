@@ -139,6 +139,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'default_variant_price',
             'default_variant_stock', 'selling_units', 'sku_display', 'hide_from_pos',
+            'track_expiry',
             'category_l1', 'category_l2', 'category_l3', 'category_l4',
         ]
 
@@ -232,6 +233,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     supplier_contact = serializers.CharField(source='supplier.contact_info', read_only=True)
     image_url      = serializers.SerializerMethodField()
     selling_units  = serializers.SerializerMethodField()
+    batches        = serializers.SerializerMethodField()
 
     def get_image_url(self, obj):
         if not obj.image:
@@ -241,6 +243,34 @@ class ProductDetailSerializer(serializers.ModelSerializer):
 
     def get_selling_units(self, obj):
         return build_selling_units(obj.variants.first(), obj)
+
+    def get_batches(self, obj):
+        """Open expiry batches (qty > 0) for this product's variants, FEFO order.
+        Empty for non-tracked products — the UI hides the section accordingly."""
+        if not obj.track_expiry:
+            return []
+        from .models import StockBatch
+        rows = (StockBatch.objects
+                .filter(variant__product=obj, quantity_remaining__gt=0)
+                .select_related('branch', 'variant')
+                .order_by('expiry_date', 'received_date'))
+        today = timezone.now().date()
+        out = []
+        for b in rows:
+            out.append({
+                'id': str(b.id),
+                'variant': str(b.variant_id),
+                'sku': b.variant.sku,
+                'branch': b.branch.name,
+                'branch_id': str(b.branch_id),
+                'batch_number': b.batch_number,
+                'expiry_date': b.expiry_date.isoformat() if b.expiry_date else None,
+                'quantity_remaining': str(b.quantity_remaining),
+                'cost_per_base': str(b.cost_per_base),
+                'is_expired': bool(b.expiry_date and b.expiry_date < today),
+                'days_left': (b.expiry_date - today).days if b.expiry_date else None,
+            })
+        return out
 
     class Meta:
         model = Product
@@ -268,7 +298,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         model = Product
         fields = ['id', 'name', 'description', 'category', 'supplier',
                   'base_price', 'attributes', 'cost_price', 'sell_price',
-                  'reorder_level', 'unit', 'selling_units']
+                  'reorder_level', 'unit', 'selling_units', 'track_expiry']
         read_only_fields = ['id']
 
     def _sync_selling_units(self, variant, units_data):
@@ -394,6 +424,7 @@ class StockAdjustmentSerializer(serializers.ModelSerializer):
             'id', 'variant', 'variant_sku', 'product_name',
             'branch', 'branch_name',
             'quantity_change', 'reason', 'notes',
+            'batch_expiry_date', 'batch_number',
             'adjusted_by', 'adjusted_by_name', 'created_at',
         ]
         read_only_fields = ['id', 'adjusted_by', 'created_at']

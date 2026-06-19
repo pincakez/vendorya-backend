@@ -213,6 +213,29 @@ class StoreSettings(TimestampedModel):
     # 1. Inventory Rules
     allow_negative_stock = models.BooleanField(default=False, help_text="If False, POS will block sales when stock is insufficient.")
 
+    # 1b. Expiry / Batch (FEFO) tracking — opt-in master switch.
+    # OFF by default: the whole feature is dormant and invisible, so non-pharmacy
+    # stores (e.g. Gates) are completely unaffected. ON unlocks per-product
+    # `track_expiry` (inventory.Product) + batch capture on purchases + FEFO
+    # draw-down on sales. See inventory.StockBatch / finance FEFO engine.
+    expiry_tracking_enabled = models.BooleanField(
+        _("Expiry / Batch Tracking"), default=False,
+        help_text=_("Master switch for pharmacy-grade expiry & batch (FEFO) tracking. "
+                    "Off = feature hidden; existing stores behave exactly as before."))
+
+    class ExpiredSalePolicy(models.TextChoices):
+        ALLOW = 'ALLOW', _('Allow — sell expired stock silently')
+        WARN  = 'WARN',  _('Warn — flag expired stock at POS but allow')
+        BLOCK = 'BLOCK', _('Block — reject a sale that would draw expired stock')
+
+    expired_sale_policy = models.CharField(
+        _("Expired-Stock Sale Policy"), max_length=5,
+        choices=ExpiredSalePolicy.choices, default=ExpiredSalePolicy.WARN,
+        help_text=_("What happens when a FEFO draw would pull from an expired batch."))
+    expiry_alert_days = models.PositiveIntegerField(
+        _("Expiry Alert Window (days)"), default=60,
+        help_text=_("Batches expiring within this many days are flagged 'expiring soon'."))
+
     # 2. Sales Rules
     enable_agel_selling = models.BooleanField(default=True, help_text="Allow selling on credit (Customer Debt).")
 

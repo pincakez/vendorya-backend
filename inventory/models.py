@@ -156,6 +156,16 @@ class Product(TimestampedModel, SoftDeleteModel):
         help_text=_("Ghosted: stays in inventory and reports but won't appear in the POS catalog."),
     )
 
+    # Opt-in expiry/batch (FEFO) tracking for THIS product. Only meaningful when the
+    # store's StoreSettings.expiry_tracking_enabled master switch is ON (see
+    # is_expiry_tracked()). A pharmacy turns this on for medicines but leaves it off
+    # for chargers/tissues. Off = the product uses the simple single-number stock path
+    # exactly as before. See StockBatch + the finance FEFO engine.
+    track_expiry = models.BooleanField(
+        _("Track Expiry / Batches"), default=False,
+        help_text=_("Stock this product as dated batches and sell earliest-expiry-first (FEFO)."),
+    )
+
     # Soft-delete audit (captured on delete; free-text note for OTHER).
     delete_reason = models.CharField(max_length=20, choices=DeleteReason.choices, blank=True, default='')
     delete_note   = models.CharField(max_length=255, blank=True, default='')
@@ -294,6 +304,138 @@ class StockLevel(TimestampedModel):
     def __str__(self):
         return f"{self.branch.name}: {self.quantity}"
 
+# --- 4b. EXPIRY / BATCH TRACKING (FEFO) ---
+def is_expiry_tracked(variant):
+    """True when this variant's stock should be managed as dated batches (FEFO).
+
+    Two gates, both required (see CLAUDE design): the store's master switch
+    (StoreSettings.expiry_tracking_enabled) AND the product's own track_expiry flag.
+    Either off → the variant uses the classic single-number StockLevel path, so
+    non-pharmacy stores are wholly unaffected.
+    """
+    product = variant.product
+    if not getattr(product, 'track_expiry', False):
+        return False
+    from core.models import StoreSettings
+    return bool(
+        StoreSettings.objects.filter(
+            store_id=product.store_id, expiry_tracking_enabled=True
+        ).values_list('id', flat=True).first()
+    )
+
+
+class StockBatch(TimestampedModel):
+    """A received lot of a variant at a branch, with its own expiry + remaining qty.
+
+    Created only for expiry-tracked variants (opt-in). Quantities are in BASE units —
+    consistent with StockLevel and the s97 UoM engine. StockLevel.quantity stays the
+    authoritative cached on-hand total that the whole app reads; the sum of a
+    variant+branch's open batches (quantity_remaining > 0) must equal it. Both move
+    together inside the same locked transaction on every stock-touch point.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='stock_batches')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE, related_name='batches')
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='stock_batches')
+
+    batch_number = models.CharField(_("Batch / Lot No."), max_length=60, blank=True, default='')
+    # Null only for "unknown expiry" stock (e.g. a positive count-correction or a
+    # return whose origin batch is unknown). FEFO orders these last.
+    expiry_date = models.DateField(_("Expiry Date"), null=True, blank=True)
+    quantity_remaining = models.DecimalField(max_digits=12, decimal_places=3, default=0.000)
+    cost_per_base = models.DecimalField(
+        _("Cost / base unit"), max_digits=12, decimal_places=2, default=0.00,
+        help_text=_("True-FEFO COGS source: the cost of one base unit in this batch."))
+    received_date = models.DateField(default=timezone.now)
+    # Provenance — which purchase line created this batch (null for adjustments/returns).
+    source_purchase_item = models.ForeignKey(
+        'finance.PurchaseItem', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='created_batches')
+
+    class Meta:
+        ordering = ['expiry_date', 'received_date']
+        indexes = [
+            models.Index(fields=['variant', 'branch', 'quantity_remaining']),
+            models.Index(fields=['store', 'expiry_date']),
+        ]
+
+    def __str__(self):
+        return f"{self.variant.sku} · exp {self.expiry_date or '—'} · {self.quantity_remaining} left"
+
+    @property
+    def is_expired(self):
+        return bool(self.expiry_date and self.expiry_date < timezone.now().date())
+
+
+def draw_from_batches(variant, branch, base_qty):
+    """FEFO draw-down: remove `base_qty` BASE units from a variant's open batches at
+    `branch`, earliest-expiry first (NULL expiry last). Returns the list of draws as
+    [{batch, qty, cost_per_base, expired}], in draw order. Caller MUST be inside a
+    transaction.atomic() — rows are locked with select_for_update.
+
+    Does NOT touch StockLevel (the caller owns the cached total) and does NOT enforce
+    the expired-sale policy (the checkout guard does that up front). If batches can't
+    cover the full qty (only possible when negative stock is allowed), it draws what's
+    there and the shortfall is simply uncosted — StockLevel still goes negative.
+    """
+    from decimal import Decimal
+    from django.db.models import F
+    remaining = Decimal(str(base_qty))
+    draws = []
+    batches = (StockBatch.objects.select_for_update()
+               .filter(variant=variant, branch=branch, quantity_remaining__gt=0)
+               .order_by(F('expiry_date').asc(nulls_last=True), 'received_date'))
+    today = timezone.now().date()
+    for b in batches:
+        if remaining <= 0:
+            break
+        take = min(Decimal(str(b.quantity_remaining)), remaining)
+        b.quantity_remaining = Decimal(str(b.quantity_remaining)) - take
+        b.save(update_fields=['quantity_remaining', 'updated_at'])
+        draws.append({
+            'batch': b, 'qty': take, 'cost_per_base': Decimal(str(b.cost_per_base)),
+            'expired': bool(b.expiry_date and b.expiry_date < today),
+        })
+        remaining -= take
+    return draws
+
+
+def restock_to_batch(variant, branch, store, base_qty, *, expiry_date=None,
+                     batch_number='', cost_per_base=None, source_purchase_item=None,
+                     prefer_batch=None):
+    """Add `base_qty` BASE units back/into batch stock. Used by purchase receive (new
+    batch), refund restock, void replay, and positive stock adjustments. Caller owns
+    StockLevel. Must run inside transaction.atomic().
+
+    Resolution order: an explicit `prefer_batch` (void replay → exact origin batch) →
+    an existing open batch matching (expiry_date, batch_number) → a brand-new batch.
+    """
+    from decimal import Decimal
+    base_qty = Decimal(str(base_qty))
+    if prefer_batch is not None:
+        b = StockBatch.objects.select_for_update().get(pk=prefer_batch.pk)
+        b.quantity_remaining = Decimal(str(b.quantity_remaining)) + base_qty
+        b.save(update_fields=['quantity_remaining', 'updated_at'])
+        return b
+    if cost_per_base is None:
+        cost_per_base = Decimal(str(variant.cost_price or '0'))
+    # Coalesce into an identical open batch (same expiry + lot) to avoid fragmentation;
+    # a return with unknown expiry folds into the earliest existing open batch.
+    match = (StockBatch.objects.select_for_update()
+             .filter(variant=variant, branch=branch, expiry_date=expiry_date,
+                     batch_number=batch_number or '')
+             .order_by('received_date').first())
+    if match:
+        match.quantity_remaining = Decimal(str(match.quantity_remaining)) + base_qty
+        match.save(update_fields=['quantity_remaining', 'updated_at'])
+        return match
+    return StockBatch.objects.create(
+        store=store, variant=variant, branch=branch, batch_number=batch_number or '',
+        expiry_date=expiry_date, quantity_remaining=base_qty, cost_per_base=cost_per_base,
+        source_purchase_item=source_purchase_item,
+    )
+
+
 # --- 5. BUNDLES ---
 class BundleItem(models.Model):
     bundle = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='bundle_contents')
@@ -317,6 +459,12 @@ class StockAdjustment(TimestampedModel):
     quantity_change = models.DecimalField(max_digits=10, decimal_places=3, help_text="Use negative for loss (e.g., -1), positive for gain.")
     reason = models.CharField(max_length=20, choices=Reason.choices)
     notes = models.TextField(blank=True)
+
+    # Expiry-tracked products only: a positive gain needs a batch to live in. Captured
+    # from the UI when the variant is expiry-tracked; ignored otherwise. A negative
+    # change draws FEFO from existing batches (no expiry needed).
+    batch_expiry_date = models.DateField(null=True, blank=True)
+    batch_number = models.CharField(max_length=60, blank=True, default='')
     
     # Who did it?
     adjusted_by = models.ForeignKey('users.User', on_delete=models.PROTECT)
@@ -353,6 +501,18 @@ class StockAdjustment(TimestampedModel):
                     )
             stock.quantity = new_quantity
             stock.save()
+
+            # Keep batch stock in lock-step with the cached total for tracked variants.
+            if is_expiry_tracked(self.variant):
+                change = Decimal(str(self.quantity_change))
+                if change < 0:
+                    draw_from_batches(self.variant, self.branch, -change)
+                elif change > 0:
+                    restock_to_batch(
+                        self.variant, self.branch, self.store, change,
+                        expiry_date=self.batch_expiry_date,
+                        batch_number=self.batch_number,
+                    )
 
 
 # --- 7. STOCK TRANSFERS ---

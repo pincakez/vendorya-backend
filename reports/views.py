@@ -961,3 +961,117 @@ class StorageReconciliationView(_StoreMixin, APIView):
                 })
         return Response({'checked': len(variant_ids), 'reconciles': not failures,
                          'failures': failures})
+
+
+# ============================================================
+# 14. EXPIRY / BATCH (FEFO) — expiring-soon + expired list, valuation by batch
+# ============================================================
+
+class ExpiryReportView(_StoreMixin, APIView):
+    """Open batches (quantity_remaining > 0) of expiry-tracked products, bucketed by
+    how close to expiry they are. ``?window=N`` (default = store's expiry_alert_days)
+    sets the 'expiring soon' horizon; ``?status=expired|soon|all`` filters. Returns a
+    flat batch list with valuation (qty × cost_per_base) for each row + totals.
+    """
+    def get(self, request):
+        from inventory.models import StockBatch
+        store = self.get_store(request)
+        if not store:
+            return _no_store()
+
+        settings_obj = getattr(store, 'settings', None)
+        default_window = getattr(settings_obj, 'expiry_alert_days', 60) or 60
+        try:
+            window = int(request.query_params.get('window', default_window))
+        except (TypeError, ValueError):
+            window = default_window
+        status_filter = request.query_params.get('status', 'all')
+        branch = self.branch_id(request)
+        today = timezone.localdate()
+        soon_cutoff = today + timedelta(days=window)
+
+        qs = (StockBatch.objects
+              .filter(store=store, quantity_remaining__gt=0, variant__product__track_expiry=True)
+              .select_related('variant', 'variant__product', 'branch')
+              .order_by('expiry_date', 'received_date'))
+        if branch:
+            qs = qs.filter(branch_id=branch)
+
+        rows, total_value, expired_value, soon_value = [], ZERO, ZERO, ZERO
+        for b in qs:
+            exp = b.expiry_date
+            is_expired = bool(exp and exp < today)
+            is_soon = bool(exp and today <= exp <= soon_cutoff)
+            state = 'expired' if is_expired else ('soon' if is_soon else 'ok')
+            if status_filter == 'expired' and not is_expired:
+                continue
+            if status_filter == 'soon' and not is_soon:
+                continue
+            value = (Decimal(str(b.quantity_remaining)) * Decimal(str(b.cost_per_base))).quantize(Decimal('0.01'))
+            total_value += value
+            if is_expired:
+                expired_value += value
+            elif is_soon:
+                soon_value += value
+            rows.append({
+                'batch_id': str(b.id),
+                'sku': b.variant.sku,
+                'product': b.variant.product.name,
+                'branch': b.branch.name,
+                'batch_number': b.batch_number,
+                'expiry_date': exp.isoformat() if exp else None,
+                'days_left': (exp - today).days if exp else None,
+                'quantity_remaining': str(b.quantity_remaining),
+                'cost_per_base': str(b.cost_per_base),
+                'value': str(value),
+                'state': state,
+            })
+        return Response({
+            'window_days': window,
+            'rows': rows,
+            'totals': {
+                'batches': len(rows),
+                'total_value': str(total_value.quantize(Decimal('0.01'))),
+                'expired_value': str(expired_value.quantize(Decimal('0.01'))),
+                'expiring_soon_value': str(soon_value.quantize(Decimal('0.01'))),
+            },
+        })
+
+
+class ExpiryScanView(_StoreMixin, APIView):
+    """Manual 'Scan expiring stock' button (no cron — Yakot's preference). Fires one
+    WARNING notification summarising expired + expiring-soon batches for the store.
+    POST only; returns the counts so the UI can toast the result."""
+    def post(self, request):
+        from inventory.models import StockBatch
+        store = self.get_store(request)
+        if not store:
+            return _no_store()
+        settings_obj = getattr(store, 'settings', None)
+        window = getattr(settings_obj, 'expiry_alert_days', 60) or 60
+        today = timezone.localdate()
+        soon_cutoff = today + timedelta(days=window)
+
+        qs = StockBatch.objects.filter(
+            store=store, quantity_remaining__gt=0,
+            variant__product__track_expiry=True, expiry_date__isnull=False)
+        expired = qs.filter(expiry_date__lt=today).count()
+        soon = qs.filter(expiry_date__gte=today, expiry_date__lte=soon_cutoff).count()
+
+        if expired or soon:
+            from notifications.dispatcher import send_notification
+            from notifications.models import Notification as Notif
+            bits = []
+            if expired:
+                bits.append(f"{expired} expired")
+            if soon:
+                bits.append(f"{soon} expiring within {window} days")
+            send_notification(
+                store=store,
+                title="Expiry alert: stock needs attention",
+                body=" · ".join(bits),
+                priority=Notif.Priority.WARNING,
+                notif_type=Notif.Type.EXPIRY,
+                link="/reports/expiry",
+            )
+        return Response({'expired': expired, 'expiring_soon': soon, 'window_days': window})

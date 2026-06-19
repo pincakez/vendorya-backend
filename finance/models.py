@@ -9,7 +9,10 @@ from django.dispatch import receiver
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
 from core.tenancy import TenantScopedManager, TenantSoftDeleteManager
 # ADDED StockLevel here
-from inventory.models import ProductVariant, ProductUnit, StockLevel
+from inventory.models import (
+    ProductVariant, ProductUnit, StockLevel,
+    is_expiry_tracked, draw_from_batches, restock_to_batch,
+)
 from users.models import Customer
 
 # --- 1. SEQUENCING ---
@@ -131,6 +134,21 @@ class SalesInvoiceItem(models.Model):
         tax = Decimal(str(self.tax_amount or '0'))
         self.total = (self.quantity * self.unit_price) - discount + tax
         super().save(*args, **kwargs)
+
+class SaleBatchConsumption(models.Model):
+    """Audit ledger: which batches a POSTED sale line drew from, and how much (base units).
+
+    Written by the FEFO draw in handle_sale_stock. Two jobs: (1) true-FEFO COGS — the
+    line's cost is the sum of (base_qty × cost_per_base) here, not a weighted average;
+    (2) exact reversal — a VOID returns each draw to its origin batch, so expiry dates
+    never have to be guessed. cost_per_base is frozen at draw time.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    item = models.ForeignKey(SalesInvoiceItem, on_delete=models.CASCADE, related_name='batch_consumptions')
+    batch = models.ForeignKey('inventory.StockBatch', on_delete=models.PROTECT, related_name='consumptions')
+    base_qty = models.DecimalField(max_digits=12, decimal_places=3)
+    cost_per_base = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
 
 class Payment(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -276,6 +294,13 @@ class RefundItem(models.Model):
                 )
                 stock.quantity += base_qty
                 stock.save()
+                # Returned goods re-enter batch stock for tracked products. Origin
+                # batch is unknown from a refund line, so they land in an
+                # unknown-expiry batch (FEFO sorts those last; staff can adjust).
+                if is_expiry_tracked(self.variant):
+                    restock_to_batch(
+                        self.variant, self.refund.branch, self.refund.store, base_qty,
+                        expiry_date=None, batch_number='')
         total = self.refund.items.aggregate(sum=Sum('refund_amount'))['sum'] or 0
         self.refund.total_refunded = total
         self.refund.save()
@@ -337,6 +362,12 @@ class PurchaseItem(models.Model):
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
     unit_cost = models.DecimalField(max_digits=12, decimal_places=2, help_text="Cost per item in this specific shipment.")
     total_cost = models.DecimalField(max_digits=12, decimal_places=2)
+
+    # Expiry-tracked products only: the lot delivered on this line. Captured at receive
+    # time and used to create the StockBatch (see handle_purchase_stock). Ignored when
+    # the product isn't expiry-tracked.
+    expiry_date = models.DateField(null=True, blank=True)
+    batch_number = models.CharField(max_length=60, blank=True, default='')
 
     def save(self, *args, **kwargs):
         self.total_cost = self.quantity * self.unit_cost
@@ -432,13 +463,29 @@ def handle_sale_stock(sender, instance, **kwargs):
                                     notif_type=Notif.Type.LOW_STOCK,
                                     link="/inventory/products",
                                 )
-                        # Snapshot COGS at the moment of posting. weighted_avg_cost
-                        # is per BASE unit; scale to the sold unit so the line's
-                        # profit math (unit_price − cost_at_sale) × quantity stays
-                        # correct when selling Strips/Packs.
-                        base_cost = weighted_avg_cost(item.variant, instance.store)
-                        item.cost_at_sale = (base_cost * Decimal(str(item.unit_factor or 1))).quantize(Decimal('0.01'))
-                        item.save(update_fields=['cost_at_sale'])
+                        if is_expiry_tracked(item.variant):
+                            # FEFO: draw the base qty from the earliest-expiry batches,
+                            # record each draw (for VOID + true costing), and snapshot
+                            # COGS as the ACTUAL cost of the batches consumed.
+                            draws = draw_from_batches(item.variant, instance.branch, base_qty)
+                            total_base_cost = Decimal('0')
+                            for d in draws:
+                                SaleBatchConsumption.objects.create(
+                                    item=item, batch=d['batch'],
+                                    base_qty=d['qty'], cost_per_base=d['cost_per_base'])
+                                total_base_cost += d['qty'] * d['cost_per_base']
+                            # cost_at_sale is per SOLD unit: total batch cost ÷ sold qty.
+                            qty = Decimal(str(item.quantity)) or Decimal('1')
+                            item.cost_at_sale = (total_base_cost / qty).quantize(Decimal('0.01'))
+                            item.save(update_fields=['cost_at_sale'])
+                        else:
+                            # Snapshot COGS at the moment of posting. weighted_avg_cost
+                            # is per BASE unit; scale to the sold unit so the line's
+                            # profit math (unit_price − cost_at_sale) × quantity stays
+                            # correct when selling Strips/Packs.
+                            base_cost = weighted_avg_cost(item.variant, instance.store)
+                            item.cost_at_sale = (base_cost * Decimal(str(item.unit_factor or 1))).quantize(Decimal('0.01'))
+                            item.save(update_fields=['cost_at_sale'])
             elif old.status == SalesInvoice.Status.POSTED and instance.status == SalesInvoice.Status.VOID:
                 # Reversing a posted sale: put the stock back so inventory stays
                 # accurate. Mirrors the DRAFT→POSTED decrement above. (DRAFT→VOID
@@ -452,6 +499,14 @@ def handle_sale_stock(sender, instance, **kwargs):
                         if stock:
                             stock.quantity += base_qty
                             stock.save()
+                        # Return each FEFO draw to its exact origin batch, then clear
+                        # the consumption rows so the void can't double-reverse.
+                        if is_expiry_tracked(item.variant):
+                            for c in item.batch_consumptions.select_for_update():
+                                restock_to_batch(
+                                    item.variant, instance.branch, instance.store,
+                                    c.base_qty, prefer_batch=c.batch)
+                                c.delete()
         except SalesInvoice.DoesNotExist:
             pass
 
@@ -473,7 +528,18 @@ def handle_purchase_stock(sender, instance, **kwargs):
                         stock.save()
                         # cost_price is per BASE unit; unit_cost is per purchased
                         # unit (e.g. a pack), so divide by the factor.
-                        item.variant.cost_price = (Decimal(str(item.unit_cost)) / factor).quantize(Decimal('0.01'))
+                        base_cost = (Decimal(str(item.unit_cost)) / factor).quantize(Decimal('0.01'))
+                        item.variant.cost_price = base_cost
                         item.variant.save()
+                        # Expiry-tracked: this delivery becomes a dated batch, counted
+                        # in base units, carrying its own true cost for FEFO COGS.
+                        if is_expiry_tracked(item.variant):
+                            restock_to_batch(
+                                item.variant, instance.branch, instance.store, base_qty,
+                                expiry_date=item.expiry_date,
+                                batch_number=item.batch_number,
+                                cost_per_base=base_cost,
+                                source_purchase_item=item,
+                            )
         except PurchaseInvoice.DoesNotExist:
             pass

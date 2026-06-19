@@ -196,7 +196,8 @@ class PaymentSerializer(serializers.ModelSerializer):
 class PurchaseItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseItem
-        fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_cost', 'total_cost']
+        fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_cost', 'total_cost',
+                  'expiry_date', 'batch_number']
         read_only_fields = ['id', 'unit_factor', 'total_cost']
 
 

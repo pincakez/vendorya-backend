@@ -94,6 +94,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         model = StoreSettings
         fields = [
             'allow_negative_stock', 'enable_agel_selling',
+            'expiry_tracking_enabled', 'expired_sale_policy', 'expiry_alert_days',
             'credit_policy', 'default_credit_limit',
             'return_window_days', 'restocking_fee_percent',
             'decimals', 'thousands_separator', 'item_noun', 'category_level_names',
