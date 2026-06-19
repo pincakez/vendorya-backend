@@ -2,12 +2,13 @@ from rest_framework import serializers
 from django.db.models import Sum
 from core.field_visibility import FieldVisibilityMixin
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
     ProductVariant, ProductAttribute, ProductUnit, StockLevel, Tax, StockAdjustment,
     StockTransfer, StockTransferItem,
     StorageLocation, StorageStock, StorageMovement,
-    is_multi_unit_enabled,
+    is_multi_unit_enabled, is_weight_selling_enabled,
 )
 
 
@@ -19,7 +20,23 @@ def build_selling_units(variant, product):
 
     Alternate units are only included when the store's multi-unit master switch
     (StoreSettings.multi_unit_enabled, default ON) is on — off hides them so the
-    product sells as a single base unit, while the ProductUnit rows stay in the DB."""
+    product sells as a single base unit, while the ProductUnit rows stay in the DB.
+
+    Weight products (Phase C, selling_mode=WEIGHT, gated on weight_selling_enabled)
+    sell only in kilograms: the single returned unit is the kg base itself (factor 1,
+    price = sell_price per kg) flagged is_weight so the POS does decimal entry. Packs
+    are suppressed — weight and packs are mutually exclusive."""
+    if (getattr(product, 'selling_mode', 'UNIT') == 'WEIGHT'
+            and is_weight_selling_enabled(product.store_id)):
+        return [{
+            'id': None,
+            'name': 'kg',
+            'factor': '1.000',
+            'price': str(variant.sell_price) if variant else str(product.base_price),
+            'barcode': variant.barcode if variant else None,
+            'is_base': True,
+            'is_weight': True,
+        }]
     units = [{
         'id': None,
         'name': product.unit or 'pcs',
@@ -27,6 +44,7 @@ def build_selling_units(variant, product):
         'price': str(variant.sell_price) if variant else str(product.base_price),
         'barcode': variant.barcode if variant else None,
         'is_base': True,
+        'is_weight': False,
     }]
     if variant and is_multi_unit_enabled(product.store_id):
         for u in variant.selling_units.filter(is_deleted=False).order_by('sort_order', 'name'):
@@ -37,6 +55,7 @@ def build_selling_units(variant, product):
                 'price': str(u.sell_price),
                 'barcode': u.barcode,
                 'is_base': False,
+                'is_weight': False,
             })
     return units
 
@@ -144,7 +163,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'default_variant_price',
             'default_variant_stock', 'selling_units', 'sku_display', 'hide_from_pos',
-            'track_expiry',
+            'track_expiry', 'selling_mode',
             'category_l1', 'category_l2', 'category_l3', 'category_l4',
         ]
 
@@ -303,8 +322,31 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         model = Product
         fields = ['id', 'name', 'description', 'category', 'supplier',
                   'base_price', 'attributes', 'cost_price', 'sell_price',
-                  'reorder_level', 'unit', 'selling_units', 'track_expiry']
+                  'reorder_level', 'unit', 'selling_units', 'track_expiry',
+                  'selling_mode']
         read_only_fields = ['id']
+
+    def validate(self, data):
+        """Phase C guards. Weight mode requires the store master switch and is
+        mutually exclusive with pack units; we also force unit='kg' so displays
+        and the POS label stay correct. When the master switch is off we silently
+        fall back to UNIT so a stale flag can never strand a product."""
+        mode = data.get('selling_mode')
+        if mode is None and self.instance is not None:
+            mode = self.instance.selling_mode
+        if mode == Product.SellingMode.WEIGHT:
+            store = self.context['request'].user.store
+            if not is_weight_selling_enabled(store.id):
+                # Master switch off → ignore the weight request, keep it a unit product.
+                data['selling_mode'] = Product.SellingMode.UNIT
+            else:
+                units = data.get('selling_units')
+                if units:
+                    raise serializers.ValidationError(
+                        {'selling_units': _('A weight product is sold per kg only — '
+                                            'it cannot also have pack/strip units.')})
+                data['unit'] = 'kg'
+        return data
 
     def _sync_selling_units(self, variant, units_data):
         """Reconcile a variant's opt-in alternate units against the desired list.

@@ -166,6 +166,23 @@ class Product(TimestampedModel, SoftDeleteModel):
         help_text=_("Stock this product as dated batches and sell earliest-expiry-first (FEFO)."),
     )
 
+    # Opt-in weight selling (Phase C). UNIT = the classic path (whole-piece qty,
+    # +1 stepper, optional packs). WEIGHT = sold by weight: the base unit IS the
+    # kilogram, quantities are decimal (Decimal(12,3) → exact gram precision,
+    # 0.001 kg = 1 g), and the variant's sell_price is the price *per kg*. No ×1000
+    # conversion anywhere — a weight line is just a normal base-unit line with a
+    # decimal qty, so the whole stock/COGS/void engine is untouched. Only meaningful
+    # when the store's StoreSettings.weight_selling_enabled master switch is ON (see
+    # is_weight_selling_enabled). Mutually exclusive with ProductUnit packs.
+    class SellingMode(models.TextChoices):
+        UNIT   = 'UNIT',   _('By Unit (each)')
+        WEIGHT = 'WEIGHT', _('By Weight (per kg)')
+
+    selling_mode = models.CharField(
+        _("Selling Mode"), max_length=10,
+        choices=SellingMode.choices, default=SellingMode.UNIT,
+    )
+
     # Soft-delete audit (captured on delete; free-text note for OTHER).
     delete_reason = models.CharField(max_length=20, choices=DeleteReason.choices, blank=True, default='')
     delete_note   = models.CharField(max_length=255, blank=True, default='')
@@ -315,6 +332,19 @@ def is_multi_unit_enabled(store_id):
     return bool(
         StoreSettings.objects.filter(
             store_id=store_id, multi_unit_enabled=True
+        ).values_list('id', flat=True).first()
+    )
+
+
+def is_weight_selling_enabled(store_id):
+    """True when this store has the weight-selling master switch on
+    (StoreSettings.weight_selling_enabled, default OFF — Phase C). Off → a
+    product's selling_mode=WEIGHT is dormant and it behaves as a classic unit
+    product everywhere. Mirrors is_multi_unit_enabled's per-call query style."""
+    from core.models import StoreSettings
+    return bool(
+        StoreSettings.objects.filter(
+            store_id=store_id, weight_selling_enabled=True
         ).values_list('id', flat=True).first()
     )
 
