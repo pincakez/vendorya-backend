@@ -7,6 +7,7 @@ from .models import (
     ProductVariant, ProductAttribute, ProductUnit, StockLevel, Tax, StockAdjustment,
     StockTransfer, StockTransferItem,
     StorageLocation, StorageStock, StorageMovement,
+    is_multi_unit_enabled,
 )
 
 
@@ -14,7 +15,11 @@ def build_selling_units(variant, product):
     """Unified list of sellable units for a variant: the implicit base unit
     first (factor 1, price = variant.sell_price, name = product.unit), followed
     by any opt-in alternate units. A single-unit product returns a 1-element
-    list, so the POS knows not to show a unit picker."""
+    list, so the POS knows not to show a unit picker.
+
+    Alternate units are only included when the store's multi-unit master switch
+    (StoreSettings.multi_unit_enabled, default ON) is on — off hides them so the
+    product sells as a single base unit, while the ProductUnit rows stay in the DB."""
     units = [{
         'id': None,
         'name': product.unit or 'pcs',
@@ -23,7 +28,7 @@ def build_selling_units(variant, product):
         'barcode': variant.barcode if variant else None,
         'is_base': True,
     }]
-    if variant:
+    if variant and is_multi_unit_enabled(product.store_id):
         for u in variant.selling_units.filter(is_deleted=False).order_by('sort_order', 'name'):
             units.append({
                 'id': str(u.id),

@@ -38,12 +38,12 @@ class StoreSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Store
-        fields = ['id', 'name', 'store_code', 'currency', 'currency_id',
+        fields = ['id', 'name', 'store_code', 'store_type', 'currency', 'currency_id',
                   'default_language', 'timezone', 'plan', 'is_active',
                   'phone_number', 'whatsapp_number', 'city', 'country',
                   'address_line', 'email', 'website', 'fb_page', 'instagram',
                   'logo_light_url', 'logo_dark_url']
-        read_only_fields = ['id', 'plan', 'is_active', 'store_code',
+        read_only_fields = ['id', 'plan', 'is_active', 'store_code', 'store_type',
                             'logo_light_url', 'logo_dark_url']
 
 
@@ -95,6 +95,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         fields = [
             'allow_negative_stock', 'enable_agel_selling',
             'expiry_tracking_enabled', 'expired_sale_policy', 'expiry_alert_days',
+            'multi_unit_enabled', 'weight_selling_enabled',
             'credit_policy', 'default_credit_limit',
             'return_window_days', 'restocking_fee_percent',
             'decimals', 'thousands_separator', 'item_noun', 'category_level_names',

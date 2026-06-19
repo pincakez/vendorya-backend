@@ -46,7 +46,7 @@ class AdminStoreSerializer(serializers.ModelSerializer):
     class Meta:
         model = Store
         fields = [
-            'id', 'name', 'store_code', 'owner', 'owner_username',
+            'id', 'name', 'store_code', 'store_type', 'owner', 'owner_username',
             'plan', 'is_active',
             'currency', 'currency_id',
             'default_language', 'timezone',
@@ -77,6 +77,7 @@ class _OwnerInputSerializer(serializers.Serializer):
 
 class _StoreInputSerializer(serializers.Serializer):
     name             = serializers.CharField(max_length=200)
+    store_type       = serializers.ChoiceField(choices=Store.StoreType.choices, default=Store.StoreType.GENERAL)
     plan             = serializers.ChoiceField(choices=Store.SubscriptionPlan.choices, default=Store.SubscriptionPlan.FREE)
     currency         = serializers.PrimaryKeyRelatedField(
         queryset=Currency.objects.filter(is_active=True),
@@ -98,6 +99,15 @@ class _BranchInputSerializer(serializers.Serializer):
     country      = serializers.CharField(max_length=100, default='Egypt')
     phone_number = serializers.CharField(max_length=20)
     email        = serializers.EmailField(max_length=254)
+
+
+# Store-type → default capability switches applied at creation. Defaults, never
+# locks. Only the verticals with an obvious need flip a flag; everything else
+# inherits the model defaults (multi_unit ON, expiry/weight OFF).
+_STORE_TYPE_CAPABILITY_PRESETS = {
+    Store.StoreType.PHARMACY: {'expiry_tracking_enabled': True},
+    Store.StoreType.GROCERY:  {'weight_selling_enabled': True},
+}
 
 
 class AdminStoreCreateSerializer(serializers.Serializer):
@@ -134,6 +144,17 @@ class AdminStoreCreateSerializer(serializers.Serializer):
 
         # 2. Store — owner is now bound, triggers post_save signal → StoreSettings
         store = Store.objects.create(owner=owner, **store_data)
+
+        # 2b. Seed capability switches from the store type. These are DEFAULTS only —
+        #     the owner can flip any of them later in Settings → Capabilities. We never
+        #     lock a switch to a type. multi_unit_enabled stays at its model default
+        #     (ON) for every type. StoreSettings was just auto-created by post_save.
+        preset = _STORE_TYPE_CAPABILITY_PRESETS.get(store.store_type)
+        if preset:
+            settings_obj = store.settings
+            for field, value in preset.items():
+                setattr(settings_obj, field, value)
+            settings_obj.save(update_fields=list(preset.keys()))
 
         # 3. Backfill owner.store
         owner.store = store

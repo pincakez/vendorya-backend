@@ -305,6 +305,20 @@ class StockLevel(TimestampedModel):
         return f"{self.branch.name}: {self.quantity}"
 
 # --- 4b. EXPIRY / BATCH TRACKING (FEFO) ---
+def is_multi_unit_enabled(store_id):
+    """True when this store offers multi-unit (pack/strip) selling on top of the
+    base unit. Single master switch (StoreSettings.multi_unit_enabled), default ON
+    so existing s97 multi-unit products keep working. Off → only the base unit is
+    offered; ProductUnit rows stay in the DB but are not surfaced. Mirrors the
+    per-call query style of is_expiry_tracked for consistency."""
+    from core.models import StoreSettings
+    return bool(
+        StoreSettings.objects.filter(
+            store_id=store_id, multi_unit_enabled=True
+        ).values_list('id', flat=True).first()
+    )
+
+
 def is_expiry_tracked(variant):
     """True when this variant's stock should be managed as dated batches (FEFO).
 

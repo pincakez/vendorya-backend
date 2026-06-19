@@ -76,8 +76,24 @@ class Store(TimestampedModel, SoftDeleteModel):
         FREE = 'FREE', _('Free')
         PREMIUM = 'PREMIUM', _('Premium')
 
+    class StoreType(models.TextChoices):
+        # The store's retail vertical. Cosmetic on its own — its only behavioural
+        # job is to seed sensible *defaults* for the opt-in capability switches at
+        # creation time (see AdminStoreCreateSerializer). It NEVER locks anything;
+        # the owner can flip every switch afterwards in Settings → Capabilities.
+        GENERAL     = 'GENERAL',     _('General Retail')
+        PHARMACY    = 'PHARMACY',    _('Pharmacy')
+        GROCERY     = 'GROCERY',     _('Grocery / Supermarket')
+        ELECTRONICS = 'ELECTRONICS', _('Electronics / Devices')
+        CLOTHING    = 'CLOTHING',    _('Clothing / Fashion')
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(_("Store Name"), max_length=200)
+    store_type = models.CharField(
+        _("Store Type"), max_length=20,
+        choices=StoreType.choices, default=StoreType.GENERAL,
+        help_text=_("Retail vertical. Seeds default capability switches at creation; "
+                    "never locks anything — owner can change every switch later."))
     store_code = models.CharField(
         _("Store Code"),
         max_length=3,
@@ -222,6 +238,24 @@ class StoreSettings(TimestampedModel):
         _("Expiry / Batch Tracking"), default=False,
         help_text=_("Master switch for pharmacy-grade expiry & batch (FEFO) tracking. "
                     "Off = feature hidden; existing stores behave exactly as before."))
+
+    # 1c. Multi-unit (UoM) master switch — opt-in selling in packs/strips on top of
+    # the base unit. Defaults ON: the s97 engine has shipped always-on per product,
+    # so existing multi-unit products MUST keep working. Off hides alternate units
+    # at POS / on products (rows are preserved in DB, just not offered) → a product
+    # behaves as a single base unit. See inventory.is_multi_unit_enabled.
+    multi_unit_enabled = models.BooleanField(
+        _("Multi-Unit Selling"), default=True,
+        help_text=_("Master switch for selling one product in multiple units "
+                    "(base + packs/strips). Off = only the base unit is offered; "
+                    "existing alternate units are hidden, not deleted."))
+
+    # 1d. Weight-based selling master switch (Phase C). Off by default — the
+    # per-product weight mode + POS decimal entry are gated on this.
+    weight_selling_enabled = models.BooleanField(
+        _("Weight-Based Selling"), default=False,
+        help_text=_("Master switch for selling products by weight (per kg / 100g, "
+                    "decimal quantities). Off = feature hidden."))
 
     class ExpiredSalePolicy(models.TextChoices):
         ALLOW = 'ALLOW', _('Allow — sell expired stock silently')
