@@ -242,6 +242,7 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
         return obj.supplier.name if obj.supplier else None
 
     def get_items(self, obj):
+        from inventory.serializers import build_selling_units
         out = []
         for it in obj.items.select_related('variant__product'):
             v = it.variant
@@ -253,6 +254,13 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 'quantity': str(it.quantity),
                 'unit_cost': str(it.unit_cost),
                 'retail_price': str(v.sell_price),
+                # Round-trip the purchase unit so reopening a draft keeps its
+                # pack/strip selection; selling_units feeds the line's unit picker.
+                'unit': str(it.unit_id) if it.unit_id else None,
+                'selling_units': build_selling_units(v, v.product),
+                'expiry_date': it.expiry_date.isoformat() if it.expiry_date else '',
+                'batch_number': it.batch_number or '',
+                'track_expiry': v.product.track_expiry,
                 'kind': 'existing',
             })
         return out
@@ -265,9 +273,30 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
         except Exception:
             return Decimal(default)
 
-    def _materialize_new(self, invoice, name, category_id, attributes, base, retail):
+    @staticmethod
+    def _resolve_unit(unit_id, variant):
+        """Resolve a purchase line's selling unit → (ProductUnit|None, factor).
+
+        NULL/blank → base unit (factor 1). A unit that doesn't belong to this line's
+        variant is rejected (falls back to base) so a wrong factor can never be frozen
+        onto the PurchaseItem."""
+        if not unit_id:
+            return None, Decimal('1')
+        from inventory.models import ProductUnit
+        unit = ProductUnit.objects.filter(id=unit_id, variant=variant).first()
+        if unit is None:
+            return None, Decimal('1')
+        return unit, Decimal(str(unit.factor))
+
+    def _materialize_new(self, invoice, name, category_id, attributes, base, retail,
+                         track_expiry=False):
         """Create a real Product+Variant (SKU generated) under the invoice's
-        supplier, then a PurchaseItem. Caller guarantees invoice.supplier_id."""
+        supplier, then a PurchaseItem. Caller guarantees invoice.supplier_id.
+
+        `track_expiry` flags a brand-new product as expiry/batch-tracked on its very
+        first receipt (a pharmacy onboarding a new medicine inline). Without it the
+        product would default to untracked and the line's expiry_date/batch_number
+        would be captured but silently dropped at receive (is_expiry_tracked False)."""
         from inventory.product_service import create_product_with_variant
         from inventory.models import Category
         category = None
@@ -277,6 +306,7 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
             invoice.store, name=name, supplier=invoice.supplier, category=category,
             base_price=base, cost_price=base, sell_price=retail,
             attributes=attributes or [],
+            extra_product_fields={'track_expiry': True} if track_expiry else None,
         )
         return product.variants.first()
 
@@ -297,6 +327,7 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
             # receive (ignored by the backend for non-tracked products).
             expiry = line.get('expiry_date') or None
             batch  = (line.get('batch_number') or '').strip()
+            track  = bool(line.get('track_expiry'))
 
             if variant_id:
                 # existing product (or a previously-materialized new product)
@@ -308,7 +339,13 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 if retail not in (None, ''):
                     variant.sell_price = self._dec(retail)
                     variant.save(update_fields=['sell_price'])
+                # Purchase-by-unit: a line may be received in an alternate selling
+                # unit (e.g. 10 Packs). Resolve it, guard that it belongs to this
+                # variant, and freeze its factor; quantity/unit_cost stay per-unit and
+                # the receive engine (handle_purchase_stock) converts to base.
+                unit, factor = self._resolve_unit(line.get('unit'), variant)
                 PurchaseItem.objects.create(invoice=invoice, variant=variant,
+                                            unit=unit, unit_factor=factor,
                                             quantity=qty, unit_cost=base,
                                             expiry_date=expiry, batch_number=batch)
             elif invoice.supplier_id:
@@ -316,7 +353,7 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 cat_id  = line.get('subcategory') or line.get('category')
                 variant = self._materialize_new(
                     invoice, name, cat_id, line.get('attributes'),
-                    base, self._dec(retail),
+                    base, self._dec(retail), track_expiry=track,
                 )
                 PurchaseItem.objects.create(invoice=invoice, variant=variant,
                                             quantity=qty, unit_cost=base,
@@ -331,6 +368,9 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                     'quantity': str(qty),
                     'base_price': str(base),
                     'retail_price': str(self._dec(retail)),
+                    'track_expiry': track,
+                    'expiry_date': expiry.isoformat() if hasattr(expiry, 'isoformat') else (expiry or None),
+                    'batch_number': batch,
                 })
         invoice.draft_items = staged
         invoice.save(update_fields=['draft_items'])
@@ -344,10 +384,13 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
             variant = self._materialize_new(
                 invoice, line.get('name') or 'Unnamed', cat_id,
                 line.get('attributes'), base, self._dec(line.get('retail_price')),
+                track_expiry=bool(line.get('track_expiry')),
             )
             PurchaseItem.objects.create(
                 invoice=invoice, variant=variant,
                 quantity=self._dec(line.get('quantity'), '1'), unit_cost=base,
+                expiry_date=line.get('expiry_date') or None,
+                batch_number=(line.get('batch_number') or '').strip(),
             )
         invoice.draft_items = []
         invoice.save(update_fields=['draft_items'])

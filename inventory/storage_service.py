@@ -84,6 +84,18 @@ def move_to_storage(*, variant, qty, from_branch, storage_location, user,
     if qty <= 0:
         raise ValidationError("Quantity must be greater than zero.")
 
+    # Storage is not yet batch/FEFO-aware: it tracks a variant + cost layer, not the
+    # dated StockBatch sub-ledger. Parking an expiry-tracked variant here would
+    # deduct StockLevel without drawing its batches, silently desyncing the cached
+    # total from the batch sum. Block it cleanly until storage learns about batches.
+    from .models import is_expiry_tracked
+    if is_expiry_tracked(variant):
+        raise ValidationError(
+            f"{variant.sku} is expiry/batch-tracked and can't be moved to storage "
+            f"yet — storage doesn't track batch expiry. Sell or adjust it from its "
+            f"branch instead."
+        )
+
     store = storage_location.store
     stock = (StockLevel.objects.select_for_update()
              .filter(variant=variant, branch=from_branch).first())

@@ -980,6 +980,15 @@ class ExpiryReportView(_StoreMixin, APIView):
             return _no_store()
 
         settings_obj = getattr(store, 'settings', None)
+        # Master switch off → feature dormant. Old StockBatch rows may still exist
+        # (preserved, never deleted) but stay hidden from the report, matching how the
+        # rest of the app reverts to the single-number path when the switch is off.
+        if not getattr(settings_obj, 'expiry_tracking_enabled', False):
+            return Response({
+                'window_days': 0, 'rows': [], 'enabled': False,
+                'totals': {'batches': 0, 'total_value': '0.00',
+                           'expired_value': '0.00', 'expiring_soon_value': '0.00'},
+            })
         default_window = getattr(settings_obj, 'expiry_alert_days', 60) or 60
         try:
             window = int(request.query_params.get('window', default_window))
@@ -1048,6 +1057,9 @@ class ExpiryScanView(_StoreMixin, APIView):
         if not store:
             return _no_store()
         settings_obj = getattr(store, 'settings', None)
+        if not getattr(settings_obj, 'expiry_tracking_enabled', False):
+            return Response({'expired': 0, 'expiring_soon': 0, 'window_days': 0,
+                             'enabled': False})
         window = getattr(settings_obj, 'expiry_alert_days', 60) or 60
         today = timezone.localdate()
         soon_cutoff = today + timedelta(days=window)
