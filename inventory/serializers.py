@@ -4,10 +4,36 @@ from core.field_visibility import FieldVisibilityMixin
 from django.utils import timezone
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
-    ProductVariant, ProductAttribute, StockLevel, Tax, StockAdjustment,
+    ProductVariant, ProductAttribute, ProductUnit, StockLevel, Tax, StockAdjustment,
     StockTransfer, StockTransferItem,
     StorageLocation, StorageStock, StorageMovement,
 )
+
+
+def build_selling_units(variant, product):
+    """Unified list of sellable units for a variant: the implicit base unit
+    first (factor 1, price = variant.sell_price, name = product.unit), followed
+    by any opt-in alternate units. A single-unit product returns a 1-element
+    list, so the POS knows not to show a unit picker."""
+    units = [{
+        'id': None,
+        'name': product.unit or 'pcs',
+        'factor': '1.000',
+        'price': str(variant.sell_price) if variant else str(product.base_price),
+        'barcode': variant.barcode if variant else None,
+        'is_base': True,
+    }]
+    if variant:
+        for u in variant.selling_units.filter(is_deleted=False).order_by('sort_order', 'name'):
+            units.append({
+                'id': str(u.id),
+                'name': u.name,
+                'factor': str(u.factor),
+                'price': str(u.sell_price),
+                'barcode': u.barcode,
+                'is_base': False,
+            })
+    return units
 
 # --- BASIC SERIALIZERS ---
 class TaxSerializer(serializers.ModelSerializer):
@@ -42,6 +68,12 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductAttribute
         fields = ['id', 'definition', 'definition_name', 'definition_key', 'value']
+
+class ProductUnitSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductUnit
+        fields = ['id', 'name', 'factor', 'sell_price', 'barcode', 'sort_order']
+        read_only_fields = ['id']
 
 class StockLevelSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
@@ -96,6 +128,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
     default_variant_id    = serializers.SerializerMethodField()
     default_variant_price = serializers.SerializerMethodField()
     default_variant_stock = serializers.SerializerMethodField()
+    selling_units         = serializers.SerializerMethodField()
     sku_display           = serializers.SerializerMethodField()
     cost_display          = serializers.SerializerMethodField()
 
@@ -105,7 +138,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'id', 'name', 'category_name', 'supplier_name',
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'default_variant_price',
-            'default_variant_stock', 'sku_display', 'hide_from_pos',
+            'default_variant_stock', 'selling_units', 'sku_display', 'hide_from_pos',
             'category_l1', 'category_l2', 'category_l3', 'category_l4',
         ]
 
@@ -146,6 +179,9 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
         if not v:
             return 0
         return sum(s.quantity for s in v.stock_levels.all())
+
+    def get_selling_units(self, obj):
+        return build_selling_units(obj.variants.first(), obj)
 
     def get_sku_display(self, obj):
         variants = list(obj.variants.all())
@@ -195,12 +231,16 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     supplier_name  = serializers.CharField(source='supplier.name', read_only=True)
     supplier_contact = serializers.CharField(source='supplier.contact_info', read_only=True)
     image_url      = serializers.SerializerMethodField()
+    selling_units  = serializers.SerializerMethodField()
 
     def get_image_url(self, obj):
         if not obj.image:
             return None
         request = self.context.get('request')
         return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+
+    def get_selling_units(self, obj):
+        return build_selling_units(obj.variants.first(), obj)
 
     class Meta:
         model = Product
@@ -220,13 +260,48 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                                           write_only=True, required=False, default=0)
     reorder_level = serializers.DecimalField(max_digits=12, decimal_places=3,
                                              write_only=True, required=False)
+    selling_units = serializers.ListField(
+        child=serializers.DictField(), write_only=True, required=False
+    )
 
     class Meta:
         model = Product
         fields = ['id', 'name', 'description', 'category', 'supplier',
                   'base_price', 'attributes', 'cost_price', 'sell_price',
-                  'reorder_level']
+                  'reorder_level', 'unit', 'selling_units']
         read_only_fields = ['id']
+
+    def _sync_selling_units(self, variant, units_data):
+        """Reconcile a variant's opt-in alternate units against the desired list.
+        Existing rows are matched by id (update), missing ids are soft-deleted,
+        id-less rows are created. The base unit is implicit and never appears here."""
+        if variant is None or units_data is None:
+            return
+        keep_ids = set()
+        for u in units_data:
+            uid    = u.get('id')
+            name   = (u.get('name') or '').strip()
+            factor = u.get('factor')
+            if not name or factor in (None, '', 0, '0'):
+                continue   # skip blank/invalid rows
+            defaults = {
+                'name': name,
+                'factor': factor,
+                'sell_price': u.get('sell_price') or 0,
+                'barcode': u.get('barcode') or None,
+                'sort_order': u.get('sort_order') or 0,
+            }
+            if uid:
+                ProductUnit.objects.filter(id=uid, variant=variant).update(**defaults)
+                keep_ids.add(str(uid))
+            else:
+                obj = ProductUnit.objects.create(variant=variant, **defaults)
+                keep_ids.add(str(obj.id))
+        # Soft-delete any unit the client dropped from the list.
+        for existing in variant.selling_units.filter(is_deleted=False):
+            if str(existing.id) not in keep_ids:
+                existing.is_deleted = True
+                existing.save(update_fields=['is_deleted'])
 
     def create(self, validated_data):
         from .product_service import create_product_with_variant
@@ -234,6 +309,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         cost_price = validated_data.pop('cost_price', 0)
         sell_price = validated_data.pop('sell_price', 0)
         reorder    = validated_data.pop('reorder_level', None)
+        units      = validated_data.pop('selling_units', None)
 
         store    = validated_data.pop('store')
         name     = validated_data.pop('name')
@@ -241,13 +317,15 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         category = validated_data.pop('category', None)
         base     = validated_data.pop('base_price', 0)
 
-        return create_product_with_variant(
+        product = create_product_with_variant(
             store, name=name, supplier=supplier, category=category,
             base_price=base, cost_price=cost_price, sell_price=sell_price,
             attributes=attrs, reorder_level=reorder,
             # any remaining Product fields (e.g. description, tax, unit) pass through
             extra_product_fields=validated_data,
         )
+        self._sync_selling_units(product.variants.first(), units)
+        return product
 
     def update(self, instance, validated_data):
         from django.db import transaction
@@ -255,6 +333,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         cost_price = validated_data.pop('cost_price', None)
         sell_price = validated_data.pop('sell_price', None)
         reorder    = validated_data.pop('reorder_level', None)
+        units      = validated_data.pop('selling_units', None)
         # Supplier is locked after creation — the SKU embeds the supplier prefix,
         # so changing it would invalidate every SKU on this product.
         validated_data.pop('supplier', None)
@@ -276,6 +355,8 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                 if reorder is not None:
                     variant.reorder_level = reorder
                 variant.save()
+
+                self._sync_selling_units(variant, units)
 
                 if attrs is not None:
                     for attr in attrs:

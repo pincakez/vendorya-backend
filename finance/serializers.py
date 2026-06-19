@@ -66,11 +66,26 @@ class PaymentMethodSerializer(serializers.ModelSerializer):
 
 # --- SALES ---
 
+def _stamp_unit_factor(item_data):
+    """Freeze unit_factor from the chosen ProductUnit (or 1 for the base unit).
+    Mutates and returns item_data so the line records the conversion at sale time.
+    Guards against a unit that doesn't belong to this line's variant (would apply
+    a wrong factor) by falling back to the base unit."""
+    unit = item_data.get('unit')
+    variant = item_data.get('variant')
+    if unit is not None and variant is not None and unit.variant_id != variant.id:
+        unit = None
+        item_data['unit'] = None
+    item_data['unit_factor'] = unit.factor if unit is not None else Decimal('1')
+    return item_data
+
+
 class SalesInvoiceItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesInvoiceItem
-        fields = ['id', 'variant', 'quantity', 'unit_price', 'discount_amount', 'tax_amount', 'total']
-        read_only_fields = ['id', 'tax_amount', 'total']
+        fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_price',
+                  'discount_amount', 'tax_amount', 'total']
+        read_only_fields = ['id', 'unit_factor', 'tax_amount', 'total']
 
 
 class SalesInvoiceSerializer(serializers.ModelSerializer):
@@ -93,7 +108,7 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             invoice = SalesInvoice.objects.create(**validated_data)
             for item_data in items_data:
-                SalesInvoiceItem.objects.create(invoice=invoice, **item_data)
+                SalesInvoiceItem.objects.create(invoice=invoice, **_stamp_unit_factor(item_data))
             self._recalculate(invoice)  # authoritative: sets every line's tax + invoice totals
         # Only enforce credit when the invoice is created already-POSTED (legacy
         # direct-post path). The POS flow creates a DRAFT cart then posts via the
@@ -123,7 +138,7 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
             if items_data is not None:
                 instance.items.all().delete()
                 for item_data in items_data:
-                    SalesInvoiceItem.objects.create(invoice=instance, **item_data)
+                    SalesInvoiceItem.objects.create(invoice=instance, **_stamp_unit_factor(item_data))
             self._recalculate(instance)
         return instance
 
@@ -181,8 +196,8 @@ class PaymentSerializer(serializers.ModelSerializer):
 class PurchaseItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseItem
-        fields = ['id', 'variant', 'quantity', 'unit_cost', 'total_cost']
-        read_only_fields = ['id', 'total_cost']
+        fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_cost', 'total_cost']
+        read_only_fields = ['id', 'unit_factor', 'total_cost']
 
 
 class PurchaseInvoiceSerializer(serializers.ModelSerializer):

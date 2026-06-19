@@ -255,6 +255,32 @@ class ProductAttribute(models.Model):
     class Meta:
         unique_together = ('variant', 'definition')
 
+class ProductUnit(TimestampedModel, SoftDeleteModel):
+    """Alternate selling unit for a variant (opt-in multi-UoM).
+
+    Stock is ALWAYS stored in the variant's base unit (StockLevel.quantity).
+    The base unit itself is implicit (the variant, factor 1, price = sell_price)
+    and is NOT stored here — these rows are only the *extra* units a product
+    chooses to sell in. e.g. a pharmacy: base = Tablet, then a Strip (factor 10)
+    and a Pack (factor 30), each with its own sell price. A variant with zero
+    ProductUnit rows behaves exactly as before (single base unit).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    variant = models.ForeignKey(ProductVariant, on_delete=models.CASCADE, related_name='selling_units')
+    name = models.CharField(_("Unit Name"), max_length=30)   # "Strip", "Pack", "Case"
+    factor = models.DecimalField(
+        _("Conversion Factor"), max_digits=12, decimal_places=3,
+        help_text=_("How many base units this equals (Strip=10, Pack=30)."))
+    sell_price = models.DecimalField(_("Sell Price"), max_digits=12, decimal_places=2, default=0.00)
+    barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'name']
+
+    def __str__(self):
+        return f"{self.name} (×{self.factor})"
+
 # --- 4. MULTI-WAREHOUSE STOCK ---
 class StockLevel(TimestampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

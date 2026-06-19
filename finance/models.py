@@ -9,7 +9,7 @@ from django.dispatch import receiver
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
 from core.tenancy import TenantScopedManager, TenantSoftDeleteManager
 # ADDED StockLevel here
-from inventory.models import ProductVariant, StockLevel
+from inventory.models import ProductVariant, ProductUnit, StockLevel
 from users.models import Customer
 
 # --- 1. SEQUENCING ---
@@ -109,7 +109,13 @@ class SalesInvoiceItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     invoice = models.ForeignKey(SalesInvoice, on_delete=models.CASCADE, related_name='items')
     variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
-    
+
+    # Opt-in unit of measure. NULL = the variant's base unit (factor 1). When a
+    # selling unit is chosen (e.g. a Strip = 10 tablets), unit_factor is frozen
+    # here at sale time so later edits to the unit never rewrite this invoice.
+    unit = models.ForeignKey(ProductUnit, on_delete=models.PROTECT, null=True, blank=True)
+    unit_factor = models.DecimalField(max_digits=12, decimal_places=3, default=1)
+
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
@@ -251,6 +257,9 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
 class RefundItem(models.Model):
     refund = models.ForeignKey(RefundInvoice, on_delete=models.CASCADE, related_name='items')
     variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    # unit_factor frozen from the original sold unit (default 1 = base unit), so
+    # restock returns the correct number of base units.
+    unit_factor = models.DecimalField(max_digits=12, decimal_places=3, default=1)
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
     refund_amount = models.DecimalField(max_digits=12, decimal_places=2)
 
@@ -260,11 +269,12 @@ class RefundItem(models.Model):
         is_new = self._state.adding
         super().save(*args, **kwargs)
         if is_new and self.restock_inventory:
+            base_qty = Decimal(str(self.quantity)) * Decimal(str(self.unit_factor or 1))
             with transaction.atomic():
                 stock, _ = StockLevel.objects.select_for_update().get_or_create(
                     variant=self.variant, branch=self.refund.branch
                 )
-                stock.quantity += self.quantity
+                stock.quantity += base_qty
                 stock.save()
         total = self.refund.items.aggregate(sum=Sum('refund_amount'))['sum'] or 0
         self.refund.total_refunded = total
@@ -320,6 +330,10 @@ class PurchaseInvoice(TimestampedModel, SoftDeleteModel):
 class PurchaseItem(models.Model):
     invoice = models.ForeignKey(PurchaseInvoice, on_delete=models.CASCADE, related_name='items')
     variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    # Opt-in unit. NULL = base unit. unit_factor frozen at receive time; quantity
+    # and unit_cost are expressed in the chosen unit (e.g. 10 packs @ pack cost).
+    unit = models.ForeignKey(ProductUnit, on_delete=models.PROTECT, null=True, blank=True)
+    unit_factor = models.DecimalField(max_digits=12, decimal_places=3, default=1)
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
     unit_cost = models.DecimalField(max_digits=12, decimal_places=2, help_text="Cost per item in this specific shipment.")
     total_cost = models.DecimalField(max_digits=12, decimal_places=2)
@@ -339,12 +353,18 @@ def weighted_avg_cost(variant, store):
     COGS source of truth: actual purchase-invoice prices, NOT ProductVariant.cost_price.
     Falls back to the variant's stored cost_price, then 0, when no purchases exist.
     """
+    from django.db.models import F
     agg = PurchaseItem.objects.filter(
         variant=variant,
         invoice__store=store,
         invoice__status=PurchaseInvoice.Status.RECEIVED,
         invoice__is_deleted=False,
-    ).aggregate(total_cost=Sum('total_cost'), total_qty=Sum('quantity'))
+    ).aggregate(
+        total_cost=Sum('total_cost'),
+        # total_cost is the money paid; quantity must be converted to BASE units
+        # (qty × unit_factor) so the average is per base unit, not per purchase unit.
+        total_qty=Sum(F('quantity') * F('unit_factor')),
+    )
     total_cost = agg['total_cost'] or Decimal('0')
     total_qty = agg['total_qty'] or Decimal('0')
     if total_qty > 0:
@@ -390,11 +410,14 @@ def handle_sale_stock(sender, instance, **kwargs):
             if old.status == SalesInvoice.Status.DRAFT and instance.status == SalesInvoice.Status.POSTED:
                 with transaction.atomic():
                     for item in instance.items.all():
+                        # Stock lives in base units; convert the sold quantity
+                        # (which may be in Strips/Packs) down to base units.
+                        base_qty = Decimal(str(item.quantity)) * Decimal(str(item.unit_factor or 1))
                         stock = StockLevel.objects.select_for_update().filter(
                             variant=item.variant, branch=instance.branch
                         ).first()
                         if stock:
-                            stock.quantity -= item.quantity
+                            stock.quantity -= base_qty
                             stock.save()
                             # Fire low-stock notification once per variant crossing
                             # its own reorder_level threshold.
@@ -409,8 +432,12 @@ def handle_sale_stock(sender, instance, **kwargs):
                                     notif_type=Notif.Type.LOW_STOCK,
                                     link="/inventory/products",
                                 )
-                        # Snapshot COGS at the moment of posting.
-                        item.cost_at_sale = weighted_avg_cost(item.variant, instance.store)
+                        # Snapshot COGS at the moment of posting. weighted_avg_cost
+                        # is per BASE unit; scale to the sold unit so the line's
+                        # profit math (unit_price − cost_at_sale) × quantity stays
+                        # correct when selling Strips/Packs.
+                        base_cost = weighted_avg_cost(item.variant, instance.store)
+                        item.cost_at_sale = (base_cost * Decimal(str(item.unit_factor or 1))).quantize(Decimal('0.01'))
                         item.save(update_fields=['cost_at_sale'])
             elif old.status == SalesInvoice.Status.POSTED and instance.status == SalesInvoice.Status.VOID:
                 # Reversing a posted sale: put the stock back so inventory stays
@@ -418,11 +445,12 @@ def handle_sale_stock(sender, instance, **kwargs):
                 # never decremented, so it must NOT add stock.)
                 with transaction.atomic():
                     for item in instance.items.all():
+                        base_qty = Decimal(str(item.quantity)) * Decimal(str(item.unit_factor or 1))
                         stock = StockLevel.objects.select_for_update().filter(
                             variant=item.variant, branch=instance.branch
                         ).first()
                         if stock:
-                            stock.quantity += item.quantity
+                            stock.quantity += base_qty
                             stock.save()
         except SalesInvoice.DoesNotExist:
             pass
@@ -436,12 +464,16 @@ def handle_purchase_stock(sender, instance, **kwargs):
             if old.status == PurchaseInvoice.Status.DRAFT and instance.status == PurchaseInvoice.Status.RECEIVED:
                 with transaction.atomic():
                     for item in instance.items.all():
+                        factor = Decimal(str(item.unit_factor or 1))
+                        base_qty = Decimal(str(item.quantity)) * factor
                         stock, _ = StockLevel.objects.select_for_update().get_or_create(
                             variant=item.variant, branch=instance.branch
                         )
-                        stock.quantity = Decimal(str(stock.quantity)) + item.quantity
+                        stock.quantity = Decimal(str(stock.quantity)) + base_qty
                         stock.save()
-                        item.variant.cost_price = item.unit_cost
+                        # cost_price is per BASE unit; unit_cost is per purchased
+                        # unit (e.g. a pack), so divide by the factor.
+                        item.variant.cost_price = (Decimal(str(item.unit_cost)) / factor).quantize(Decimal('0.01'))
                         item.variant.save()
         except PurchaseInvoice.DoesNotExist:
             pass

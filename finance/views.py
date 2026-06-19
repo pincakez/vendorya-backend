@@ -162,12 +162,14 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                     stock = (StockLevel.objects.select_for_update()
                              .filter(variant=item.variant, branch=invoice.branch).first())
                     available = stock.quantity if stock else Decimal('0')
-                    if item.quantity > available:
+                    # Compare in BASE units: a line of 1 Pack consumes factor base units.
+                    base_qty = Decimal(str(item.quantity)) * Decimal(str(item.unit_factor or 1))
+                    if base_qty > available:
                         shortages.append({
                             'variant': str(item.variant.id),
                             'sku': item.variant.sku,
                             'name': item.variant.product.name,
-                            'requested': str(item.quantity),
+                            'requested': str(base_qty),
                             'available': str(available),
                         })
                 if shortages:
