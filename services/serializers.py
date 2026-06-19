@@ -15,7 +15,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             'client_display_name', 'client_display_phone',
             'service_type', 'receive_date',
             'no_eta', 'eta_days', 'eta_hours', 'eta_datetime',
-            'info', 'keeping', 'cost',
+            'info', 'keeping', 'cost', 'diagnosis',
             'status', 'notify_bell', 'notified',
             'invoice', 'created_by',
             'created_at', 'updated_at',

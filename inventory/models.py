@@ -23,8 +23,17 @@ class Tax(TimestampedModel, SoftDeleteModel):
 class Supplier(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='suppliers')
-    name = models.CharField(_("Supplier Name"), max_length=255)
-    contact_info = models.TextField(_("Contact Info"), blank=True, null=True)
+    name            = models.CharField(_("Supplier Name"), max_length=255)
+    company_name    = models.CharField(max_length=255, blank=True, default='')
+    contact_info    = models.TextField(_("Contact Info"), blank=True, null=True)
+    phone_number    = models.CharField(max_length=20, blank=True, default='')
+    whatsapp_number = models.CharField(max_length=20, blank=True, default='')
+    email           = models.EmailField(blank=True, default='')
+    instagram       = models.CharField(max_length=100, blank=True, default='')
+    website         = models.URLField(blank=True, default='')
+    country         = models.CharField(max_length=100, blank=True, default='Egypt')
+    city            = models.CharField(max_length=100, blank=True, default='')
+    notes           = models.TextField(blank=True, default='')
     
     code_prefix = models.CharField(
         _("Supplier Code Prefix"),

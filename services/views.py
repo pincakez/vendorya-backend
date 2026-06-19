@@ -61,6 +61,52 @@ class ServiceViewSet(viewsets.ModelViewSet):
             created_by=self.request.user,
         )
 
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        old_cost      = instance.cost
+        old_diagnosis = instance.diagnosis
+        updated = serializer.save()
+
+        new_cost      = updated.cost
+        new_diagnosis = updated.diagnosis
+
+        cost_changed      = Decimal(str(new_cost)) != Decimal(str(old_cost))
+        diagnosis_changed = new_diagnosis.strip() != old_diagnosis.strip()
+
+        if cost_changed or diagnosis_changed:
+            self._fire_update_notification(updated, cost_changed, diagnosis_changed)
+
+    def _fire_update_notification(self, service, cost_changed, diagnosis_changed):
+        from notifications.models import Notification
+        from users.models import User
+
+        store = service.store
+        serial = service.serial_number
+
+        if diagnosis_changed and cost_changed:
+            title = f"Service {serial} — diagnosis & cost updated"
+            body  = f"Diagnosis added and cost changed to {service.cost}."
+        elif diagnosis_changed:
+            title = f"Service {serial} — diagnosis updated"
+            body  = service.diagnosis[:200] if service.diagnosis else ''
+        else:
+            title = f"Service {serial} — cost updated"
+            body  = f"New cost: {service.cost}"
+
+        staff_ids = User.objects.filter(store=store, is_active=True).values_list('id', flat=True)
+        notifications = [
+            Notification(
+                store=store,
+                recipient_id=uid,
+                priority=Notification.Priority.WARNING,
+                title=title,
+                body=body,
+                link=f'/services',
+            )
+            for uid in staff_ids
+        ]
+        Notification.objects.bulk_create(notifications, ignore_conflicts=True)
+
     @action(detail=True, methods=['post'])
     def done(self, request, pk=None):
         service = self.get_object()

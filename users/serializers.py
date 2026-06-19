@@ -60,6 +60,7 @@ class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = ['id', 'name', 'phone_number', 'email', 'gender', 'notes',
+                  'whatsapp_number', 'instagram', 'website', 'country', 'city',
                   'balance', 'credit_limit', 'store_credit', 'is_walk_in']
         read_only_fields = ['id', 'store_credit', 'is_walk_in']
 

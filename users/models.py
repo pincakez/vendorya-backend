@@ -80,8 +80,13 @@ class Customer(TimestampedModel, SoftDeleteModel):
         _("Store Credit"), max_digits=12, decimal_places=2, default=0.00,
         help_text=_("Refund credit the customer can spend in-store."))
 
-    gender = models.CharField(max_length=6, choices=GENDER_CHOICES, default=GENDER_MALE)
-    email  = models.EmailField(blank=True, default='')
+    gender          = models.CharField(max_length=6, choices=GENDER_CHOICES, default=GENDER_MALE)
+    email           = models.EmailField(blank=True, default='')
+    whatsapp_number = models.CharField(max_length=20, blank=True, default='')
+    instagram       = models.CharField(max_length=100, blank=True, default='')
+    website         = models.URLField(blank=True, default='')
+    country         = models.CharField(max_length=100, blank=True, default='Egypt')
+    city            = models.CharField(max_length=100, blank=True, default='')
 
     # The store's default "Walk-in" customer for anonymous POS sales. One per store,
     # auto-created on store creation. Not user-editable/deletable; POS auto-selects it.

@@ -55,6 +55,8 @@ class Service(TimestampedModel, SoftDeleteModel):
         max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True,
     )
 
+    diagnosis     = models.TextField(blank=True)
+
     notify_bell   = models.BooleanField(default=False)
     notified      = models.BooleanField(default=False)
 
