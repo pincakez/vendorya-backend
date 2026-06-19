@@ -194,10 +194,12 @@ class PaymentSerializer(serializers.ModelSerializer):
 # --- PURCHASE ---
 
 class PurchaseItemSerializer(serializers.ModelSerializer):
+    track_expiry = serializers.BooleanField(source='variant.product.track_expiry', read_only=True)
+
     class Meta:
         model = PurchaseItem
         fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_cost', 'total_cost',
-                  'expiry_date', 'batch_number']
+                  'expiry_date', 'batch_number', 'track_expiry']
         read_only_fields = ['id', 'unit_factor', 'total_cost']
 
 
@@ -291,6 +293,10 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 qty = Decimal('1')
             base   = self._dec(line.get('base_price') or line.get('unit_cost'))
             retail = line.get('retail_price')
+            # Expiry-tracked lines carry a lot date/number → becomes a StockBatch on
+            # receive (ignored by the backend for non-tracked products).
+            expiry = line.get('expiry_date') or None
+            batch  = (line.get('batch_number') or '').strip()
 
             if variant_id:
                 # existing product (or a previously-materialized new product)
@@ -303,7 +309,8 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                     variant.sell_price = self._dec(retail)
                     variant.save(update_fields=['sell_price'])
                 PurchaseItem.objects.create(invoice=invoice, variant=variant,
-                                            quantity=qty, unit_cost=base)
+                                            quantity=qty, unit_cost=base,
+                                            expiry_date=expiry, batch_number=batch)
             elif invoice.supplier_id:
                 # new product, supplier present → materialize now
                 cat_id  = line.get('subcategory') or line.get('category')
@@ -312,7 +319,8 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                     base, self._dec(retail),
                 )
                 PurchaseItem.objects.create(invoice=invoice, variant=variant,
-                                            quantity=qty, unit_cost=base)
+                                            quantity=qty, unit_cost=base,
+                                            expiry_date=expiry, batch_number=batch)
             else:
                 # new product, NO supplier → stage it (no SKU, not real inventory)
                 staged.append({
