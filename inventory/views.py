@@ -97,7 +97,13 @@ class ProductViewSet(viewsets.ModelViewSet):
     }
     filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
-    search_fields = ['name', 'variants__sku', 'variants__barcode']
+    search_fields = [
+        'name', 'variants__sku', 'variants__barcode',
+        'category__name',
+        'category__parent__name',
+        'category__parent__parent__name',
+        'category__parent__parent__parent__name',
+    ]
     # Server-side sort. FE maps column keys -> these (see Products.vue ORDER_MAP).
     ordering_fields = ['name', 'supplier__name', 'created_at',
                        'o_sku', 'o_wholesale', 'o_retail', 'o_profit', 'o_stock']

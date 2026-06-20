@@ -28,7 +28,9 @@ class POSFavoriteItemViewSet(viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return POSFavoriteItem.objects.filter(store=self.request.user.store).select_related('product')
+        return (POSFavoriteItem.objects.filter(store=self.request.user.store)
+                .select_related('product')
+                .prefetch_related('product__variants', 'product__variants__stock_levels'))
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
