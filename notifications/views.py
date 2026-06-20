@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from users.permissions import IsSuperAdmin
-from .models import Notification, NotificationPreference
+from .models import Notification, NotificationPreference, AdminSoundConfig, SOUND_CHOICES
 from .serializers import NotificationSerializer, NotificationPreferenceSerializer
 from .dispatcher import send_notification
 
@@ -63,23 +63,65 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class NotificationPreferenceView(APIView):
-    """GET / PUT  /api/notifications/preferences/"""
+    """GET / PUT  /api/notifications/preferences/
+
+    Per-user sound prefs. A brand-new user's info/warning/alert sounds are seeded
+    from the store's admin-set defaults. `admin_sound` is NOT user-editable — it is
+    the platform-wide value from AdminSoundConfig (set only in the sudo area) and is
+    injected into every response so the bell still knows what to play.
+    """
     permission_classes = [IsAuthenticated]
 
     def _get_or_create(self, user):
-        prefs, _ = NotificationPreference.objects.get_or_create(user=user)
+        prefs, created = NotificationPreference.objects.get_or_create(user=user)
+        if created:
+            store_settings = getattr(getattr(user, 'store', None), 'settings', None)
+            if store_settings:
+                prefs.info_sound    = store_settings.default_info_sound    or prefs.info_sound
+                prefs.warning_sound = store_settings.default_warning_sound or prefs.warning_sound
+                prefs.alert_sound   = store_settings.default_alert_sound   or prefs.alert_sound
+                prefs.save(update_fields=['info_sound', 'warning_sound', 'alert_sound'])
         return prefs
+
+    def _with_admin_sound(self, data):
+        data = dict(data)
+        data['admin_sound'] = AdminSoundConfig.get_solo().admin_sound   # sudo-controlled
+        return data
 
     def get(self, request):
         prefs = self._get_or_create(request.user)
-        return Response(NotificationPreferenceSerializer(prefs).data)
+        return Response(self._with_admin_sound(NotificationPreferenceSerializer(prefs).data))
 
     def put(self, request):
         prefs = self._get_or_create(request.user)
-        ser = NotificationPreferenceSerializer(prefs, data=request.data, partial=True)
+        # admin_sound is locked — drop it from the user payload before saving
+        payload = {k: v for k, v in request.data.items() if k != 'admin_sound'}
+        ser = NotificationPreferenceSerializer(prefs, data=payload, partial=True)
         ser.is_valid(raise_exception=True)
         ser.save()
-        return Response(ser.data)
+        return Response(self._with_admin_sound(ser.data))
+
+
+class AdminSoundConfigView(APIView):
+    """GET / PUT  /api/notifications/admin-sound/ — sudo only.
+
+    The platform-wide ADMIN-notification sound. Store users can't change it.
+    """
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def get(self, request):
+        return Response({'admin_sound': AdminSoundConfig.get_solo().admin_sound})
+
+    def put(self, request):
+        sound = request.data.get('admin_sound')
+        valid = {c[0] for c in SOUND_CHOICES}
+        if sound not in valid:
+            return Response({'detail': f'Invalid sound id: {sound}'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        cfg = AdminSoundConfig.get_solo()
+        cfg.admin_sound = sound
+        cfg.save(update_fields=['admin_sound'])
+        return Response({'admin_sound': cfg.admin_sound})
 
 
 class AdminAlertView(APIView):

@@ -20,3 +20,5 @@ class NotificationPreferenceSerializer(serializers.ModelSerializer):
             'info_enabled', 'warning_enabled', 'alert_enabled',
             'info_sound', 'warning_sound', 'alert_sound', 'admin_sound',
         ]
+        # admin_sound is platform-wide (sudo-set) — never writable per-user.
+        read_only_fields = ['admin_sound']

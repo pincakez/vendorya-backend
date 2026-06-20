@@ -84,7 +84,34 @@ class NotificationPreference(models.Model):
     info_sound    = models.CharField(max_length=10, choices=SOUND_CHOICES, default='s01')
     warning_sound = models.CharField(max_length=10, choices=SOUND_CHOICES, default='s02')
     alert_sound   = models.CharField(max_length=10, choices=SOUND_CHOICES, default='s03')
+    # admin_sound stays on the model for history, but is no longer user-editable:
+    # the platform-wide value lives on AdminSoundConfig and is served/played instead.
     admin_sound   = models.CharField(max_length=10, choices=SOUND_CHOICES, default='s01')
 
     def __str__(self):
         return f"Prefs({self.user})"
+
+
+class AdminSoundConfig(models.Model):
+    """Platform-wide sound for ADMIN-priority (sudo → store) notifications.
+
+    Singleton (one row, id=1). Set ONLY in the sudo area; store users cannot
+    change it — every store hears whatever sudo picks here.
+    """
+    singleton_id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+    admin_sound  = models.CharField(max_length=10, choices=SOUND_CHOICES, default='s01')
+
+    class Meta:
+        verbose_name = "Admin notification sound"
+
+    def save(self, *args, **kwargs):
+        self.singleton_id = 1          # enforce a single row
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(singleton_id=1)
+        return obj
+
+    def __str__(self):
+        return f"AdminSound({self.admin_sound})"

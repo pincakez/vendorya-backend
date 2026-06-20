@@ -417,6 +417,14 @@ class StoreSettings(TimestampedModel):
     receipt_auto_cut = models.BooleanField(_("Auto-cut after print"), default=True)
     receipt_cut_feed = models.PositiveSmallIntegerField(_("Cut feed distance mm (0–20)"), default=0)
 
+    # 11. Notification sound — store DEFAULTS. The store admin/owner sets these;
+    # a new staff member's per-user prefs are seeded from them, then each user can
+    # change their own (NotificationPreference). Values are sound ids 's01'..'s10'
+    # or 'mute'. Plain CharFields to avoid a core→notifications import cycle.
+    default_info_sound    = models.CharField(max_length=10, default='s01')
+    default_warning_sound = models.CharField(max_length=10, default='s02')
+    default_alert_sound   = models.CharField(max_length=10, default='s03')
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 

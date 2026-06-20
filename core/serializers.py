@@ -112,6 +112,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'field_visibility',
             'pos_top_selling_period', 'pos_top_selling_category', 'pos_top_selling_limit',
             'pos_cart_display_fields',
+            'default_info_sound', 'default_warning_sound', 'default_alert_sound',
         ]
 
     def validate_pos_cart_display_fields(self, value):
