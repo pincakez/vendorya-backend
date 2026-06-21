@@ -504,6 +504,27 @@ class DashboardView(APIView):
             if best_attr_row else None
         )
 
+        # ── Weekly revenue — last 7 days by day (Weekly Revenue chart) ──
+        week_rows = {
+            r['day']: r['total']
+            for r in (
+                SalesInvoice.objects
+                .filter(store=store, status=SalesInvoice.Status.POSTED,
+                        is_deleted=False, date__date__gte=week_start)
+                .annotate(day=TruncDate('date'))
+                .values('day')
+                .annotate(total=Sum('grand_total'))
+            )
+        }
+        weekly_revenue = []
+        for i in range(7):
+            d = week_start + timedelta(days=i)
+            weekly_revenue.append({
+                'date':  d.isoformat(),
+                'label': d.strftime('%a'),
+                'total': str(week_rows.get(d) or 0),
+            })
+
         return Response({
             'today_sales_total':      str(today_agg['total'] or 0),
             'today_invoices_count':   today_agg['count'] or 0,
@@ -514,6 +535,7 @@ class DashboardView(APIView):
             'inventory_value_active': str(active_value),
             'inventory_value_storage':str(storage_value),
             'inventory_value_total':  str(active_value + storage_value),
+            'weekly_revenue':         weekly_revenue,
             'recent_sales':           recent_sales,
             'upcoming_services':      upcoming_services,
             'top_sellers':            top_sellers,
