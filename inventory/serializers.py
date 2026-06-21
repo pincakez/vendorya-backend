@@ -45,6 +45,9 @@ def build_selling_units(variant, product):
         'barcode': variant.barcode if variant else None,
         'is_base': True,
         'is_weight': False,
+        # Whether the base unit may be SOLD (single pills). Stock is still counted in
+        # it regardless — display/decomposition uses every unit; POS filters on this.
+        'sellable': bool(getattr(product, 'sell_base_unit', True)),
     }]
     if variant and is_multi_unit_enabled(product.store_id):
         for u in variant.selling_units.filter(is_deleted=False).order_by('sort_order', 'name'):
@@ -56,6 +59,7 @@ def build_selling_units(variant, product):
                 'barcode': u.barcode,
                 'is_base': False,
                 'is_weight': False,
+                'sellable': True,
             })
     return units
 
@@ -164,7 +168,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'default_variant_price',
             'default_variant_stock', 'selling_units', 'sku_display', 'hide_from_pos',
-            'track_expiry', 'selling_mode',
+            'track_expiry', 'selling_mode', 'sell_base_unit',
             'category_l1', 'category_l2', 'category_l3', 'category_l4',
         ]
 
@@ -324,7 +328,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description', 'category', 'supplier',
                   'base_price', 'attributes', 'cost_price', 'sell_price',
                   'reorder_level', 'unit', 'selling_units', 'track_expiry',
-                  'selling_mode']
+                  'selling_mode', 'sell_base_unit']
         read_only_fields = ['id']
 
     def validate(self, data):

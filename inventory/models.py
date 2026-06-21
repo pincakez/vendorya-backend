@@ -192,6 +192,16 @@ class Product(TimestampedModel, SoftDeleteModel):
         choices=SellingMode.choices, default=SellingMode.UNIT,
     )
 
+    # Whether single base units (e.g. one loose pill) may be SOLD. Stock is always
+    # COUNTED in the base unit regardless — this only controls whether POS offers the
+    # base unit as a sellable option. OFF ⇒ the smallest sellable unit is the first
+    # tier (e.g. a strip); the base still appears in stock/breakdown displays. Only
+    # meaningful when the store's multi_unit_enabled switch is ON.
+    sell_base_unit = models.BooleanField(
+        _("Sell by base unit"), default=True,
+        help_text=_("Allow selling single base units (e.g. one pill) in POS. Stock is still counted in base units either way."),
+    )
+
     # Soft-delete audit (captured on delete; free-text note for OTHER).
     delete_reason = models.CharField(max_length=20, choices=DeleteReason.choices, blank=True, default='')
     delete_note   = models.CharField(max_length=255, blank=True, default='')

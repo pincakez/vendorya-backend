@@ -221,6 +221,13 @@ def _default_category_levels():
     return ['Category', 'Sub-category', 'Sub-category 2', 'Sub-category 3']
 
 
+def _default_unit_tiers():
+    # Store-wide default names for the two units above the base (e.g. a pharmacy's
+    # Strip then Pack). Used to seed the per-product unit ladder in the New Product
+    # modal; each product can still override. Index 0 = first tier above base.
+    return ['Strip', 'Pack']
+
+
     # --- STORE SETTINGS ---
 class StoreSettings(TimestampedModel):
     """Configuration for a specific store."""
@@ -319,6 +326,20 @@ class StoreSettings(TimestampedModel):
         _("Items are called"), max_length=10,
         choices=ItemNoun.choices, default=ItemNoun.NAME,
         help_text=_("Word used for a catalog item across the UI (display only)."))
+
+    # Store-wide default name for the smallest/base quantity unit (e.g. "Pill",
+    # "Tablet", "pcs"). Seeds Product.unit for new products; per-product override
+    # still applies. Set in Settings → Business Rules, beside "Items are called".
+    base_unit_name = models.CharField(
+        _("Quantity is called"), max_length=20, default="pcs",
+        help_text=_("Default name for a single base unit of stock (e.g. Pill, Tablet)."))
+
+    # Store-wide default names for the two units above the base (Strip, Pack).
+    # Edited in Capabilities when multi-unit selling is on; seeds the New Product
+    # modal's tier rows. Each product can still rename/override its own units.
+    unit_tier_names = models.JSONField(
+        _("Unit tier names"), default=_default_unit_tiers,
+        help_text=_("Default names for the units above the base (e.g. Strip, Pack)."))
 
     category_level_names = models.JSONField(
         _("Category level names"), default=_default_category_levels,

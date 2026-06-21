@@ -99,6 +99,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'credit_policy', 'default_credit_limit',
             'return_window_days', 'restocking_fee_percent',
             'decimals', 'thousands_separator', 'item_noun', 'category_level_names',
+            'base_unit_name', 'unit_tier_names',
             'tax_id', 'print_tax_id', 'commercial_reg',
             'receipt_header', 'receipt_footer',
             'default_tax', 'tax_enabled',
@@ -140,6 +141,17 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         # Normalize to exactly 4 non-empty names, falling back to defaults.
         out = []
         for i in range(4):
+            name = (str(value[i]).strip() if i < len(value) and value[i] else '')
+            out.append(name or defaults[i])
+        return out
+
+    def validate_unit_tier_names(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list of names.")
+        defaults = ['Strip', 'Pack']
+        # Normalize to exactly 2 non-empty names (the two tiers above the base unit).
+        out = []
+        for i in range(2):
             name = (str(value[i]).strip() if i < len(value) and value[i] else '')
             out.append(name or defaults[i])
         return out
