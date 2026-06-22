@@ -526,6 +526,28 @@ class DashboardView(APIView):
                 'total': str(week_rows.get(d) or 0),
             })
 
+        # ── Daily-average revenue this month (Revenue Ring gauge) ──
+        month_total = month_qs.aggregate(t=Sum('grand_total'))['t'] or Decimal('0')
+        days_elapsed = today.day or 1
+        daily_avg_revenue = Decimal(month_total) / days_elapsed
+
+        # ── Daily sales this month (Heat Calendar) ──
+        month_day_rows = {
+            r['day']: r['total']
+            for r in month_qs.annotate(day=TruncDate('date')).values('day').annotate(total=Sum('grand_total'))
+        }
+        monthly_sales = [
+            {'date': today.replace(day=d).isoformat(),
+             'total': str(month_day_rows.get(today.replace(day=d)) or 0)}
+            for d in range(1, today.day + 1)
+        ]
+
+        # ── Recent activity (Activity Feed) ──
+        activity_feed = [
+            {'action': a.action, 'type': a.operation_type, 'time': a.timestamp}
+            for a in ActivityLog.all_objects.filter(store=store).order_by('-timestamp')[:6]
+        ]
+
         # ── Which widgets this dashboard renders (global selection for now) ──
         widgets = sanitize(DashboardLayout.get_global().selected_widgets)
 
@@ -541,6 +563,9 @@ class DashboardView(APIView):
             'inventory_value_storage':str(storage_value),
             'inventory_value_total':  str(active_value + storage_value),
             'weekly_revenue':         weekly_revenue,
+            'daily_avg_revenue':      str(daily_avg_revenue),
+            'monthly_sales':          monthly_sales,
+            'activity_feed':          activity_feed,
             'recent_sales':           recent_sales,
             'upcoming_services':      upcoming_services,
             'top_sellers':            top_sellers,
