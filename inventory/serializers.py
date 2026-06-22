@@ -76,11 +76,17 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'parent']
 
 class SupplierSerializer(serializers.ModelSerializer):
+    # All three come from SupplierViewSet.get_queryset annotations (running
+    # account): balance = received_total − payments_total. default=0 covers
+    # serializing a freshly-created instance that carries no annotation.
     balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, default=0)
+    received_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, default=0)
+    payments_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, default=0)
 
     class Meta:
         model = Supplier
-        fields = ['id', 'name', 'company_name', 'contact_info', 'code_prefix', 'prefix_locked', 'balance',
+        fields = ['id', 'name', 'company_name', 'contact_info', 'code_prefix', 'prefix_locked',
+                  'balance', 'received_total', 'payments_total',
                   'phone_number', 'whatsapp_number', 'email', 'instagram', 'website', 'country', 'city', 'notes']
         read_only_fields = ['id', 'prefix_locked']
 

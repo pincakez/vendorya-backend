@@ -13,14 +13,14 @@ from users.permissions import RoleScopedPermission
 from inventory.models import StockLevel
 from .models import (
     SalesInvoice, Payment, PaymentMethod,
-    PurchaseInvoice,
+    PurchaseInvoice, SupplierPayment,
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice,
 )
 from .serializers import (
     SalesInvoiceSerializer, PaymentSerializer, PaymentMethodSerializer,
-    PurchaseInvoiceSerializer,
+    PurchaseInvoiceSerializer, SupplierPaymentSerializer,
     ExpenseSerializer, ExpenseCategorySerializer,
     WorkShiftSerializer,
     RefundInvoiceSerializer,
@@ -467,6 +467,45 @@ class ExpenseViewSet(viewsets.ModelViewSet):
                 'expense_id': str(expense.id),
                 'amount': str(expense.amount),
                 'category': expense.category.name if expense.category else None,
+            },
+        )
+
+
+class SupplierPaymentViewSet(viewsets.ModelViewSet):
+    """Payments made to a supplier (running-account model). Filter the list by
+    ?supplier=<uuid> for a supplier's payment history."""
+    serializer_class = SupplierPaymentSerializer
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':           'MANAGER',
+        'retrieve':       'MANAGER',
+        'create':         'MANAGER',
+        'update':         'MANAGER',
+        'partial_update': 'MANAGER',
+        'destroy':        'ADMIN',
+    }
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['date', 'amount']
+    ordering = ['-date']
+
+    def get_queryset(self):
+        qs = SupplierPayment.objects.filter(store=self.request.user.store).select_related('created_by')
+        supplier = self.request.query_params.get('supplier')
+        if supplier:
+            qs = qs.filter(supplier_id=supplier)
+        return qs
+
+    def perform_create(self, serializer):
+        payment = serializer.save(store=self.request.user.store, created_by=self.request.user)
+        log_activity(
+            request=self.request,
+            action=f"Recorded Supplier Payment: {payment.amount} → {payment.supplier.name}",
+            op_type=ActivityLog.OperationType.EXPENSE,
+            details={
+                'supplier_payment_id': str(payment.id),
+                'supplier': payment.supplier.name,
+                'amount': str(payment.amount),
+                'method': payment.method,
             },
         )
 

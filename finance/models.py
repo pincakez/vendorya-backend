@@ -9,8 +9,9 @@ from django.dispatch import receiver
 from core.models import TimestampedModel, SoftDeleteModel, Store, Branch
 from core.tenancy import TenantScopedManager, TenantSoftDeleteManager
 # ADDED StockLevel here
+from django.utils import timezone
 from inventory.models import (
-    ProductVariant, ProductUnit, StockLevel,
+    ProductVariant, ProductUnit, StockLevel, Supplier,
     is_expiry_tracked, draw_from_batches, restock_to_batch,
 )
 from users.models import Customer
@@ -377,6 +378,41 @@ class PurchaseItem(models.Model):
         total = self.invoice.items.aggregate(sum=Sum('total_cost'))['sum'] or 0
         self.invoice.total_amount = total
         self.invoice.save()
+
+class SupplierPayment(TimestampedModel, SoftDeleteModel):
+    """A payment made TO a supplier, recorded against the supplier's running
+    account (NOT allocated to a specific purchase invoice).
+
+    Running-account model (Yakot's call, s127): a supplier's outstanding payable
+    = Σ(their RECEIVED purchases' total) − Σ(their payments here). Small shops pay
+    suppliers in lump sums against a tab, not invoice-by-invoice, so payments live
+    at the supplier level. The per-purchase `paid_amount` column is unused by this
+    model. See SupplierViewSet.get_queryset for the balance computation.
+    """
+    class Method(models.TextChoices):
+        CASH = 'CASH', _('Cash')
+        BANK = 'BANK', _('Bank Transfer')
+        CARD = 'CARD', _('Card')
+        OTHER = 'OTHER', _('Other')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='supplier_payments')
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='payments')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    date = models.DateTimeField(default=timezone.now)
+    method = models.CharField(max_length=10, choices=Method.choices, default=Method.CASH)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                   null=True, blank=True, related_name='supplier_payments')
+
+    objects = TenantSoftDeleteManager()   # store-scoped, hides soft-deleted
+
+    class Meta:
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.supplier.name} ← {self.amount} ({self.date:%Y-%m-%d})"
+
 
 def weighted_avg_cost(variant, store):
     """Weighted-average unit cost from RECEIVED purchases of this variant in this store.

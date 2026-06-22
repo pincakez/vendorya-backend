@@ -1,7 +1,8 @@
 from rest_framework.routers import DefaultRouter
 from .views import (
     PaymentMethodViewSet, SalesInvoiceViewSet, PaymentViewSet,
-    PurchaseInvoiceViewSet, ExpenseCategoryViewSet, ExpenseViewSet,
+    PurchaseInvoiceViewSet, SupplierPaymentViewSet,
+    ExpenseCategoryViewSet, ExpenseViewSet,
     WorkShiftViewSet, RefundInvoiceViewSet,
 )
 
@@ -10,6 +11,7 @@ router.register('payment-methods', PaymentMethodViewSet, basename='payment-metho
 router.register('invoices', SalesInvoiceViewSet, basename='invoices')
 router.register('payments', PaymentViewSet, basename='payments')
 router.register('purchases', PurchaseInvoiceViewSet, basename='purchases')
+router.register('supplier-payments', SupplierPaymentViewSet, basename='supplier-payments')
 router.register('expense-categories', ExpenseCategoryViewSet, basename='expense-categories')
 router.register('expenses', ExpenseViewSet, basename='expenses')
 router.register('shifts', WorkShiftViewSet, basename='shifts')

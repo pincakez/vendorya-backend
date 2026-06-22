@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.db import transaction
 from .models import (
     SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod,
-    PurchaseInvoice, PurchaseItem,
+    PurchaseInvoice, PurchaseItem, SupplierPayment,
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice, RefundItem,
@@ -420,6 +420,33 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 # supplier assigned with no new rows → materialize the staged ones
                 self._materialize_staged(instance)
         return instance
+
+
+class SupplierPaymentSerializer(serializers.ModelSerializer):
+    method_display = serializers.CharField(source='get_method_display', read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupplierPayment
+        fields = ['id', 'supplier', 'amount', 'date', 'method', 'method_display',
+                  'note', 'created_by_name', 'created_at']
+        read_only_fields = ['id', 'method_display', 'created_by_name', 'created_at']
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        return (u.get_full_name() or u.username) if u else None
+
+    def validate_amount(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError('Payment amount must be greater than zero.')
+        return value
+
+    def validate_supplier(self, value):
+        # Tenant guard: the supplier must belong to the caller's store.
+        request = self.context.get('request')
+        if request and value.store_id != request.user.store_id:
+            raise serializers.ValidationError('Supplier not found in this store.')
+        return value
 
 
 # --- EXPENSES ---

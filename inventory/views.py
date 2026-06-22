@@ -436,18 +436,32 @@ class SupplierViewSet(viewsets.ModelViewSet):
     ordering = ['name']
 
     def get_queryset(self):
-        outstanding = ExpressionWrapper(
-            F('purchases__total_amount') - F('purchases__paid_amount'),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
-        )
+        # Running-account payable (s127): balance = Σ(RECEIVED purchases' total)
+        # − Σ(payments to this supplier). Only RECEIVED purchases are a real
+        # liability — a DRAFT hasn't been received, so it's excluded (matches the
+        # AP-aging report). Two independent Subqueries avoid the join-multiplication
+        # that a single annotate over both reverse relations would cause.
+        from finance.models import PurchaseInvoice, SupplierPayment
+        store = self.request.user.store
+        DEC = DecimalField(max_digits=12, decimal_places=2)
+        received = (PurchaseInvoice.objects
+                    .filter(supplier=OuterRef('pk'), store=store,
+                            status=PurchaseInvoice.Status.RECEIVED, is_deleted=False)
+                    .values('supplier').annotate(t=Sum('total_amount')).values('t'))
+        paid = (SupplierPayment.objects
+                .filter(supplier=OuterRef('pk'), store=store, is_deleted=False)
+                .values('supplier').annotate(t=Sum('amount')).values('t'))
         return (
             Supplier.objects
-            .filter(store=self.request.user.store)
-            .annotate(balance=Coalesce(
-                Sum(outstanding, filter=Q(purchases__is_deleted=False)),
-                Decimal('0'),
-                output_field=DecimalField(max_digits=12, decimal_places=2),
-            ))
+            .filter(store=store)
+            .annotate(
+                received_total=Coalesce(Subquery(received, output_field=DEC),
+                                        Value(Decimal('0')), output_field=DEC),
+                payments_total=Coalesce(Subquery(paid, output_field=DEC),
+                                        Value(Decimal('0')), output_field=DEC),
+                balance=ExpressionWrapper(F('received_total') - F('payments_total'),
+                                          output_field=DEC),
+            )
         )
 
     def perform_create(self, serializer):
