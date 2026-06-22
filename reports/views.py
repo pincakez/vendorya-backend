@@ -30,6 +30,7 @@ from finance.models import (
 from inventory.models import (
     StockAdjustment, ProductVariant, StockLevel,
     StorageLocation, StorageStock, StorageMovement,
+    StockTransferItem,
 )
 
 DEC = DecimalField(max_digits=18, decimal_places=2)
@@ -568,6 +569,22 @@ class StockLedgerView(_StoreMixin, APIView):
                 f"R#{it.refund.refund_number}" if it.refund.refund_number else str(it.refund_id),
                 it.refund.reason or '', it.refund.branch.name,
                 active=it.quantity, pools=('active',))
+
+        # Branch transfers — two active-pool half-moves (OUT at from_branch,
+        # IN at to_branch). Net-zero store-wide, but each branch sees a real
+        # movement, so when a branch filter is set only that branch's half shows.
+        tf = Q(transfer__store=store, variant_id=variant_id)
+        for it in StockTransferItem.objects.filter(tf).select_related(
+                'transfer', 'transfer__from_branch', 'transfer__to_branch'):
+            tr = it.transfer
+            if not branch or branch == str(tr.from_branch_id):
+                add(tr.created_at, 'TRANSFER_OUT', f"→ {tr.to_branch.name}",
+                    tr.notes or '', tr.from_branch.name,
+                    active=-it.quantity, pools=('active',))
+            if not branch or branch == str(tr.to_branch_id):
+                add(tr.created_at, 'TRANSFER_IN', f"← {tr.from_branch.name}",
+                    tr.notes or '', tr.to_branch.name,
+                    active=it.quantity, pools=('active',))
 
         # Storage movements — shuffle between pools (and write-offs leave storage)
         smf = Q(store=store, variant_id=variant_id)

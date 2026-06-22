@@ -513,6 +513,7 @@ class StockAdjustment(TimestampedModel):
         DAMAGE = 'DAMAGE', _('Damage')
         COUNT_CORRECTION = 'CORRECTION', _('Count Correction')
         GIFT = 'GIFT', _('Gift / Sample')
+        OPENING = 'OPENING', _('Opening / Initial Stock')
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE)

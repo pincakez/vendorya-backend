@@ -296,7 +296,7 @@ class CatalogImporter:
             if qty and qty > 0:
                 StockAdjustment.objects.create(
                     store=self.store, branch=branch, variant=variant,
-                    quantity_change=qty, reason=StockAdjustment.Reason.COUNT_CORRECTION,
+                    quantity_change=qty, reason=StockAdjustment.Reason.OPENING,
                     notes='Imported opening stock', adjusted_by=self.user,
                 )
             created += 1
