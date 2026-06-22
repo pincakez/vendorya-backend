@@ -533,10 +533,14 @@ class StockLedgerView(_StoreMixin, APIView):
         if branch:
             pf &= Q(invoice__branch_id=branch)
         for it in PurchaseItem.objects.filter(pf).select_related('invoice', 'invoice__supplier', 'invoice__branch'):
+            # qty × unit_factor → BASE units. A line received in packs/strips credits
+            # StockLevel in base units (handle_purchase_stock), so the ledger must too,
+            # or the running balance drifts from real stock for multi-unit products.
             add(it.invoice.date, 'PURCHASE',
                 it.invoice.vendor_reference or str(it.invoice_id),
                 it.invoice.supplier.name if it.invoice.supplier else '',
-                it.invoice.branch.name, active=it.quantity, pools=('active',))
+                it.invoice.branch.name,
+                active=it.quantity * (it.unit_factor or Decimal('1')), pools=('active',))
 
         # Sales OUT (POSTED) — active only
         sf = Q(invoice__store=store, invoice__status=SalesInvoice.Status.POSTED,
@@ -544,10 +548,12 @@ class StockLedgerView(_StoreMixin, APIView):
         if branch:
             sf &= Q(invoice__branch_id=branch)
         for it in SalesInvoiceItem.objects.filter(sf).select_related('invoice', 'invoice__customer', 'invoice__branch'):
+            # qty × unit_factor → BASE units (a unit-sold line decrements stock in base).
             add(it.invoice.date, 'SALE',
                 f"#{it.invoice.invoice_number}" if it.invoice.invoice_number else str(it.invoice_id),
                 it.invoice.customer.name if it.invoice.customer else '',
-                it.invoice.branch.name, active=-it.quantity, pools=('active',))
+                it.invoice.branch.name,
+                active=-(it.quantity * (it.unit_factor or Decimal('1'))), pools=('active',))
 
         # Adjustments (signed) — active only, minus write-off artifacts
         af = Q(store=store, variant_id=variant_id)
@@ -565,10 +571,11 @@ class StockLedgerView(_StoreMixin, APIView):
         if branch:
             rf &= Q(refund__branch_id=branch)
         for it in RefundItem.objects.filter(rf).select_related('refund', 'refund__branch'):
+            # qty × unit_factor → BASE units (refund restock returns base units to stock).
             add(it.refund.date, 'RETURN',
                 f"R#{it.refund.refund_number}" if it.refund.refund_number else str(it.refund_id),
                 it.refund.reason or '', it.refund.branch.name,
-                active=it.quantity, pools=('active',))
+                active=it.quantity * (it.unit_factor or Decimal('1')), pools=('active',))
 
         # Branch transfers — two active-pool half-moves (OUT at from_branch,
         # IN at to_branch). Net-zero store-wide, but each branch sees a real
