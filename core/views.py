@@ -17,7 +17,8 @@ from users.permissions import (
     RoleScopedPermission, IsCashierOrAbove, IsManagerOrAbove, IsOwner,
     IsSuperAdmin,
 )
-from .models import Branch, ActivityLog, Currency, LabelPreset
+from .models import Branch, ActivityLog, Currency, LabelPreset, DashboardLayout
+from .dashboard_widgets import WIDGET_CATALOG, MAX_WIDGETS, sanitize
 from .serializers import (
     StoreSerializer, BranchSerializer, StoreSettingsSerializer,
     ActivityLogSerializer, CurrencySerializer, LabelPresetSerializer,
@@ -525,7 +526,11 @@ class DashboardView(APIView):
                 'total': str(week_rows.get(d) or 0),
             })
 
+        # ── Which widgets this dashboard renders (global selection for now) ──
+        widgets = sanitize(DashboardLayout.get_global().selected_widgets)
+
         return Response({
+            'widgets':                widgets,
             'today_sales_total':      str(today_agg['total'] or 0),
             'today_invoices_count':   today_agg['count'] or 0,
             'today_items_sold':       float(items_sold),
@@ -548,6 +553,34 @@ class DashboardView(APIView):
                 'hours':     best_hour,
             },
         })
+
+
+class DashboardWidgetConfigView(APIView):
+    """GET / PUT  /api/core/dashboard-widgets/ — sudo only.
+
+    The platform-wide set of dashboard widgets (≤ MAX_WIDGETS) that every store
+    shows. Store users can't change it; they just render whatever sudo picks.
+    """
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def get(self, request):
+        cfg = DashboardLayout.get_global()
+        return Response({
+            'selected': sanitize(cfg.selected_widgets),
+            'catalog':  WIDGET_CATALOG,
+            'max':      MAX_WIDGETS,
+        })
+
+    def put(self, request):
+        ids = request.data.get('selected')
+        if not isinstance(ids, list):
+            return Response({'detail': 'selected must be a list of widget ids.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        clean = sanitize(ids)
+        cfg = DashboardLayout.get_global()
+        cfg.selected_widgets = clean
+        cfg.save(update_fields=['selected_widgets', 'updated_at'])
+        return Response({'selected': clean, 'catalog': WIDGET_CATALOG, 'max': MAX_WIDGETS})
 
 
 class LabelPresetViewSet(viewsets.ModelViewSet):

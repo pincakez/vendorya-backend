@@ -2,8 +2,8 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     StoreView, StoreSettingsView, StoreLogoView, BranchViewSet, ActivityLogViewSet,
-    ActivityLogMetaView, DashboardView, CurrencyViewSet, LabelPresetViewSet,
-    QZTrayCertView, QZTraySignView,
+    ActivityLogMetaView, DashboardView, DashboardWidgetConfigView, CurrencyViewSet,
+    LabelPresetViewSet, QZTrayCertView, QZTraySignView,
 )
 
 router = DefaultRouter()
@@ -17,6 +17,7 @@ urlpatterns = [
     path('store/logo/',    StoreLogoView.as_view(),     name='store-logo'),
     path('settings/',      StoreSettingsView.as_view(), name='store-settings'),
     path('dashboard/',     DashboardView.as_view(),     name='dashboard'),
+    path('dashboard-widgets/', DashboardWidgetConfigView.as_view(), name='dashboard-widgets'),
     path('logs/meta/',     ActivityLogMetaView.as_view(), name='activity-log-meta'),
     path('qztray/cert/',   QZTrayCertView.as_view(),     name='qztray-cert'),
     path('qztray/sign/',   QZTraySignView.as_view(),     name='qztray-sign'),

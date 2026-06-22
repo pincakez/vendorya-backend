@@ -503,3 +503,35 @@ class LabelPreset(TimestampedModel):
 
     def __str__(self):
         return f"{self.name} ({self.width_mm}×{self.height_mm}mm)"
+
+
+class DashboardLayout(TimestampedModel):
+    """Which dashboard widgets are shown, and in what order.
+
+    `store = NULL` is the **platform-wide global default**, set only by sudo —
+    every store renders it. Per-store rows (a `store` FK set) will override the
+    global for that store later; that layer isn't built yet, but the structure
+    is here so it can drop in without a schema change.
+    """
+    store = models.OneToOneField(
+        Store, null=True, blank=True, on_delete=models.CASCADE,
+        related_name='dashboard_layout',
+    )
+    # Ordered list of widget ids (see core/dashboard_widgets.py), capped at MAX_WIDGETS.
+    selected_widgets = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        verbose_name = "Dashboard layout"
+
+    @classmethod
+    def get_global(cls):
+        """The single sudo-managed global row, seeded with the defaults once."""
+        from core.dashboard_widgets import DEFAULT_WIDGETS
+        obj, _ = cls.objects.get_or_create(
+            store=None, defaults={'selected_widgets': list(DEFAULT_WIDGETS)},
+        )
+        return obj
+
+    def __str__(self):
+        scope = 'global' if self.store_id is None else f'store:{self.store_id}'
+        return f"DashboardLayout({scope}, {len(self.selected_widgets or [])} widgets)"
