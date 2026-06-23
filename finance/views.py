@@ -255,10 +255,11 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             'name': item.variant.product.name,
             'sku': item.variant.sku,
             'quantity': str(item.quantity),
+            'unit_name': item.unit.name if item.unit_id else None,  # base unit → None (plain products unchanged)
             'unit_price': str(item.unit_price),
             'tax_amount': str(item.tax_amount),
             'total': str(item.total),
-        } for item in invoice.items.select_related('variant__product').all()]
+        } for item in invoice.items.select_related('variant__product', 'unit').all()]
 
         payments = [{
             'method': p.method.name,
