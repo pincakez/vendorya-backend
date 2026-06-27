@@ -156,7 +156,9 @@ class CatalogImportTests(TestCase):
         p = Product.objects.get(store=self.store, name='DELL Latitude 5480')
         v = p.variants.first()
         self.assertEqual(StockLevel.objects.get(variant=v, branch=self.branch).quantity, Decimal('1'))
-        self.assertTrue(v.sku.startswith('300400'))   # store 300 + supplier 400
+        # superfix §1: SKU order = product(4)+supplier(3)+store(3) -> trails "400300"
+        self.assertTrue(v.sku.endswith('400300'))   # supplier 400 + store 300
+        self.assertRegex(v.sku, r'^\d{4}400300$')   # leading 4 = product number
 
     def test_unknown_supplier_rejected(self):
         headers, rows = self._rows(

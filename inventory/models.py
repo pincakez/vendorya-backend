@@ -259,9 +259,15 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
         if not supplier.prefix_locked:
             raise ValueError("Supplier prefix must be confirmed (locked) before products can be created.")
 
-        store_part    = store.store_code        # 3 digits
+        store_part    = store.store_code        # 3 digits (trails — owner's constant code)
         supplier_part = supplier.code_prefix    # 3 digits
-        prefix        = f"{store_part}{supplier_part}"
+        # superfix §1 SKU order: product(4) + supplier(3) + store(3).
+        # Product number LEADS so search keys on the meaningful digits; the
+        # owner's constant store code trails. e.g. product 1515, supplier 400,
+        # store 100 -> "1515400100". The trailing 6 digits (supplier+store) are
+        # fixed for a given supplier in a given store, so the leading 4 digits
+        # are the per-(supplier,store) running product number.
+        suffix        = f"{supplier_part}{store_part}"   # last 6 digits
 
         with transaction.atomic():
             # Lock the supplier row — prevents concurrent SKU generation for same supplier
@@ -269,11 +275,11 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
 
             existing_nums = set()
             for sku in ProductVariant.all_objects.filter(
-                sku__startswith=prefix
+                sku__endswith=suffix
             ).values_list('sku', flat=True):
-                suffix = sku[6:]
-                if suffix.isdigit():
-                    existing_nums.add(int(suffix))
+                head = sku[:4]
+                if head.isdigit():
+                    existing_nums.add(int(head))
 
             try:
                 mode = store.settings.product_numbering_mode
@@ -290,7 +296,7 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
                 if counter > 9999:
                     raise ValueError("Maximum product count (9999) reached for this supplier.")
 
-            return f"{prefix}{counter:04d}"
+            return f"{counter:04d}{suffix}"
 
 class ProductAttribute(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
