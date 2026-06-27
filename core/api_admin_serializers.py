@@ -6,6 +6,7 @@ from rest_framework import serializers
 from .models import Store, Branch, Address, Currency
 from .serializers import _CurrencyNestedSerializer
 from users.models import User
+from inventory.seed_profiles import SEED_PROFILES, apply_seed_profile
 
 
 def _run_password_policy(value):
@@ -78,6 +79,10 @@ class _OwnerInputSerializer(serializers.Serializer):
 class _StoreInputSerializer(serializers.Serializer):
     name             = serializers.CharField(max_length=200)
     store_type       = serializers.ChoiceField(choices=Store.StoreType.choices, default=Store.StoreType.GENERAL)
+    # One-time starter categories (broad buckets). NOT a Store model field —
+    # popped before create() and handed to apply_seed_profile(). See
+    # inventory/seed_profiles.py for the available profiles.
+    seed_profile     = serializers.ChoiceField(choices=list(SEED_PROFILES.keys()), default='none')
     plan             = serializers.ChoiceField(choices=Store.SubscriptionPlan.choices, default=Store.SubscriptionPlan.FREE)
     currency         = serializers.PrimaryKeyRelatedField(
         queryset=Currency.objects.filter(is_active=True),
@@ -137,6 +142,10 @@ class AdminStoreCreateSerializer(serializers.Serializer):
         owner.set_password(password)
         owner.save()
 
+        # seed_profile is a creation-time action, not a Store column — pull it
+        # out before the model create and apply it once the store exists.
+        seed_profile = store_data.pop('seed_profile', 'none')
+
         # Default currency to EGP if sudo didn't pick one.
         if not store_data.get('currency'):
             store_data['currency'] = (Currency.objects.filter(code='EGP').first()
@@ -155,6 +164,10 @@ class AdminStoreCreateSerializer(serializers.Serializer):
             for field, value in preset.items():
                 setattr(settings_obj, field, value)
             settings_obj.save(update_fields=list(preset.keys()))
+
+        # 2c. Seed broad starter categories from the chosen profile (one-time;
+        #     owner edits/deletes freely afterwards). No-op for 'none'.
+        apply_seed_profile(store, seed_profile)
 
         # 3. Backfill owner.store
         owner.store = store
