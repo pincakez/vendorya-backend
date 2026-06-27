@@ -107,16 +107,13 @@ class ProductViewSet(viewsets.ModelViewSet):
         'remove_image':   'MANAGER',
         'import_memory_base': 'MANAGER',
         'dedup_memory_base': 'MANAGER',
+        'autocomplete': 'CASHIER',
     }
     filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
-    search_fields = [
-        'name', 'variants__sku', 'variants__barcode',
-        'category__name',
-        'category__parent__name',
-        'category__parent__parent__name',
-        'category__parent__parent__parent__name',
-    ]
+    # Keep search_fields lean — no category joins (those caused 3-4s lag over 27k MB rows).
+    # Attribute search is handled by the dedicated /autocomplete/ action.
+    search_fields = ['name', 'variants__sku', 'variants__barcode']
     # Server-side sort. FE maps column keys -> these (see Products.vue ORDER_MAP).
     ordering_fields = ['name', 'supplier__name', 'created_at',
                        'o_sku', 'o_wholesale', 'o_retail', 'o_profit', 'o_stock']
@@ -398,6 +395,54 @@ class ProductViewSet(viewsets.ModelViewSet):
         log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
                      action=f"Bulk deleted {len(products)} product(s) — reason: {reason}")
         return Response({'deleted': len(products)})
+
+    @action(detail=False, methods=['get'], url_path='autocomplete')
+    def autocomplete(self, request):
+        """Fast ranked product search for the New Purchase + New Product autocomplete.
+
+        Searches both STORE and MEMORY_BASE products for this store.
+        Ranking: name prefix (rank 0) → name contains (rank 1) → active ingredient / brand attr (rank 2).
+        Returns up to 20 results using ProductListSerializer.
+
+        Query params:
+          ?q=<text>   required, minimum 3 characters
+        """
+        from django.db.models import Case, When, IntegerField, Value
+        q = (request.query_params.get('q') or '').strip()
+        if len(q) < 3:
+            return Response([])
+
+        store = request.user.store
+        qs = Product.objects.filter(store=store).select_related(
+            'category', 'category__parent',
+            'category__parent__parent', 'category__parent__parent__parent',
+        ).prefetch_related(
+            'supplier',
+            'variants', 'variants__stock_levels',
+            'variants__attributes', 'variants__attributes__definition',
+        )
+
+        # Search: name icontains OR active ingredient / brand Arabic attr icontains.
+        qs = qs.filter(
+            Q(name__icontains=q) |
+            Q(
+                variants__attributes__definition__key__in=['active_ing', 'active_ing_ar'],
+                variants__attributes__value__icontains=q,
+            )
+        ).distinct()
+
+        # Rank: name-prefix first, name-contains second, attr-only match third.
+        qs = qs.annotate(
+            _rank=Case(
+                When(name__istartswith=q, then=Value(0)),
+                When(name__icontains=q,   then=Value(1)),
+                default=Value(2),
+                output_field=IntegerField(),
+            )
+        ).order_by('_rank', 'name')[:20]
+
+        serializer = ProductListSerializer(list(qs), many=True, context={'request': request})
+        return Response(serializer.data)
 
 
 class ProductVariantViewSet(viewsets.ModelViewSet):
