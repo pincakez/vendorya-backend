@@ -144,10 +144,25 @@ class Product(TimestampedModel, SoftDeleteModel):
         MISTAKE      = 'MISTAKE',      _('Created by mistake')
         OTHER        = 'OTHER',        _('Other')
 
+    # Memory Base (superfix §2): a supplier-less, SKU-less, owner-editable reference
+    # pool — "every product the store has ever seen" — that feeds the autofill. A
+    # STORE product is a real sellable inventory item (default, unchanged behaviour);
+    # a MEMORY_BASE product is a reference entry only. Memory Base entries surface in
+    # exactly 3 places (own page + New Invoice + New Product) and NEVER in POS or the
+    # inventory items list — that filtering lands in §2.2–§2.7, not here.
+    class Source(models.TextChoices):
+        STORE       = 'STORE',       _('Store Inventory')   # normal sellable product
+        MEMORY_BASE = 'MEMORY_BASE', _('Memory Base')       # reference-pool entry
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='products')
     name = models.CharField(_("Product Name"), max_length=255)
     product_type = models.CharField(max_length=20, choices=ProductType.choices, default=ProductType.STANDARD)
+    source = models.CharField(
+        _("Source"), max_length=20,
+        choices=Source.choices, default=Source.STORE,
+        help_text=_("STORE = real sellable inventory; MEMORY_BASE = reference-pool entry (no supplier/SKU)."),
+    )
 
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
@@ -223,6 +238,8 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
         max_length=10,
         unique=True,
         blank=True,
+        null=True,   # superfix §2: Memory Base entries are SKU-less. NULLs are distinct
+                     # under the unique constraint (unlike ''), so many can coexist.
         validators=[RegexValidator(r'^\d{10}$', _('SKU must be exactly 10 digits.'))]
     )
     barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
@@ -241,11 +258,15 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
         return f"{self.product.name} ({self.sku})"
 
     def save(self, *args, **kwargs):
-        if not self.sku:
+        # Memory Base entries (superfix §2) are SKU-less: keep sku NULL, never generate.
+        if not self.sku and self.product.source != Product.Source.MEMORY_BASE:
             with transaction.atomic():
                 self.sku = self._generate_sku()
                 super().save(*args, **kwargs)
             return
+        # Normalize blank → NULL so SKU-less variants don't collide on '' (unique).
+        if not self.sku:
+            self.sku = None
         super().save(*args, **kwargs)
 
     def _generate_sku(self):
