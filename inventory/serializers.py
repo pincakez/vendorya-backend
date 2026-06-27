@@ -170,7 +170,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = [
-            'id', 'name', 'source', 'category_name', 'supplier_name',
+            'id', 'name', 'source', 'category', 'category_name', 'supplier_name',
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'default_variant_price',
             'default_variant_stock', 'selling_units', 'sku_display', 'hide_from_pos',
