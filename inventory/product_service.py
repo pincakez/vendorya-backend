@@ -53,4 +53,46 @@ def create_product_with_variant(store, *, name, supplier=None, category=None,
                     ProductAttribute.objects.create(
                         variant=variant, definition=defn, value=value,
                     )
+
+    # Auto-register into the Memory Base reference pool (superfix §2.4): every
+    # STORE product the store creates also accumulates a supplier-less reference
+    # entry that quietly feeds the autofill. Best-effort + isolated in its own
+    # savepoint so a bookkeeping hiccup can never break real product creation.
+    try:
+        with transaction.atomic():
+            register_memory_base_entry(store, name=name, attributes=attributes)
+    except Exception:
+        pass
     return product
+
+
+def register_memory_base_entry(store, *, name, attributes=None):
+    """Ensure a Memory Base reference entry exists for `name` in this store.
+
+    The Memory Base is a supplier-less, SKU-less reference pool that feeds the
+    New Purchase / New Product autofill. We call this whenever a STORE product is
+    created so the pool accumulates everything the store ever touches. Dedup'd by
+    case-insensitive name — a no-op when an entry already exists (returns it).
+    Returns the MEMORY_BASE Product (or None for a blank name).
+    """
+    name = (name or '').strip()
+    if not name:
+        return None
+    existing = Product.objects.filter(
+        store=store, source=Product.Source.MEMORY_BASE, name__iexact=name,
+    ).first()
+    if existing:
+        return existing
+    mb = Product.objects.create(
+        store=store, name=name, source=Product.Source.MEMORY_BASE,
+        supplier=None, category=None, base_price=0,
+    )
+    variant = ProductVariant.objects.create(product=mb, cost_price=0, sell_price=0)
+    for attr in (attributes or []):
+        defn_id = attr.get('definition') or attr.get('definition_id')
+        value = attr.get('value', '')
+        if defn_id and value:
+            defn = AttributeDefinition.objects.filter(id=defn_id, store=store).first()
+            if defn:
+                ProductAttribute.objects.create(variant=variant, definition=defn, value=value)
+    return mb
