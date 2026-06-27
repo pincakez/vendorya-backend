@@ -106,6 +106,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         'upload_image':   'MANAGER',
         'remove_image':   'MANAGER',
         'import_memory_base': 'MANAGER',
+        'dedup_memory_base': 'MANAGER',
     }
     filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
@@ -286,6 +287,17 @@ class ProductViewSet(viewsets.ModelViewSet):
         log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
                      action=f"Imported {created} Memory Base entry(ies) from CSV ({skipped} already existed)")
         return Response({'created': created, 'skipped': skipped})
+
+    @action(detail=False, methods=['post'], url_path='dedup-memory-base')
+    def dedup_memory_base(self, request):
+        """Remove duplicate Memory Base entries (same name) for this store, keeping
+        the richest of each. Soft-delete, recoverable. Returns {removed}."""
+        from .product_service import dedup_memory_base_for_store
+        removed = dedup_memory_base_for_store(request.user.store)
+        if removed:
+            log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
+                         action=f"Removed {removed} duplicate Memory Base entry(ies)")
+        return Response({'removed': removed})
 
     @action(detail=True, methods=['post'])
     def toggle_ghost(self, request, pk=None):

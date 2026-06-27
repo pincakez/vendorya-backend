@@ -96,3 +96,35 @@ def register_memory_base_entry(store, *, name, attributes=None):
             if defn:
                 ProductAttribute.objects.create(variant=variant, definition=defn, value=value)
     return mb
+
+
+def dedup_memory_base_for_store(store):
+    """Collapse duplicate Memory Base entries (same case-insensitive name) within a
+    store (superfix §2.6). For each duplicated name we keep the *richest* entry —
+    the one carrying the most attributes, oldest wins a tie — and soft-delete the
+    rest (recoverable via admin Trash). Returns the number of entries removed.
+    Idempotent: a second run removes nothing. Backs the manual "Remove duplicates"
+    button and the nightly `dedup_memory_base` management command.
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    qs = (Product.objects.filter(store=store, source=Product.Source.MEMORY_BASE)
+          .prefetch_related('variants__attributes'))
+    for p in qs:
+        key = (p.name or '').strip().lower()
+        if key:
+            groups[key].append(p)
+
+    def _attr_count(p):
+        return sum(len(v.attributes.all()) for v in p.variants.all())
+
+    removed = 0
+    with transaction.atomic():
+        for items in groups.values():
+            if len(items) < 2:
+                continue
+            items.sort(key=lambda p: (-_attr_count(p), p.created_at))
+            for dup in items[1:]:
+                dup.delete()  # soft-delete (SoftDeleteModel) — keeps it recoverable
+                removed += 1
+    return removed
