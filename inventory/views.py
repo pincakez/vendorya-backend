@@ -109,7 +109,7 @@ class ProductViewSet(viewsets.ModelViewSet):
                        'o_sku', 'o_wholesale', 'o_retail', 'o_profit', 'o_stock']
 
     # Reserved params that are NOT dynamic attribute filters.
-    _RESERVED_PARAMS = {'search', 'ordering', 'page', 'page_size', 'category'}
+    _RESERVED_PARAMS = {'search', 'ordering', 'page', 'page_size', 'category', 'source'}
 
     def get_serializer_class(self):
         if self.action in ('create', 'update', 'partial_update'):
@@ -129,6 +129,20 @@ class ProductViewSet(viewsets.ModelViewSet):
             'variants', 'variants__stock_levels',
             'variants__attributes', 'variants__attributes__definition',
         )
+
+        # Memory Base isolation. MEMORY_BASE products are a supplier-less, SKU-less
+        # reference pool that feeds autofill — they must NEVER appear in POS or the
+        # inventory items list (the 27k seeded meds would flood both). So the default
+        # (no param) returns only real, sellable STORE inventory. The dedicated Memory
+        # Base page asks for ?source=memory_base; the catalog autofill asks for
+        # ?source=all to search both pools.
+        source = (self.request.query_params.get('source') or '').lower()
+        if source == 'memory_base':
+            qs = qs.filter(source=Product.Source.MEMORY_BASE)
+        elif source == 'all':
+            pass  # both pools — used by the New Purchase / New Invoice catalog autofill
+        else:
+            qs = qs.filter(source=Product.Source.STORE)
 
         # Sort annotations. Min over variants is fan-out-safe (idempotent); stock
         # uses a subquery so the Sum isn't multiplied by the variant join.
