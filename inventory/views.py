@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.db.models import Q, Sum, F, Min, Value, OuterRef, Subquery, ExpressionWrapper, DecimalField
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets, filters, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -78,6 +79,16 @@ class AttributeDefinitionViewSet(viewsets.ModelViewSet):
         return Response({'options': attr.options})
 
 
+class MemoryBasePagination(PageNumberPagination):
+    """Pagination used ONLY for the Memory Base page (?source=memory_base).
+    The reference pool holds tens of thousands of rows, so it must page; the
+    sellable STORE inventory and the autofill (?source=all) stay unpaginated
+    so POS / Purchases keep receiving a bare array as they expect."""
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
 class ProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, RoleScopedPermission]
     role_map = {
@@ -117,6 +128,16 @@ class ProductViewSet(viewsets.ModelViewSet):
         if self.action == 'retrieve':
             return ProductDetailSerializer
         return ProductListSerializer
+
+    @property
+    def paginator(self):
+        """Paginate ONLY the Memory Base list (?source=memory_base). Every other
+        product request (POS, Purchases autofill, the items list) stays unpaginated
+        and returns a bare array, which those consumers read directly."""
+        if not hasattr(self, '_paginator'):
+            source = (self.request.query_params.get('source') or '').lower()
+            self._paginator = MemoryBasePagination() if source == 'memory_base' else None
+        return self._paginator
 
     def get_queryset(self):
         qs = Product.objects.filter(store=self.request.user.store).select_related(
