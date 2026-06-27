@@ -105,6 +105,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         'bulk_delete':    'ADMIN',
         'upload_image':   'MANAGER',
         'remove_image':   'MANAGER',
+        'import_memory_base': 'MANAGER',
     }
     filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
@@ -232,6 +233,59 @@ class ProductViewSet(viewsets.ModelViewSet):
             product.image = None
             product.save(update_fields=['image', 'updated_at'])
         return Response({'ok': True})
+
+    @action(detail=False, methods=['post'], url_path='import-memory-base')
+    def import_memory_base(self, request):
+        """Rough CSV import for the Memory Base reference pool (superfix §2.5).
+
+        Accepts a multipart `file` (a .csv) or a JSON `{"csv": "..."}` body. The
+        first row is a header; a `name` column is required. Any other column whose
+        header matches an existing attribute's key OR display name (case-insensitive)
+        is attached as that attribute. Entries are dedup'd by name via
+        register_memory_base_entry — re-importing an existing name is a skip.
+        Returns {created, skipped}.
+        """
+        import csv, io
+        from .product_service import register_memory_base_entry
+        store = request.user.store
+        f = request.FILES.get('file')
+        raw = f.read().decode('utf-8-sig') if f else (request.data.get('csv') or '')
+        if not raw.strip():
+            return Response({'detail': 'No CSV provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        defs = {}
+        for d in AttributeDefinition.objects.filter(store=store):
+            defs[d.key.lower()] = d
+            defs[d.name.lower()] = d
+
+        try:
+            reader = csv.DictReader(io.StringIO(raw))
+        except Exception:
+            return Response({'detail': 'Could not parse the CSV.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        created = skipped = 0
+        with transaction.atomic():
+            for row in reader:
+                name, attrs = '', []
+                for col, val in row.items():
+                    if col is None:
+                        continue
+                    key = col.strip().lower()
+                    if key == 'name':
+                        name = (val or '').strip()
+                    elif val and (val := val.strip()) and key in defs:
+                        attrs.append({'definition': str(defs[key].id), 'value': val})
+                if not name:
+                    continue
+                exists = Product.objects.filter(
+                    store=store, source=Product.Source.MEMORY_BASE, name__iexact=name,
+                ).exists()
+                register_memory_base_entry(store, name=name, attributes=attrs)
+                skipped += 1 if exists else 0
+                created += 0 if exists else 1
+        log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
+                     action=f"Imported {created} Memory Base entry(ies) from CSV ({skipped} already existed)")
+        return Response({'created': created, 'skipped': skipped})
 
     @action(detail=True, methods=['post'])
     def toggle_ghost(self, request, pk=None):
