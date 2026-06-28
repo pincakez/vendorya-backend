@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     'pos',
     'services',
     'public_api',
+    'search',
 ]
 
 MIDDLEWARE = [

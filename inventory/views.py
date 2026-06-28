@@ -421,8 +421,9 @@ class ProductViewSet(viewsets.ModelViewSet):
             ac_source = store.settings.autocomplete_source
         except Exception:
             ac_source = 'memory_base'
+        store_history = (ac_source == 'store_history')
 
-        qs = Product.objects.filter(store=store).select_related(
+        base = Product.objects.filter(store=store).select_related(
             'category', 'category__parent',
             'category__parent__parent', 'category__parent__parent__parent',
         ).prefetch_related(
@@ -430,44 +431,58 @@ class ProductViewSet(viewsets.ModelViewSet):
             'variants', 'variants__stock_levels',
             'variants__attributes', 'variants__attributes__definition',
         )
+        if store_history:
+            base = base.filter(source=Product.Source.STORE)
 
-        if ac_source == 'store_history':
-            qs = qs.filter(source=Product.Source.STORE)
+        # --- Typesense first: typo-tolerant ranked IDs, then load + serialize from
+        #     the DB so the JSON shape is identical to the pg_trgm path. Any error
+        #     (service down/slow/unconfigured) → fall through to pg_trgm below. ---
+        results = None
+        from search import client as ts
+        if ts.is_configured():
+            try:
+                ids = ts.search_ids(str(store.id), q, store_history=store_history)
+                by_id = {str(p.id): p for p in base.filter(id__in=ids)}
+                results = [by_id[i] for i in ids if i in by_id]
+            except Exception:
+                results = None
 
-        qs = qs.filter(
-            Q(name__icontains=q) |
-            Q(
-                variants__attributes__definition__key__in=['active_ing', 'active_ing_ar'],
-                variants__attributes__value__icontains=q,
-            )
-        ).distinct()
+        # --- pg_trgm fallback (also the path when Typesense is unconfigured). ---
+        if results is None:
+            qs = base.filter(
+                Q(name__icontains=q) |
+                Q(
+                    variants__attributes__definition__key__in=['active_ing', 'active_ing_ar'],
+                    variants__attributes__value__icontains=q,
+                )
+            ).distinct()
 
-        if ac_source == 'memory_base':
-            qs = qs.annotate(
-                _rank=Case(
-                    When(name__istartswith=q, then=Value(0)),
-                    When(name__icontains=q,   then=Value(1)),
-                    default=Value(2),
-                    output_field=IntegerField(),
-                ),
-                _src_rank=Case(
-                    When(source=Product.Source.STORE, then=Value(0)),
-                    default=Value(1),
-                    output_field=IntegerField(),
-                ),
-            ).order_by('_rank', '_src_rank', 'name')[:20]
-        else:
-            qs = qs.annotate(
-                _rank=Case(
-                    When(name__istartswith=q, then=Value(0)),
-                    When(name__icontains=q,   then=Value(1)),
-                    default=Value(2),
-                    output_field=IntegerField(),
-                ),
-            ).order_by('_rank', 'name')[:20]
+            if ac_source == 'memory_base':
+                qs = qs.annotate(
+                    _rank=Case(
+                        When(name__istartswith=q, then=Value(0)),
+                        When(name__icontains=q,   then=Value(1)),
+                        default=Value(2),
+                        output_field=IntegerField(),
+                    ),
+                    _src_rank=Case(
+                        When(source=Product.Source.STORE, then=Value(0)),
+                        default=Value(1),
+                        output_field=IntegerField(),
+                    ),
+                ).order_by('_rank', '_src_rank', 'name')[:20]
+            else:
+                qs = qs.annotate(
+                    _rank=Case(
+                        When(name__istartswith=q, then=Value(0)),
+                        When(name__icontains=q,   then=Value(1)),
+                        default=Value(2),
+                        output_field=IntegerField(),
+                    ),
+                ).order_by('_rank', 'name')[:20]
+            results = list(qs)
 
-        results = list(qs)
-        no_history = (ac_source == 'store_history' and len(results) == 0)
+        no_history = (store_history and len(results) == 0)
         serializer = ProductListSerializer(results, many=True, context={'request': request})
         return Response({'results': serializer.data, 'no_history': no_history})
 
