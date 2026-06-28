@@ -113,7 +113,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'receipt_copies', 'receipt_auto_cut', 'receipt_cut_feed',
             'field_visibility',
             'pos_top_selling_period', 'pos_top_selling_category', 'pos_top_selling_limit',
-            'pos_cart_display_fields',
+            'pos_cart_display_fields', 'pos_clock_24h',
             'default_info_sound', 'default_warning_sound', 'default_alert_sound',
         ]
 

@@ -430,6 +430,10 @@ class StoreSettings(TimestampedModel):
         help_text=_("Up to 4 fields shown under each line in the POS cart. "
                     "Tokens: 'category' or 'attr:<attribute_key>'."),
     )
+    pos_clock_24h = models.BooleanField(
+        _("POS 24-hour clock"), default=True,
+        help_text=_("POS topbar clock format: ON = 24-hour (13:05), OFF = 12-hour with AM/PM (1:05 PM)."),
+    )
 
     # 9. Services Module
     service_types = models.JSONField(
