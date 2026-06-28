@@ -56,11 +56,12 @@ def create_product_with_variant(store, *, name, supplier=None, category=None,
 
     # Auto-register into the Memory Base reference pool (superfix §2.4): every
     # STORE product the store creates also accumulates a supplier-less reference
-    # entry that quietly feeds the autofill. Best-effort + isolated in its own
-    # savepoint so a bookkeeping hiccup can never break real product creation.
+    # entry that quietly feeds the autofill. Gated on store.settings.mb_auto_register
+    # (default True). Best-effort + isolated so a hiccup never breaks product creation.
     try:
-        with transaction.atomic():
-            register_memory_base_entry(store, name=name, attributes=attributes)
+        if getattr(store.settings, 'mb_auto_register', True):
+            with transaction.atomic():
+                register_memory_base_entry(store, name=name, attributes=attributes)
     except Exception:
         pass
     return product

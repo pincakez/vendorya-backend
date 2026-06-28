@@ -96,6 +96,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'allow_negative_stock', 'enable_agel_selling',
             'expiry_tracking_enabled', 'expired_sale_policy', 'expiry_alert_days',
             'multi_unit_enabled', 'weight_selling_enabled',
+            'autocomplete_source', 'mb_auto_register',
             'credit_policy', 'default_credit_limit',
             'return_window_days', 'restocking_fee_percent',
             'decimals', 'thousands_separator', 'item_noun', 'category_level_names',

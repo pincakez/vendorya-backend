@@ -398,11 +398,15 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='autocomplete')
     def autocomplete(self, request):
-        """Fast ranked product search for the New Purchase + New Product autocomplete.
+        """Fast ranked product search for the New Purchase / New Product autocomplete.
 
-        Searches both STORE and MEMORY_BASE products for this store.
-        Ranking: name prefix (rank 0) → name contains (rank 1) → active ingredient / brand attr (rank 2).
-        Returns up to 20 results using ProductListSerializer.
+        Behaviour is governed by store.settings.autocomplete_source:
+        - memory_base (default): searches STORE + MEMORY_BASE; STORE entries
+          surfaced first (via _src_rank annotation) when names collide.
+        - store_history: searches only STORE products; sets no_history=true in
+          the response when the result set is empty so the frontend can hint.
+
+        Returns {results: [...], no_history: bool}.
 
         Query params:
           ?q=<text>   required, minimum 3 characters
@@ -410,9 +414,14 @@ class ProductViewSet(viewsets.ModelViewSet):
         from django.db.models import Case, When, IntegerField, Value
         q = (request.query_params.get('q') or '').strip()
         if len(q) < 3:
-            return Response([])
+            return Response({'results': [], 'no_history': False})
 
         store = request.user.store
+        try:
+            ac_source = store.settings.autocomplete_source
+        except Exception:
+            ac_source = 'memory_base'
+
         qs = Product.objects.filter(store=store).select_related(
             'category', 'category__parent',
             'category__parent__parent', 'category__parent__parent__parent',
@@ -422,7 +431,9 @@ class ProductViewSet(viewsets.ModelViewSet):
             'variants__attributes', 'variants__attributes__definition',
         )
 
-        # Search: name icontains OR active ingredient / brand Arabic attr icontains.
+        if ac_source == 'store_history':
+            qs = qs.filter(source=Product.Source.STORE)
+
         qs = qs.filter(
             Q(name__icontains=q) |
             Q(
@@ -431,18 +442,34 @@ class ProductViewSet(viewsets.ModelViewSet):
             )
         ).distinct()
 
-        # Rank: name-prefix first, name-contains second, attr-only match third.
-        qs = qs.annotate(
-            _rank=Case(
-                When(name__istartswith=q, then=Value(0)),
-                When(name__icontains=q,   then=Value(1)),
-                default=Value(2),
-                output_field=IntegerField(),
-            )
-        ).order_by('_rank', 'name')[:20]
+        if ac_source == 'memory_base':
+            qs = qs.annotate(
+                _rank=Case(
+                    When(name__istartswith=q, then=Value(0)),
+                    When(name__icontains=q,   then=Value(1)),
+                    default=Value(2),
+                    output_field=IntegerField(),
+                ),
+                _src_rank=Case(
+                    When(source=Product.Source.STORE, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                ),
+            ).order_by('_rank', '_src_rank', 'name')[:20]
+        else:
+            qs = qs.annotate(
+                _rank=Case(
+                    When(name__istartswith=q, then=Value(0)),
+                    When(name__icontains=q,   then=Value(1)),
+                    default=Value(2),
+                    output_field=IntegerField(),
+                ),
+            ).order_by('_rank', 'name')[:20]
 
-        serializer = ProductListSerializer(list(qs), many=True, context={'request': request})
-        return Response(serializer.data)
+        results = list(qs)
+        no_history = (ac_source == 'store_history' and len(results) == 0)
+        serializer = ProductListSerializer(results, many=True, context={'request': request})
+        return Response({'results': serializer.data, 'no_history': no_history})
 
 
 class ProductVariantViewSet(viewsets.ModelViewSet):

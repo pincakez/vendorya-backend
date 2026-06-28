@@ -264,6 +264,26 @@ class StoreSettings(TimestampedModel):
         help_text=_("Master switch for selling products by weight (per kg / 100g, "
                     "decimal quantities). Off = feature hidden."))
 
+    # 1e. Autocomplete source — controls which product pool the New Purchase /
+    # New Product name-search queries. MEMORY_BASE (default) includes the full
+    # shared drug reference; STORE_HISTORY restricts to products this store has
+    # actually received or added (grows richer over time).
+    class AutocompleteSource(models.TextChoices):
+        MEMORY_BASE   = 'memory_base',   _('Memory Base')
+        STORE_HISTORY = 'store_history', _('Store History')
+
+    autocomplete_source = models.CharField(
+        _("Autocomplete source"), max_length=20,
+        choices=AutocompleteSource.choices, default=AutocompleteSource.MEMORY_BASE,
+        help_text=_("Product pool the name-search autocomplete draws from."))
+
+    # When True (default), creating a STORE product silently registers a
+    # reference entry in the Memory Base pool — keeping it up to date.
+    mb_auto_register = models.BooleanField(
+        _("Auto-register new items in Memory Base"), default=True,
+        help_text=_("Automatically add every new product to the shared Memory Base "
+                    "reference pool when it is created."))
+
     class ExpiredSalePolicy(models.TextChoices):
         ALLOW = 'ALLOW', _('Allow — sell expired stock silently')
         WARN  = 'WARN',  _('Warn — flag expired stock at POS but allow')
