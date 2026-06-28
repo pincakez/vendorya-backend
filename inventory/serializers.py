@@ -8,6 +8,7 @@ from .models import (
     ProductVariant, ProductAttribute, ProductUnit, StockLevel, Tax, StockAdjustment,
     StockTransfer, StockTransferItem,
     StorageLocation, StorageStock, StorageMovement,
+    ProductMedia,
     is_multi_unit_enabled, is_weight_selling_enabled,
 )
 
@@ -261,20 +262,51 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
         return {k: sorted(v) for k, v in summary.items()}
 
 # --- FULL PRODUCT SERIALIZER (for add/edit) ---
+class ProductMediaSerializer(serializers.ModelSerializer):
+    """One showcase asset. `aspect` (w/h) lets the UI size the player — a 16:9
+    clip goes wider, a 9:16 clip goes taller."""
+    file_url   = serializers.SerializerMethodField()
+    poster_url = serializers.SerializerMethodField()
+    aspect     = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductMedia
+        fields = ['id', 'kind', 'file_url', 'poster_url',
+                  'width', 'height', 'aspect', 'duration', 'order']
+
+    def _url(self, f):
+        # Relative ("/media/...") so it resolves against whatever origin the page
+        # is on — correct in dev (vdev) and prod alike, no host/scheme guessing.
+        return f.url if f else None
+
+    def get_file_url(self, obj):
+        return self._url(obj.file)
+
+    def get_poster_url(self, obj):
+        return self._url(obj.poster)
+
+    def get_aspect(self, obj):
+        return round(obj.width / obj.height, 4) if obj.width and obj.height else None
+
+
 class ProductDetailSerializer(serializers.ModelSerializer):
     variants       = ProductVariantSerializer(many=True, read_only=True)
     category_name  = serializers.CharField(source='category.name', read_only=True)
     supplier_name  = serializers.CharField(source='supplier.name', read_only=True)
     supplier_contact = serializers.CharField(source='supplier.contact_info', read_only=True)
     image_url      = serializers.SerializerMethodField()
+    media          = ProductMediaSerializer(many=True, read_only=True)
     selling_units  = serializers.SerializerMethodField()
     batches        = serializers.SerializerMethodField()
 
     def get_image_url(self, obj):
-        if not obj.image:
-            return None
-        request = self.context.get('request')
-        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+        # Cover thumbnail: legacy single image first, else the first gallery photo
+        # (prefetched on the viewset, so no extra query per row). Relative URL so it
+        # resolves against the page origin in dev + prod.
+        if obj.image:
+            return obj.image.url
+        first = next((m for m in obj.media.all() if m.kind == 'image'), None)
+        return first.file.url if (first and first.file) else None
 
     def get_selling_units(self, obj):
         return build_selling_units(obj.variants.first(), obj)

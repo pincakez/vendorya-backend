@@ -12,16 +12,18 @@ from rest_framework.response import Response
 from users.permissions import RoleScopedPermission, IsManagerOrAbove, IsAdminOrAbove
 from .models import (
     Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax,
-    StockAdjustment, StockTransfer,
+    StockAdjustment, StockTransfer, ProductMedia,
     StorageLocation, StorageStock, StorageMovement,
 )
 from .serializers import (
     ProductListSerializer, ProductDetailSerializer, ProductWriteSerializer,
-    ProductVariantSerializer,
+    ProductVariantSerializer, ProductMediaSerializer,
     CategorySerializer, SupplierSerializer, AttributeDefinitionSerializer, TaxSerializer,
     StockAdjustmentSerializer, StockTransferSerializer,
     StorageLocationSerializer, StorageStockSerializer, StorageMovementSerializer,
 )
+from . import media_processing
+from rest_framework.parsers import MultiPartParser as _MultiPartParser, FormParser as _FormParser
 from . import storage_service
 from core.activity import log_activity
 from core.models import ActivityLog
@@ -105,6 +107,10 @@ class ProductViewSet(viewsets.ModelViewSet):
         'bulk_delete':    'ADMIN',
         'upload_image':   'MANAGER',
         'remove_image':   'MANAGER',
+        'upload_media':   'MANAGER',
+        'delete_media':   'MANAGER',
+        'reorder_media':  'MANAGER',
+        'showcase_settings': 'MANAGER',
         'import_memory_base': 'MANAGER',
         'dedup_memory_base': 'MANAGER',
         'autocomplete': 'CASHIER',
@@ -148,6 +154,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             'supplier',
             'variants', 'variants__stock_levels',
             'variants__attributes', 'variants__attributes__definition',
+            'media',
         )
 
         # Memory Base isolation. MEMORY_BASE products are a supplier-less, SKU-less
@@ -209,7 +216,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             return None
         return Product.objects.filter(store=self.request.user.store, id__in=ids)
 
-    @action(detail=True, methods=['post'], url_path='upload-image', parser_classes=None)
+    @action(detail=True, methods=['post'], url_path='upload-image', parser_classes=[_MultiPartParser, _FormParser])
     def upload_image(self, request, pk=None):
         """Upload or replace the product image. Send as multipart/form-data with key 'image'."""
         product = self.get_object()
@@ -231,6 +238,105 @@ class ProductViewSet(viewsets.ModelViewSet):
             product.image = None
             product.save(update_fields=['image', 'updated_at'])
         return Response({'ok': True})
+
+    # ── Showcase gallery: up to 5 photos + 1 video per product ──
+    @action(detail=False, methods=['get'], url_path='media-specs')
+    def media_specs(self, request):
+        """The upload limits, so the UI note always matches what we enforce."""
+        return Response(media_processing.upload_specs())
+
+    @action(detail=True, methods=['post'], url_path='upload-media', parser_classes=[_MultiPartParser, _FormParser])
+    def upload_media(self, request, pk=None):
+        """Add one showcase asset. multipart/form-data: `file` + `kind`
+        (image|video). Images become .webp, videos H.264 .mp4 — converted here,
+        synchronously, before we respond. Enforces the per-product caps."""
+        import os
+        product = self.get_object()
+        f = request.FILES.get('file')
+        kind = (request.data.get('kind') or '').lower()
+        if not f:
+            return Response({'detail': 'file is required.'}, status=400)
+        if kind not in ('image', 'video'):
+            return Response({'detail': 'kind must be image or video.'}, status=400)
+
+        ext = os.path.splitext(f.name)[1].lower()
+        if kind == 'image':
+            if ext and ext not in media_processing.ALLOWED_IMAGE_EXT:
+                return Response({'detail': f'Unsupported image type ({ext}).'}, status=400)
+            if product.media.filter(kind='image').count() >= media_processing.MAX_IMAGES:
+                return Response({'detail': f'Up to {media_processing.MAX_IMAGES} photos only.'}, status=400)
+        else:
+            if ext and ext not in media_processing.ALLOWED_VIDEO_EXT:
+                return Response({'detail': f'Unsupported video type ({ext}).'}, status=400)
+            if product.media.filter(kind='video').exists():
+                return Response({'detail': 'Only one video per product — remove the current one first.'}, status=400)
+
+        try:
+            if kind == 'image':
+                content, w, h = media_processing.process_image(f)
+                m = ProductMedia(store=product.store, product=product, kind='image',
+                                 width=w, height=h)
+                m.file = content
+            else:
+                out = media_processing.process_video(f)
+                m = ProductMedia(store=product.store, product=product, kind='video',
+                                 width=out['width'], height=out['height'],
+                                 duration=out['duration'])
+                m.file = out['file']
+                if out['poster']:
+                    m.poster = out['poster']
+        except media_processing.MediaError as e:
+            return Response({'detail': str(e)}, status=400)
+
+        # New asset goes to the end of its kind's order.
+        last = product.media.order_by('-order').first()
+        m.order = (last.order + 1) if last else 0
+        m.save()
+        return Response(ProductMediaSerializer(m, context={'request': request}).data, status=201)
+
+    @action(detail=True, methods=['delete'], url_path='media/(?P<media_id>[^/.]+)')
+    def delete_media(self, request, pk=None, media_id=None):
+        product = self.get_object()
+        m = product.media.filter(id=media_id).first()
+        if not m:
+            return Response({'detail': 'Not found.'}, status=404)
+        m.delete()   # also removes the file + poster from disk
+        return Response({'ok': True})
+
+    @action(detail=True, methods=['post'], url_path='reorder-media')
+    def reorder_media(self, request, pk=None):
+        """Persist the gallery order. Body: {"order": [media_id, media_id, ...]}."""
+        product = self.get_object()
+        ids = request.data.get('order') or []
+        if not isinstance(ids, list):
+            return Response({'detail': 'order must be a list of media ids.'}, status=400)
+        owned = {str(m.id): m for m in product.media.all()}
+        with transaction.atomic():
+            for i, mid in enumerate(ids):
+                m = owned.get(str(mid))
+                if m:
+                    m.order = i
+                    m.save(update_fields=['order'])
+        media = product.media.all()
+        return Response(ProductMediaSerializer(media, many=True, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='showcase-settings')
+    def showcase_settings(self, request, pk=None):
+        """Set the two display radios: lead (video|slideshow) + autoplay (bool)."""
+        product = self.get_object()
+        lead = request.data.get('showcase_lead')
+        autoplay = request.data.get('showcase_autoplay')
+        fields = []
+        if lead in ('video', 'slideshow'):
+            product.showcase_lead = lead
+            fields.append('showcase_lead')
+        if isinstance(autoplay, bool):
+            product.showcase_autoplay = autoplay
+            fields.append('showcase_autoplay')
+        if fields:
+            product.save(update_fields=fields + ['updated_at'])
+        return Response({'showcase_lead': product.showcase_lead,
+                         'showcase_autoplay': product.showcase_autoplay})
 
     @action(detail=False, methods=['post'], url_path='import-memory-base')
     def import_memory_base(self, request):

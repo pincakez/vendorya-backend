@@ -172,6 +172,18 @@ class Product(TimestampedModel, SoftDeleteModel):
     unit = models.CharField(_("Unit"), max_length=20, default="pcs")
     image = models.ImageField(upload_to='products/', null=True, blank=True)
 
+    # ── Showcase (gallery) display settings ──
+    # `showcase_lead` decides what the product page opens on; `showcase_autoplay`
+    # decides whether that hero auto-starts (video plays muted+loop / slideshow
+    # auto-advances) or stays static until the user taps. The richer gallery (up
+    # to 5 photos + 1 video) lives in ProductMedia.
+    class ShowcaseLead(models.TextChoices):
+        VIDEO     = 'video',     _('Video first')
+        SLIDESHOW = 'slideshow', _('Image slideshow')
+    showcase_lead     = models.CharField(max_length=10, choices=ShowcaseLead.choices,
+                                         default=ShowcaseLead.VIDEO)
+    showcase_autoplay = models.BooleanField(default=True)
+
     base_price = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
     # Ghost = hidden from POS only. Still fully searchable/editable everywhere else.
@@ -229,6 +241,51 @@ class Product(TimestampedModel, SoftDeleteModel):
 
     def __str__(self):
         return self.name
+
+
+def product_media_upload_path(instance, filename):
+    """Store every product media file under media/<store-slug>/products/<id>/.
+    One tidy folder per store, as requested — keeps tenants visually separated
+    on disk and in URLs."""
+    from django.utils.text import slugify
+    slug = slugify(instance.store.name) or str(instance.store_id)
+    return f"{slug}/products/{instance.product_id}/{filename}"
+
+
+class ProductMedia(models.Model):
+    """A single showcase asset (photo or video) attached to a product.
+
+    Files are already optimised before they land here (webp / H.264 mp4) — see
+    inventory.media_processing. Stored per-store on disk; hard-deletes its own
+    file + poster when removed (these are CDN-style assets, not business records,
+    so the soft-delete rule doesn't apply)."""
+    class Kind(models.TextChoices):
+        IMAGE = 'image', _('Image')
+        VIDEO = 'video', _('Video')
+
+    id       = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store    = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='product_media')
+    product  = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='media')
+    kind     = models.CharField(max_length=8, choices=Kind.choices)
+    file     = models.FileField(upload_to=product_media_upload_path)
+    poster   = models.ImageField(upload_to=product_media_upload_path, null=True, blank=True)
+    width    = models.PositiveIntegerField(default=0)
+    height   = models.PositiveIntegerField(default=0)
+    duration = models.FloatField(null=True, blank=True)   # seconds, video only
+    order    = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order', 'created_at']
+
+    def delete(self, *args, **kwargs):
+        # Remove the actual files when the row goes (no soft-delete for assets).
+        if self.file:
+            self.file.delete(save=False)
+        if self.poster:
+            self.poster.delete(save=False)
+        return super().delete(*args, **kwargs)
+
 
 class ProductVariant(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
