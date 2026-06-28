@@ -331,6 +331,7 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         'destroy':        'ADMIN',
         'receive':        'MANAGER',
         'label_data':     'MANAGER',
+        'print_data':     'MANAGER',
     }
 
     def get_queryset(self):
@@ -420,6 +421,64 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
                 'quantity':     int(item.quantity),
             })
         return Response({'store_name': store.name, 'items': items})
+
+    @action(detail=True, methods=['get'], url_path='print-data')
+    def print_data(self, request, pk=None):
+        """Fully-resolved payload for the printable PURCHASE invoice — store header,
+        supplier, purchase #/supplier invoice #, and line items with base cost +
+        current retail price. One round-trip so the print view never has to stitch
+        lookups together (mirrors the sales-invoice print_data)."""
+        invoice = self.get_object()
+        store = invoice.store
+        settings_obj = getattr(store, 'settings', None)
+
+        currency = None
+        if getattr(store, 'currency', None):
+            currency = {'symbol': store.currency.symbol, 'position': store.currency.position}
+
+        items = []
+        base_total = Decimal('0')
+        retail_total = Decimal('0')
+        for item in invoice.items.select_related('variant__product', 'unit').all():
+            retail = item.variant.sell_price or Decimal('0')
+            qty = item.quantity
+            items.append({
+                'name':       item.variant.product.name,
+                'sku':        item.variant.sku,
+                'quantity':   str(qty),
+                'unit_name':  item.unit.name if item.unit_id else None,  # base unit → None
+                'base_cost':  str(item.unit_cost),
+                'retail':     str(retail),
+                'line_total': str(item.total_cost),
+            })
+            base_total += item.total_cost
+            retail_total += qty * retail
+
+        return Response({
+            'purchase': {
+                'purchase_number':  invoice.purchase_number or '',
+                'vendor_reference': invoice.vendor_reference or '',
+                'status':           invoice.status,
+                'date':             invoice.date,
+                'notes':            invoice.notes or '',
+                'base_total':       str(base_total),
+                'retail_total':     str(retail_total),
+            },
+            'store': {
+                'name':         store.name,
+                'phone_number': getattr(store, 'phone_number', '') or '',
+                'city':         getattr(store, 'city', '') or '',
+                'country':      getattr(store, 'country', '') or '',
+            },
+            'supplier': {'name': invoice.supplier.name} if invoice.supplier else None,
+            'branch':   {'name': invoice.branch.name} if invoice.branch else None,
+            'legal': {
+                'receipt_header': settings_obj.receipt_header if settings_obj else '',
+                'receipt_footer': settings_obj.receipt_footer if settings_obj else '',
+            },
+            'currency': currency,
+            'items': items,
+        })
 
 
 class ExpenseCategoryViewSet(viewsets.ModelViewSet):
