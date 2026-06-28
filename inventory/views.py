@@ -413,14 +413,22 @@ class ProductViewSet(viewsets.ModelViewSet):
         """
         from django.db.models import Case, When, IntegerField, Value
         q = (request.query_params.get('q') or '').strip()
-        if len(q) < 3:
+        # POS mode (§POS-AR): the scanner-first sell screen. STORE products only
+        # (Memory Base reference entries are never sellable), hidden products
+        # excluded, and a shorter 2-char trigger so a short query / partial scan
+        # still searches.
+        pos_mode = (request.query_params.get('pos') or '').lower() in ('1', 'true')
+        if len(q) < (2 if pos_mode else 3):
             return Response({'results': [], 'no_history': False})
 
         store = request.user.store
-        try:
-            ac_source = store.settings.autocomplete_source
-        except Exception:
-            ac_source = 'memory_base'
+        if pos_mode:
+            ac_source = 'store_history'   # STORE-only base filter + ranking
+        else:
+            try:
+                ac_source = store.settings.autocomplete_source
+            except Exception:
+                ac_source = 'memory_base'
         store_history = (ac_source == 'store_history')
 
         base = Product.objects.filter(store=store).select_related(
@@ -433,6 +441,8 @@ class ProductViewSet(viewsets.ModelViewSet):
         )
         if store_history:
             base = base.filter(source=Product.Source.STORE)
+        if pos_mode:
+            base = base.exclude(hide_from_pos=True)
 
         # --- Typesense first: typo-tolerant ranked IDs, then load + serialize from
         #     the DB so the JSON shape is identical to the pg_trgm path. Any error
@@ -481,6 +491,16 @@ class ProductViewSet(viewsets.ModelViewSet):
                     ),
                 ).order_by('_rank', 'name')[:20]
             results = list(qs)
+
+        # POS scanner: SKU + barcode aren't in the Typesense index — match them
+        # directly in the DB and surface them FIRST (a scan should always beat a
+        # fuzzy name hit), then fall back to the name/ingredient matches.
+        if pos_mode:
+            sku_hits = list(base.filter(
+                Q(variants__sku__icontains=q) | Q(variants__barcode__icontains=q)
+            ).distinct()[:20])
+            seen = {p.id for p in sku_hits}
+            results = (sku_hits + [p for p in results if p.id not in seen])[:20]
 
         no_history = (store_history and len(results) == 0)
         serializer = ProductListSerializer(results, many=True, context={'request': request})
