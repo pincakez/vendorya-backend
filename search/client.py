@@ -10,6 +10,9 @@ This mirrors the existing Django autocomplete query exactly (filter by store, un
 STORE + MEMORY_BASE), so store isolation and both autocomplete-source modes are a
 single `filter_by` away — no per-store collections, no Memory-Base refactor.
 
+A second collection `nav_<env>` indexes static nav pages + settings options for the
+global search bar (§SEARCH-NAV). Supports EN + AR and parent→child breadcrumbs.
+
 Everything here is best-effort. If Typesense is unconfigured or unreachable the
 caller falls back to the pg_trgm query — search can never break because of Typesense.
 """
@@ -23,6 +26,26 @@ PORT       = os.environ.get('TYPESENSE_PORT', '8108')
 PROTOCOL   = os.environ.get('TYPESENSE_PROTOCOL', 'http')
 API_KEY    = os.environ.get('TYPESENSE_API_KEY', '')
 COLLECTION = os.environ.get('TYPESENSE_COLLECTION', 'products_dev')
+
+# Nav collection: same env suffix as COLLECTION (products_dev → nav_dev, products_prod → nav_prod)
+_env_suffix    = COLLECTION.rsplit('_', 1)[-1]          # 'dev' or 'prod'
+NAV_COLLECTION = f'nav_{_env_suffix}'
+
+NAV_SCHEMA = {
+    'name': NAV_COLLECTION,
+    'fields': [
+        {'name': 'id',        'type': 'string'},
+        {'name': 'path',      'type': 'string'},
+        {'name': 'label',     'type': 'string'},
+        {'name': 'label_ar',  'type': 'string', 'optional': True},
+        {'name': 'parent',    'type': 'string', 'optional': True},
+        {'name': 'parent_ar', 'type': 'string', 'optional': True},
+        {'name': 'group',     'type': 'string', 'facet': True},
+        {'name': 'kw',        'type': 'string', 'optional': True},
+        {'name': 'kw_ar',     'type': 'string', 'optional': True},
+    ],
+    'default_sorting_field': '',
+}
 
 # Document schema. Fields searched: name (EN trade name), brand_ar (Arabic trade
 # name), active_ing / active_ing_ar (active ingredient). store_id + source are
@@ -76,6 +99,39 @@ def ensure_collection(client=None):
     client = client or get_client()
     if not collection_exists(client):
         client.collections.create(SCHEMA)
+
+
+def ensure_nav_collection(client=None):
+    """Create or re-create the nav collection. Safe to call on every reindex."""
+    client = client or get_client(timeout=30)
+    try:
+        client.collections[NAV_COLLECTION].delete()
+    except ObjectNotFound:
+        pass
+    client.collections.create(NAV_SCHEMA)
+
+
+def index_nav_items(items, client=None):
+    """Bulk-import nav items into Typesense. items = list of dicts from nav_index.py."""
+    client = client or get_client(timeout=60)
+    client.collections[NAV_COLLECTION].documents.import_(items, {'action': 'upsert'})
+
+
+def search_nav(q, limit=10):
+    """Return nav hits for a query string. Each hit is the raw document dict.
+
+    Raises on Typesense error — caller must catch and fall back to client-side filter.
+    """
+    res = get_client(timeout=2).collections[NAV_COLLECTION].documents.search({
+        'q': q,
+        'query_by': 'label,label_ar,kw,kw_ar',
+        'query_by_weights': '4,4,2,2',
+        'prefix': True,
+        'num_typos': 2,
+        'per_page': limit,
+        'include_fields': 'id,path,label,label_ar,parent,parent_ar,group',
+    })
+    return [hit['document'] for hit in res.get('hits', [])]
 
 
 def search_ids(store_id, q, store_history=False, limit=20):

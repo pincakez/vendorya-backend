@@ -5,6 +5,7 @@ from .views import (
     ActivityLogMetaView, DashboardView, DashboardWidgetConfigView, CurrencyViewSet,
     LabelPresetViewSet, QZTrayCertView, QZTraySignView,
     LockscreenLogoView, LockscreenPinView, LockscreenFactsView,
+    NavSearchView,
 )
 
 router = DefaultRouter()
@@ -25,5 +26,6 @@ urlpatterns = [
     path('lockscreen/logo/',     LockscreenLogoView.as_view(),  name='lockscreen-logo'),
     path('lockscreen/pin/',      LockscreenPinView.as_view(),   name='lockscreen-pin'),
     path('lockscreen/facts/',    LockscreenFactsView.as_view(), name='lockscreen-facts'),
+    path('nav-search/',          NavSearchView.as_view(),       name='nav-search'),
     path('', include(router.urls)),
 ]

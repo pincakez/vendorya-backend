@@ -207,6 +207,40 @@ class LockscreenFactsView(APIView):
             return Response({'error': str(e)}, status=500)
 
 
+class NavSearchView(APIView):
+    """GET /api/core/nav-search/?q=... — global nav search (typo-tolerant, EN+AR).
+
+    Tries Typesense first; falls back to a simple substring filter on the static
+    nav_index so the bar always works even if Typesense is down.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from search.nav_index import NAV_ITEMS
+        q = (request.query_params.get('q') or '').strip()
+        if not q:
+            return Response([])
+        try:
+            from search.client import search_nav, is_configured
+            if is_configured():
+                return Response(search_nav(q))
+        except Exception:
+            pass
+        # Fallback: case-insensitive substring match across label, kw
+        ql = q.lower()
+        results = []
+        for item in NAV_ITEMS:
+            haystack = ' '.join(filter(None, [
+                item.get('label', ''), item.get('label_ar', ''),
+                item.get('kw', ''), item.get('kw_ar', ''),
+            ])).lower()
+            if ql in haystack:
+                results.append({k: item[k] for k in
+                    ('id', 'path', 'label', 'label_ar', 'parent', 'parent_ar', 'group')
+                    if k in item})
+        return Response(results[:10])
+
+
 class StoreSettingsView(APIView):
     """GET = manager+, PATCH = owner only."""
 
