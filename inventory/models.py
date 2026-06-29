@@ -131,7 +131,40 @@ class AttributeDefinition(TimestampedModel, SoftDeleteModel):
     def __str__(self):
         return self.name
 
-# --- 3. PRODUCT & VARIANTS ---
+# --- 3. DRUG PROFILE (canonical, platform-wide) ---
+class DrugProfile(models.Model):
+    """Pharmacological profile for a solid-dose drug — one record per drug name,
+    shared across all stores. Populated by the §DE enrichment script (Gemini
+    3.1 Flash-Lite, no grounding). Linked to Memory Base Product rows via the
+    drug_profile FK on Product."""
+
+    name = models.CharField(max_length=500, unique=True)
+
+    # Packaging
+    strips_per_pack   = models.PositiveSmallIntegerField(null=True, blank=True)
+    tablets_per_strip = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    # Medical info — Arabic
+    side_effects      = models.TextField(blank=True)
+    indications       = models.TextField(blank=True)
+    precautions       = models.TextField(blank=True)
+    contraindications = models.TextField(blank=True)
+    drug_interactions = models.TextField(blank=True)
+
+    # Enrichment meta
+    enriched_at  = models.DateTimeField(auto_now_add=True)
+    needs_review = models.BooleanField(default=False,
+        help_text="Flagged by enrichment script for suspicious packaging values")
+    model_used   = models.CharField(max_length=80, blank=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+# --- 4. PRODUCT & VARIANTS ---
 class Product(TimestampedModel, SoftDeleteModel):
     class ProductType(models.TextChoices):
         STANDARD = 'STANDARD', _('Standard Product')
@@ -235,6 +268,12 @@ class Product(TimestampedModel, SoftDeleteModel):
     deleted_by    = models.ForeignKey(
         'users.User', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='deleted_products',
+    )
+
+    # §DE: link to the canonical drug profile (null for non-drug products)
+    drug_profile = models.ForeignKey(
+        DrugProfile, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='products',
     )
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
