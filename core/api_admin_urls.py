@@ -9,6 +9,7 @@ from .api_admin import (
 )
 from .api_admin_trash import AdminTrashListView, AdminTrashRestoreView
 from .api_admin_isolation import AdminIsolationAuditView
+from .api_admin_stats import AdminApiStatsView
 
 router = DefaultRouter()
 router.register(r'stores',         AdminStoreViewSet,        basename='admin-store')
@@ -26,6 +27,7 @@ urlpatterns = [
     path('trash/',         AdminTrashListView.as_view(),    name='admin-trash-list'),
     path('trash/restore/', AdminTrashRestoreView.as_view(), name='admin-trash-restore'),
     path('isolation-check/', AdminIsolationAuditView.as_view(), name='admin-isolation-check'),
+    path('api-stats/',        AdminApiStatsView.as_view(),       name='admin-api-stats'),
     path('commands/sessions/',    AdminSessionsView.as_view(),        name='admin-commands-sessions'),
     path('commands/user-logout/', AdminUserForceLogoutView.as_view(), name='admin-commands-user-logout'),
     path('', include(router.urls)),
