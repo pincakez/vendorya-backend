@@ -77,6 +77,136 @@ class StoreLogoView(APIView):
                          'logo_dark_url':  serializer.data['logo_dark_url']})
 
 
+class LockscreenLogoView(APIView):
+    """PATCH /api/core/lockscreen/logo/ — upload or clear the lock-screen logo. Owner only."""
+    permission_classes = [IsAuthenticated, IsOwner]
+
+    def patch(self, request):
+        if not request.user.store:
+            return _NO_STORE
+        s = request.user.store.settings
+        if request.data.get('clear') in (True, 'true', '1'):
+            if s.lock_logo:
+                s.lock_logo.delete(save=False)
+            s.lock_logo = None
+        if 'lock_logo' in request.FILES:
+            if s.lock_logo:
+                s.lock_logo.delete(save=False)
+            s.lock_logo = request.FILES['lock_logo']
+        s.save(update_fields=['lock_logo'])
+        url = request.build_absolute_uri(s.lock_logo.url) if s.lock_logo else None
+        return Response({'lock_logo_url': url})
+
+
+class LockscreenPinView(APIView):
+    """POST /api/core/lockscreen/pin/ — set, change, verify, or clear the lock-screen PIN."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.contrib.auth.hashers import make_password, check_password
+        if not request.user.store:
+            return _NO_STORE
+        s = request.user.store.settings
+        action = request.data.get('action')
+
+        if action == 'verify':
+            pin = str(request.data.get('pin', ''))
+            if not s.lock_pin_hash:
+                return Response({'valid': True})
+            return Response({'valid': check_password(pin, s.lock_pin_hash)})
+
+        if action == 'set':
+            new_pin = str(request.data.get('new_pin', ''))
+            if not (4 <= len(new_pin) <= 6 and new_pin.isdigit()):
+                return Response({'error': 'PIN must be 4–6 digits.'}, status=400)
+            if s.lock_pin_hash:
+                old_pin  = str(request.data.get('old_pin', ''))
+                password = request.data.get('password', '')
+                if old_pin and check_password(old_pin, s.lock_pin_hash):
+                    pass
+                elif password and request.user.check_password(password):
+                    pass
+                else:
+                    return Response({'error': 'Provide the current PIN or your account password.'}, status=400)
+            s.lock_pin_hash = make_password(new_pin)
+            s.save(update_fields=['lock_pin_hash'])
+            return Response({'ok': True})
+
+        if action == 'clear':
+            old_pin  = str(request.data.get('old_pin', ''))
+            password = request.data.get('password', '')
+            if s.lock_pin_hash:
+                if not (
+                    (old_pin  and check_password(old_pin, s.lock_pin_hash)) or
+                    (password and request.user.check_password(password))
+                ):
+                    return Response({'error': 'Incorrect PIN or password.'}, status=400)
+            s.lock_pin_hash = ''
+            s.save(update_fields=['lock_pin_hash'])
+            return Response({'ok': True})
+
+        return Response({'error': 'Unknown action.'}, status=400)
+
+
+class LockscreenFactsView(APIView):
+    """POST /api/core/lockscreen/facts/ — generate facts via Gemini and save to bank. Owner only."""
+    permission_classes = [IsAuthenticated, IsOwner]
+
+    def post(self, request):
+        import json, re
+        from django.conf import settings as django_settings
+        try:
+            from google import genai
+            from google.genai import types as gtypes
+        except ImportError:
+            return Response({'error': 'google-genai not installed.'}, status=500)
+
+        if not request.user.store:
+            return _NO_STORE
+        s     = request.user.store.settings
+        stype = request.user.store.store_type
+
+        topic_map = {
+            'GENERAL':     'retail and shopping',
+            'PHARMACY':    'pharmacy, medicines, health, and the human body',
+            'GROCERY':     'food, cooking, groceries, and nutrition',
+            'ELECTRONICS': 'electronics, technology, and inventions',
+            'CLOTHING':    'fashion, clothing, textiles, and style',
+        }
+        topic = topic_map.get(stype, 'retail and business')
+
+        api_key = getattr(django_settings, 'GOOGLE_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', '')
+        if not api_key:
+            return Response({'error': 'GOOGLE_API_KEY not configured.'}, status=500)
+
+        client = genai.Client(api_key=api_key)
+        prompt = (
+            f"Generate 20 fascinating, surprising, or funny \"did you know\" / "
+            f"\"how old were you when you found out\" style facts about {topic}. "
+            "Each fact must be short (1-2 sentences max). "
+            "Return ONLY a JSON array — no markdown, no explanation. "
+            "Each element: {\"en\": \"<English fact>\", \"ar\": \"<Arabic translation, fluent Egyptian Arabic, Western numerals only>\"}. "
+            "Make them genuinely surprising and fun."
+        )
+        try:
+            resp = client.models.generate_content(
+                model='gemini-2.5-flash-lite',
+                contents=prompt,
+                config=gtypes.GenerateContentConfig(temperature=0.9),
+            )
+            text  = re.sub(r'```(?:json)?', '', resp.text or '').strip()
+            match = re.search(r'\[.*\]', text, re.DOTALL)
+            if not match:
+                return Response({'error': 'Bad AI response.'}, status=500)
+            facts = json.loads(match.group())
+            clean = [f for f in facts if isinstance(f, dict) and 'en' in f and 'ar' in f]
+            s.lock_facts_bank = clean
+            s.save(update_fields=['lock_facts_bank'])
+            return Response({'facts': clean, 'count': len(clean)})
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
 class StoreSettingsView(APIView):
     """GET = manager+, PATCH = owner only."""
 

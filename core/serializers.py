@@ -43,7 +43,7 @@ class StoreSerializer(serializers.ModelSerializer):
                   'phone_number', 'whatsapp_number', 'city', 'country',
                   'address_line', 'email', 'website', 'fb_page', 'instagram',
                   'logo_light_url', 'logo_dark_url']
-        read_only_fields = ['id', 'plan', 'is_active', 'store_code', 'store_type',
+        read_only_fields = ['id', 'plan', 'is_active', 'store_code',
                             'logo_light_url', 'logo_dark_url']
 
 
@@ -90,6 +90,19 @@ class BranchSerializer(serializers.ModelSerializer):
 
 
 class StoreSettingsSerializer(serializers.ModelSerializer):
+    lock_logo_url = serializers.SerializerMethodField()
+    lock_pin_set  = serializers.SerializerMethodField()
+
+    def get_lock_logo_url(self, obj):
+        if not obj.lock_logo:
+            return None
+        request = self.context.get('request')
+        url = obj.lock_logo.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_lock_pin_set(self, obj):
+        return bool(obj.lock_pin_hash)
+
     class Meta:
         model = StoreSettings
         fields = [
@@ -115,7 +128,9 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'pos_top_selling_period', 'pos_top_selling_category', 'pos_top_selling_limit',
             'pos_cart_display_fields', 'pos_clock_24h',
             'default_info_sound', 'default_warning_sound', 'default_alert_sound',
+            'lock_timeout_minutes', 'lock_facts_bank', 'lock_logo_url', 'lock_pin_set',
         ]
+        read_only_fields = ['lock_logo_url', 'lock_pin_set']
 
     def validate_pos_cart_display_fields(self, value):
         if not isinstance(value, list):

@@ -470,6 +470,20 @@ class StoreSettings(TimestampedModel):
     default_warning_sound = models.CharField(max_length=10, default='s02')
     default_alert_sound   = models.CharField(max_length=10, default='s03')
 
+    # 12. Lock Screen
+    lock_timeout_minutes = models.PositiveSmallIntegerField(
+        _("Lock Screen Timeout (minutes)"), default=0,
+        help_text=_("Show a lock screen after this many minutes idle. 0 = disabled."))
+    lock_pin_hash = models.CharField(
+        _("Lock Screen PIN (hashed)"), max_length=128, blank=True,
+        help_text=_("Hashed lock-screen PIN (4–6 digits). Never exposed via API."))
+    lock_logo = models.ImageField(
+        _("Lock Screen Logo"), upload_to='lock_logos/', null=True, blank=True,
+        help_text=_("Logo shown on the lock screen. PNG with transparency recommended."))
+    lock_facts_bank = models.JSONField(
+        _("Lock Screen Facts Bank"), default=list, blank=True,
+        help_text=_("List of {en, ar} fact objects rotated on the lock screen."))
+
     def __str__(self):
         return f"Settings for {self.store.name}"
 
