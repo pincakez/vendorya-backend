@@ -149,15 +149,49 @@ class LockscreenPinView(APIView):
 
 
 class LockscreenFactsView(APIView):
-    """POST /api/core/lockscreen/facts/ — DISABLED. Was Gemini-powered AI fact generation;
-    the AI API was removed in s152. Rebuild tracked in TODO 'API for vendorya ai'. Owner only."""
+    """Lock-screen info bank — CSV-driven (the owner writes it). Owner only.
+    GET  → download a CSV template (single column: lockinfo).
+    POST → upload a CSV with a 'lockinfo' column; each non-empty row becomes one
+           lock-screen line. Replaces the whole bank. Empty file = empty bank."""
     permission_classes = [IsAuthenticated, IsOwner]
 
+    def get(self, request):
+        import csv, io
+        from django.http import HttpResponse
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(['lockinfo'])
+        w.writerow(['Write one line here — it will show on the lock screen.'])
+        w.writerow(['اكتب سطرًا هنا وسيظهر على شاشة القفل.'])
+        resp = HttpResponse(buf.getvalue(), content_type='text/csv; charset=utf-8')
+        resp['Content-Disposition'] = 'attachment; filename="lockscreen_template.csv"'
+        return resp
+
     def post(self, request):
-        return Response(
-            {'error': 'AI fact generation is disabled — Vendorya has no AI API configured.'},
-            status=503,
-        )
+        import csv, io
+        if not request.user.store:
+            return _NO_STORE
+        f = request.FILES.get('file')
+        if not f:
+            return Response({'error': 'No CSV file uploaded.'}, status=400)
+        try:
+            text = f.read().decode('utf-8-sig')
+        except (UnicodeDecodeError, AttributeError):
+            return Response({'error': 'File must be a UTF-8 CSV.'}, status=400)
+        reader = csv.DictReader(io.StringIO(text))
+        cols = [c.strip().lower() for c in (reader.fieldnames or [])]
+        if 'lockinfo' not in cols:
+            return Response({'error': "CSV must have a column named 'lockinfo'."}, status=400)
+        key = reader.fieldnames[cols.index('lockinfo')]
+        facts = []
+        for row in reader:
+            v = (row.get(key) or '').strip()
+            if v:
+                facts.append(v)
+        s = request.user.store.settings
+        s.lock_facts_bank = facts
+        s.save(update_fields=['lock_facts_bank'])
+        return Response({'facts': facts, 'count': len(facts)})
 
 
 class NavSearchView(APIView):
