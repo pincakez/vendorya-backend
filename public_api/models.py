@@ -45,6 +45,13 @@ class APIKey(TimestampedModel):
                                   help_text=_("SHA-256 of the full raw key. The raw key is never stored."))
     scopes     = models.JSONField(_("Scopes"), default=list, blank=True)
 
+    owner_name      = models.CharField(_("Owner name"), max_length=120, blank=True, default='',
+                                       help_text=_("Person or org this key is issued to."))
+    max_rpd         = models.PositiveIntegerField(_("Max requests/day"), null=True, blank=True)
+    max_rpm         = models.PositiveIntegerField(_("Max requests/min"), null=True, blank=True)
+    penalty_minutes = models.PositiveIntegerField(_("Penalty (minutes)"), default=0,
+                                                  help_text=_("Lockout duration after rate-limit hit."))
+
     is_active    = models.BooleanField(_("Active"), default=True)
     expires_at   = models.DateTimeField(_("Expires at"), null=True, blank=True,
                                         help_text=_("Null = never expires."))
