@@ -77,7 +77,6 @@ INSTALLED_APPS = [
     'smart_analysis',
     'billing',
     'notifications',
-    'admin_ai',
     'reports',
     'pos',
     'services',

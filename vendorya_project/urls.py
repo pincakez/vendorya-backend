@@ -33,7 +33,6 @@ urlpatterns = [
     path('api/admin/',         include('core.api_admin_urls')),
     path('api/admin/auth/',    include('users.admin_auth_urls')),
     path('api/admin/billing/', include('billing.admin_urls')),
-    path('api/admin/ai/',      include('admin_ai.urls')),
     path('api/admin/alerts/',  include('notifications.admin_urls')),
 
     # Tenant billing + notifications

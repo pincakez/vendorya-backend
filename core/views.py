@@ -149,62 +149,15 @@ class LockscreenPinView(APIView):
 
 
 class LockscreenFactsView(APIView):
-    """POST /api/core/lockscreen/facts/ — generate facts via Gemini and save to bank. Owner only."""
+    """POST /api/core/lockscreen/facts/ — DISABLED. Was Gemini-powered AI fact generation;
+    the AI API was removed in s152. Rebuild tracked in TODO 'API for vendorya ai'. Owner only."""
     permission_classes = [IsAuthenticated, IsOwner]
 
     def post(self, request):
-        import json, re
-        from django.conf import settings as django_settings
-        try:
-            from google import genai
-            from google.genai import types as gtypes
-        except ImportError:
-            return Response({'error': 'google-genai not installed.'}, status=500)
-
-        if not request.user.store:
-            return _NO_STORE
-        s     = request.user.store.settings
-        stype = request.user.store.store_type
-
-        topic_map = {
-            'GENERAL':     'retail and shopping',
-            'PHARMACY':    'pharmacy, medicines, health, and the human body',
-            'GROCERY':     'food, cooking, groceries, and nutrition',
-            'ELECTRONICS': 'electronics, technology, and inventions',
-            'CLOTHING':    'fashion, clothing, textiles, and style',
-        }
-        topic = topic_map.get(stype, 'retail and business')
-
-        api_key = getattr(django_settings, 'GOOGLE_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', '')
-        if not api_key:
-            return Response({'error': 'GOOGLE_API_KEY not configured.'}, status=500)
-
-        client = genai.Client(api_key=api_key)
-        prompt = (
-            f"Generate 20 fascinating, surprising, or funny \"did you know\" / "
-            f"\"how old were you when you found out\" style facts about {topic}. "
-            "Each fact must be short (1-2 sentences max). "
-            "Return ONLY a JSON array — no markdown, no explanation. "
-            "Each element: {\"en\": \"<English fact>\", \"ar\": \"<Arabic translation, fluent Egyptian Arabic, Western numerals only>\"}. "
-            "Make them genuinely surprising and fun."
+        return Response(
+            {'error': 'AI fact generation is disabled — Vendorya has no AI API configured.'},
+            status=503,
         )
-        try:
-            resp = client.models.generate_content(
-                model='gemini-2.5-flash-lite',
-                contents=prompt,
-                config=gtypes.GenerateContentConfig(temperature=0.9),
-            )
-            text  = re.sub(r'```(?:json)?', '', resp.text or '').strip()
-            match = re.search(r'\[.*\]', text, re.DOTALL)
-            if not match:
-                return Response({'error': 'Bad AI response.'}, status=500)
-            facts = json.loads(match.group())
-            clean = [f for f in facts if isinstance(f, dict) and 'en' in f and 'ar' in f]
-            s.lock_facts_bank = clean
-            s.save(update_fields=['lock_facts_bank'])
-            return Response({'facts': clean, 'count': len(clean)})
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
 
 
 class NavSearchView(APIView):
