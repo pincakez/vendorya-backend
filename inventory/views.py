@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.utils import timezone
@@ -12,7 +13,7 @@ from rest_framework.response import Response
 from users.permissions import RoleScopedPermission, IsManagerOrAbove, IsAdminOrAbove
 from .models import (
     Product, Category, Supplier, AttributeDefinition, ProductVariant, Tax,
-    StockAdjustment, StockTransfer, ProductMedia,
+    ProductAttribute, StockAdjustment, StockTransfer, ProductMedia,
     StorageLocation, StorageStock, StorageMovement,
 )
 from .serializers import (
@@ -611,6 +612,83 @@ class ProductViewSet(viewsets.ModelViewSet):
         no_history = (store_history and len(results) == 0)
         serializer = ProductListSerializer(results, many=True, context={'request': request})
         return Response({'results': serializer.data, 'no_history': no_history})
+
+    # strength tokens to drop when matching on ingredient NAME ("Acetazolamide 250 mg"
+    # → "Acetazolamide"). Only number+unit pairs are removed, so bare names are untouched.
+    _STRENGTH_RE = re.compile(r'\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|gm|g|ml|iu|units?|%)\b', re.I)
+    _AR_RE = re.compile(r'[؀-ۿ]')
+
+    @action(detail=False, methods=['get'], url_path='alternatives')
+    def alternatives(self, request):
+        """Same-active-ingredient discovery for the /sameing and /sametrade search flags.
+
+        - mode=sametrade: q IS the active ingredient → list every product containing it.
+        - mode=sameing:   q is a TRADE NAME → resolve it to a product, read its active
+          ingredient, strip the strength, then run the same containment search.
+
+        Scope: pos=1 → STORE inventory, in-stock only (the sell counter — out-of-stock
+        substitution). Otherwise the Memory Base reference catalog (no stock filter).
+        Arabic query → match the Arabic ingredient (active_ing_ar).
+
+        Matching is a case-insensitive CONTAINS on the ingredient NAME; strength is
+        shown per row but never filters (a 250mg brand still surfaces for a 500mg search).
+        Returns {results: [...], ingredient: "<resolved ingredient>"}.
+
+        ponytail: CONTAINS on raw free-text — spelling variants ("cystiene"/"cysteine")
+        and A+B combos won't group perfectly. Data-quality ceiling; the human picks from
+        the list. Upgrade path: a normalized ingredient FK when §DE enrichment lands.
+        """
+        q = (request.query_params.get('q') or '').strip()
+        mode = (request.query_params.get('mode') or 'sameing').lower()
+        pos_mode = (request.query_params.get('pos') or '').lower() in ('1', 'true')
+        if len(q) < 2:
+            return Response({'results': [], 'ingredient': ''})
+
+        store = request.user.store
+        is_ar = bool(self._AR_RE.search(q))
+        ing_key = 'active_ing_ar' if is_ar else 'active_ing'
+
+        # /sameing resolves the trade name against the FULL catalog (store + memory base,
+        # ignoring stock) — the searched brand is often the out-of-stock one.
+        if mode == 'sameing':
+            # Resolve the trade name against the full catalog. Also match the Arabic
+            # brand attribute (brand_ar) so an Arabic-typed brand still resolves — the
+            # product `name` itself is English.
+            src = (Product.objects.filter(store=store)
+                   .filter(Q(name__istartswith=q) | Q(name__icontains=q) |
+                           Q(variants__attributes__definition__key='brand_ar',
+                             variants__attributes__value__icontains=q))
+                   .order_by('name').first())
+            ingredient = ''
+            if src:
+                pa = (ProductAttribute.objects
+                      .filter(variant__product=src, definition__key=ing_key)
+                      .exclude(value='').first())
+                if pa:
+                    ingredient = self._STRENGTH_RE.sub('', pa.value).strip(' +-.,')
+            if not ingredient:
+                return Response({'results': [], 'ingredient': ''})
+        else:  # sametrade — q is the ingredient itself
+            ingredient = q
+
+        base = (Product.objects.filter(store=store)
+                .select_related('category', 'drug_profile', 'supplier')
+                .prefetch_related(
+                    'variants', 'variants__stock_levels', 'variants__selling_units',
+                    'variants__attributes', 'variants__attributes__definition',
+                ))
+        if pos_mode:
+            base = base.filter(source=Product.Source.STORE).exclude(hide_from_pos=True)
+        else:
+            base = base.filter(source=Product.Source.MEMORY_BASE)
+
+        matches = list(base.filter(
+            variants__attributes__definition__key=ing_key,
+            variants__attributes__value__icontains=ingredient,
+        ).distinct().order_by('name')[:100])
+
+        serializer = ProductListSerializer(matches, many=True, context={'request': request})
+        return Response({'results': serializer.data, 'ingredient': ingredient})
 
 
 class ProductVariantViewSet(viewsets.ModelViewSet):
