@@ -434,6 +434,17 @@ class StoreSettings(TimestampedModel):
         _("POS 24-hour clock"), default=True,
         help_text=_("POS topbar clock format: ON = 24-hour (13:05), OFF = 12-hour with AM/PM (1:05 PM)."),
     )
+    pos_respect_mb_units = models.BooleanField(
+        _("POS respects Memory Base packaging"), default=True,
+        help_text=_("When ON, a product linked to a Memory Base drug auto-fills its "
+                    "Strip/Pack unit factors from the enriched packaging values."),
+    )
+    pos_tier_count = models.PositiveSmallIntegerField(
+        _("POS unit tiers"), default=3,
+        help_text=_("Store-wide default number of POS selling tiers for multi-unit items. "
+                    "3 = Pack+Strip+Unit, 2 = Pack+Strip. Pack (biggest) is always shown; "
+                    "overridable per product."),
+    )
 
     # 9. Services Module
     service_types = models.JSONField(

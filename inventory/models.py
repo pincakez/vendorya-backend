@@ -443,6 +443,10 @@ class ProductUnit(TimestampedModel, SoftDeleteModel):
     sell_price = models.DecimalField(_("Sell Price"), max_digits=12, decimal_places=2, default=0.00)
     barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
     sort_order = models.PositiveSmallIntegerField(default=0)
+    # Per-product "show this tier in the POS picker". Default True keeps every
+    # existing extra unit sellable; the product edit modal can turn a Strip off
+    # without losing its factor/price (vs soft-deleting + recreating the row).
+    sellable = models.BooleanField(_("Sellable in POS"), default=True)
 
     class Meta:
         ordering = ['sort_order', 'name']

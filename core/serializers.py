@@ -127,6 +127,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'field_visibility',
             'pos_top_selling_period', 'pos_top_selling_category', 'pos_top_selling_limit',
             'pos_cart_display_fields', 'pos_clock_24h',
+            'pos_respect_mb_units', 'pos_tier_count',
             'default_info_sound', 'default_warning_sound', 'default_alert_sound',
             'lock_timeout_minutes', 'lock_facts_bank', 'lock_logo_url', 'lock_pin_set',
         ]

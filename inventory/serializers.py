@@ -60,7 +60,7 @@ def build_selling_units(variant, product):
                 'barcode': u.barcode,
                 'is_base': False,
                 'is_weight': False,
-                'sellable': True,
+                'sellable': bool(getattr(u, 'sellable', True)),
             })
     return units
 
@@ -167,6 +167,9 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
     selling_units         = serializers.SerializerMethodField()
     sku_display           = serializers.SerializerMethodField()
     cost_display          = serializers.SerializerMethodField()
+    # Enriched packaging from the linked Memory Base drug (§MB-COLS columns + modal auto-fill)
+    strips_per_pack       = serializers.IntegerField(source='drug_profile.strips_per_pack', read_only=True)
+    tablets_per_strip     = serializers.IntegerField(source='drug_profile.tablets_per_strip', read_only=True)
 
     class Meta:
         model = Product
@@ -177,6 +180,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'default_variant_stock', 'selling_units', 'sku_display', 'hide_from_pos',
             'track_expiry', 'selling_mode', 'sell_base_unit',
             'category_l1', 'category_l2', 'category_l3', 'category_l4',
+            'strips_per_pack', 'tablets_per_strip',
         ]
 
     def _category_path(self, obj):
@@ -298,6 +302,9 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     media          = ProductMediaSerializer(many=True, read_only=True)
     selling_units  = serializers.SerializerMethodField()
     batches        = serializers.SerializerMethodField()
+    # Enriched packaging from the linked Memory Base drug — feeds the edit-modal auto-fill
+    strips_per_pack   = serializers.IntegerField(source='drug_profile.strips_per_pack', read_only=True)
+    tablets_per_strip = serializers.IntegerField(source='drug_profile.tablets_per_strip', read_only=True)
 
     def get_image_url(self, obj):
         # Cover thumbnail: legacy single image first, else the first gallery photo
@@ -410,6 +417,9 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                 'sell_price': u.get('sell_price') or 0,
                 'barcode': u.get('barcode') or None,
                 'sort_order': u.get('sort_order') or 0,
+                # Per-product "show this tier in the POS picker"; default True keeps
+                # older clients that don't send the flag fully sellable.
+                'sellable': bool(u.get('sellable', True)),
             }
             if uid:
                 ProductUnit.objects.filter(id=uid, variant=variant).update(**defaults)
