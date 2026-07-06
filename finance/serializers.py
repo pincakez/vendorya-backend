@@ -307,6 +307,7 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
             base_price=base, cost_price=base, sell_price=retail,
             attributes=attributes or [],
             extra_product_fields={'track_expiry': True} if track_expiry else None,
+            auto_mb_units=True,   # §MU-MB: seed Strip/Pack tiers from the drug reference
         )
         return product.variants.first()
 

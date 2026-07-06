@@ -13,12 +13,18 @@ from .models import Product, ProductVariant, ProductAttribute, AttributeDefiniti
 def create_product_with_variant(store, *, name, supplier=None, category=None,
                                 base_price=0, cost_price=0, sell_price=0,
                                 attributes=None, reorder_level=None,
-                                description='', extra_product_fields=None):
+                                description='', extra_product_fields=None,
+                                auto_mb_units=False):
     """Create a Product and its default variant in one atomic step.
 
     - `cost_price` → variant.cost_price (what you paid)
     - `sell_price` → variant.sell_price (retail). Falls back to base_price when 0.
     - `attributes` → list of {definition|definition_id, value} on the default variant.
+    - `auto_mb_units` → §MU-MB: when True (the New Purchase onboarding flow, which has
+      no selling-units UI), silently link the product to its drug reference by name and
+      seed its Strip/Pack tiers from the enriched packaging — mirroring the front-end
+      auto-fill the New Product modal does. Gated on the store's respect-MB + multi-unit
+      settings.
     Returns the Product. Raises ValueError from SKU generation if `supplier` is
     missing / unlocked (caller decides how to handle that).
     """
@@ -64,7 +70,59 @@ def create_product_with_variant(store, *, name, supplier=None, category=None,
                 register_memory_base_entry(store, name=name, attributes=attributes)
     except Exception:
         pass
+
+    # §MU-MB: seed POS packaging tiers from the drug reference for the New Purchase
+    # flow. Best-effort + isolated — never break product creation over it.
+    if auto_mb_units:
+        try:
+            apply_mb_units(store, product)
+        except Exception:
+            pass
     return product
+
+
+def apply_mb_units(store, product):
+    """Link a freshly-created product to its DrugProfile (matched by name) and, when
+    the store opts in (pos_respect_mb_units + multi-unit on), build its Strip + Pack
+    selling-unit tiers from the enriched packaging. This is the New Purchase equivalent
+    of the New Product modal's front-end auto-fill (that flow has no units UI). No-op
+    when there's no name match, the store hasn't opted in, packaging data is missing,
+    or the variant already has selling units.
+    """
+    from .models import DrugProfile, ProductUnit, is_multi_unit_enabled
+
+    dp = DrugProfile.objects.filter(name__iexact=(product.name or '').strip()).first()
+    if not dp:
+        return
+    if product.drug_profile_id is None:
+        product.drug_profile = dp
+        product.save(update_fields=['drug_profile'])
+
+    settings = getattr(store, 'settings', None)
+    if not settings or not getattr(settings, 'pos_respect_mb_units', False):
+        return
+    if not is_multi_unit_enabled(store.id):
+        return
+
+    tps = dp.tablets_per_strip or 0
+    spp = dp.strips_per_pack or 0
+    if tps <= 0 or spp <= 0:
+        return
+
+    variant = product.variants.first()
+    if not variant or variant.selling_units.exists():
+        return
+
+    tier_names = settings.unit_tier_names or ['Strip', 'Pack']
+    strip_name = tier_names[0] if len(tier_names) > 0 else 'Strip'
+    pack_name  = tier_names[1] if len(tier_names) > 1 else 'Pack'
+    ProductUnit.objects.create(variant=variant, name=strip_name, factor=tps,       sell_price=0, sort_order=1)
+    ProductUnit.objects.create(variant=variant, name=pack_name,  factor=tps * spp, sell_price=0, sort_order=2)
+
+    # 2 tiers → the base unit isn't individually sellable; 3 tiers → it is.
+    tier_count = getattr(settings, 'pos_tier_count', 3) or 3
+    product.sell_base_unit = tier_count >= 3
+    product.save(update_fields=['sell_base_unit'])
 
 
 def register_memory_base_entry(store, *, name, attributes=None):
