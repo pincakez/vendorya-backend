@@ -5,7 +5,7 @@
 <h1 align="center">Vendorya</h1>
 
 <p align="center">
-  <strong>A multi-tenant retail ERP & Point-of-Sale platform — inventory, finance, POS, reporting, and an AI co-admin, in one system.</strong>
+  <strong>A multi-tenant retail ERP & Point-of-Sale platform — inventory, finance, POS, reporting<del>, and an AI co-admin</del>, in one system.</strong>
 </p>
 
 <p align="center">
@@ -15,12 +15,15 @@
   <img src="https://img.shields.io/badge/Vite-build-646CFF?logo=vite&logoColor=white" alt="Vite" />
   <img src="https://img.shields.io/badge/Tailwind-v4-38BDF8?logo=tailwindcss&logoColor=white" alt="Tailwind v4" />
   <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL" />
+  <!-- hidden 2026-10-05 by Adam (Gcademy's Claude) for Yakot: all AI/Gemini code + the pgvector RAG were removed in s152.
   <img src="https://img.shields.io/badge/pgvector-RAG-4169E1?logo=postgresql&logoColor=white" alt="pgvector" />
   <img src="https://img.shields.io/badge/Gemini-AI%20admin-8E75FF?logo=googlegemini&logoColor=white" alt="Gemini" />
+  -->
 </p>
 
 <p align="center">
-  <a href="https://vendorya.gatesinnov.com"><strong>Live Demo →</strong></a>
+  <!-- gatesinnov.com is dead since 2026-07-26; moved to gates-tech.com (Adam for Yakot, 2026-10-05) -->
+  <a href="https://vendorya.gates-tech.com"><strong>Live Demo →</strong></a>
 </p>
 
 ---
@@ -45,9 +48,9 @@ It is built for real retail accounting: **soft deletes everywhere**, **atomic st
 | 🖥️ **POS** | Full terminal: product search, top-selling panel, favorites, cart, per-item & header discounts, hold/resume, Agel (credit) selling, cash-change calc, receipt overlay, keyboard shortcuts, idempotent checkout |
 | 💵 **Finance** | Sales invoices (draft→posted→void) with per-line discount, partial payments, purchases (draft→received) with barcode label printing, expenses, work shifts + cash drawer, returns/refunds with restock |
 | 👥 **People** | Customers (live AR via `customer_outstanding()`), suppliers (computed balance), staff (role-based) |
-| 📊 **Reports** | 9 endpoints: sales, profit margin, A/R & A/P aging, reconciling P&L, expenses, stock ledger, cashier performance, tax — all exportable to **CSV / Excel / PDF** |
+| 📊 **Reports** | ~~9~~ 15 endpoints (`show_urls`, 2026-10-05 — adds expiry (+ its scan) and 4 storage reports; — Adam (Gcademy's Claude) for Yakot, 2026-10-05): sales, profit margin, A/R & A/P aging, reconciling P&L, expenses, stock ledger, cashier performance, tax — all exportable to **CSV / Excel / PDF** |
 | 🔐 **Auth & security** | JWT (rotating refresh, httpOnly cookie), role-scoped permissions, account lockout, login throttle, optional TOTP 2FA, IP allowlist, idle-logout, 64-byte signing key |
-| 🤖 **AI co-admin** | Gemini assistant with **48 function-calling tools**, pgvector RAG knowledge base, streaming chat panel, agentic tool-loop, two-warning protocol for destructive actions |
+| ~~🤖 **AI co-admin**~~ | **Removed in s152** — — Adam (Gcademy's Claude) for Yakot, 2026-10-05. ~~Gemini assistant with **48 function-calling tools**, pgvector RAG knowledge base, streaming chat panel, agentic tool-loop, two-warning protocol for destructive actions~~ |
 | 🏷️ **Label printing** | Configurable `LabelPreset` model (width/height/fields), bulk print from purchase receipts via JsBarcode SVG + CSS `@page` sizing |
 | 💳 **Billing** | Subscription plans, tenant subscriptions, quota enforcement, billing invoices, manual run-cycle button |
 | 🔔 **Notifications** | Priority-based in-app inbox with dispatcher, alerts center, user preferences + sounds |
@@ -73,6 +76,9 @@ It is built for real retail accounting: **soft deletes everywhere**, **atomic st
         │                                                            │
         │  core · users · inventory · finance · pos · reports        │
         │  billing · notifications · admin_ai · localization         │
+        │  (2026-10-05: admin_ai + localization are GONE; the apps   │
+        │   are core users inventory finance smart_analysis billing  │
+        │   notifications reports pos services public_api search)    │
         └───────────────┬───────────────────────────┬────────────────┘
                         │                           │
                         ▼                           ▼
@@ -81,8 +87,9 @@ It is built for real retail accounting: **soft deletes everywhere**, **atomic st
               │  + pgvector HNSW │         │  (AI admin tools)   │
               └──────────────────┘         └────────────────────┘
 ```
+> ⚠️ 2026-10-05: the Gemini box is gone (AI removed in s152); search uses **Typesense** (`search` app). — Adam (Gcademy's Claude) for Yakot, 2026-10-05
 
-**Monorepo, two deploy targets.** Local development lives in `~/vendorya/`; ships to GitHub as two repositories via `git subtree`:
+**Monorepo, two deploy targets.** Local development lives in ~~`~/vendorya/`~~ `~/vendorya-dev/` (— Adam (Gcademy's Claude) for Yakot, 2026-10-05); ships to GitHub as two repositories via `git subtree`:
 
 ```
 ~/vendorya/
@@ -94,13 +101,13 @@ It is built for real retail accounting: **soft deletes everywhere**, **atomic st
 └── DEPLOY.md             production deployment reference
 ```
 
-In production, Django serves the built Vue bundle from `vendorya-frontend/dist/` on AWS EC2, behind Cloudflare (Full SSL mode).
+In production, Django serves the built Vue bundle from `vendorya-frontend/dist/` on ~~AWS EC2~~ an OVH VPS (gunicorn), behind Cloudflare (~~Full SSL mode~~ Full (strict) with a Cloudflare Origin certificate) — — Adam (Gcademy's Claude) for Yakot, 2026-10-05.
 
 ---
 
 ## ✦ Tech Stack
 
-**Backend** — Django 6 · Django REST Framework · SimpleJWT (rotating refresh, httpOnly cookie) · PostgreSQL 18 · `pgvector` (HNSW cosine) · `django-axes` · `django-otp` (TOTP 2FA) · `google-genai` (Gemini SDK).
+**Backend** — Django 6 · Django REST Framework · SimpleJWT (rotating refresh, httpOnly cookie) · PostgreSQL 18 · `pgvector` (HNSW cosine) · `django-axes` · `django-otp` (TOTP 2FA) · ~~`google-genai` (Gemini SDK)~~ (still pinned in `requirements.txt` but unused since s152) · `typesense` (search) — — Adam (Gcademy's Claude) for Yakot, 2026-10-05.
 
 **Frontend** — Vue 3 (Composition API) · Vite · Pinia · Vue Router 4 · Tailwind CSS v4 · Lucide icons · Axios · date-fns · JsBarcode · `xlsx` / `jspdf` / `jspdf-autotable` (report exports) · `vite-plugin-pwa`.
 
@@ -174,10 +181,14 @@ vendorya-backend/
 ├── inventory/       Products, Variants, StockLevels, Categories (4-tier tree), Suppliers, Attributes, Taxes, Import/Export engine
 ├── finance/         SalesInvoice (per-line discount), Payment, PurchaseInvoice, Expense, WorkShift, RefundInvoice
 ├── pos/             POSFavoriteItem, top-selling endpoint, apply-pos-settings broadcast
-├── reports/         9 read-only reporting endpoints
+├── reports/         9 read-only reporting endpoints  (15 now — 2026-10-05)
 ├── billing/         SubscriptionPlan, Subscription, BillingInvoice, quota enforcement
 ├── notifications/   Priority-based in-app inbox, dispatcher
-├── admin_ai/        Gemini service, 48-tool registry, pgvector RAG, chat SSE, model cache
+├── admin_ai/        Gemini service, 48-tool registry, pgvector RAG, chat SSE, model cache   ← REMOVED in s152
+├── services/        service / repair desk tickets          ← added 2026-10-05 (Adam for Yakot)
+├── smart_analysis/  saved table layouts (column presets)   ← added 2026-10-05
+├── public_api/      per-store API keys + scopes            ← added 2026-10-05
+├── search/          Typesense search                       ← added 2026-10-05
 └── vendorya_project/ settings + root urls
 
 vendorya-frontend/
@@ -190,7 +201,7 @@ vendorya-frontend/
 │   │   ├── people/       Customers, Suppliers, Staff
 │   │   ├── reports/      9 report views + ReportFilters/ReportTable
 │   │   ├── settings/     8-tab Settings page + Taxes, Profile, Security, Billing, Notifications, POS sub-pages
-│   │   ├── admin/        Dashboard, Stores, Branches, Users, Activity, Plans, Subscriptions, AI, Misc, Alerts, Trash, IsolationCheck
+│   │   ├── admin/        Dashboard, Stores, Branches, Users, Activity, Plans, Subscriptions, AI, Misc, Alerts, Trash, IsolationCheck  (2026-10-05: AI + Misc gone; also AuthSettings, Commands, Usage, Component/Widget Gallery)
 │   │   ├── pos/          (POS.vue at views/POS.vue + PaymentModal, DiscountModal, BranchPickerModal)
 │   │   └── print/        LabelPrint.vue
 │   ├── components/
@@ -251,10 +262,16 @@ sudo service postgresql start
 | `/api/inventory/` | Products, variants, categories, suppliers, attributes, taxes, adjustments, import/export |
 | `/api/finance/` | Invoices (with per-line discount), payments, purchases (+ label-data), expenses, shifts, returns |
 | `/api/pos/` | Top-selling products, favorites, POS settings broadcast |
-| `/api/reports/` | 9 Reports endpoints |
+| `/api/reports/` | ~~9~~ 15 report endpoints |
 | `/api/billing/` | Tenant subscription + invoices |
 | `/api/notifications/` | Inbox |
-| `/api/admin/…` | Sudo-only: stores, users, auth settings, billing, AI, trash, isolation audit |
+| `/api/admin/…` | Sudo-only: stores, users, auth settings, billing, ~~AI,~~ alerts, trash, isolation audit |
+| `/api/services/` | Service / repair desk tickets |
+| `/api/smart/` | Saved table layouts (presets) |
+| `/api/api-keys/` | Per-store API keys + scopes |
+| `/api/health/` | Public health check |
+
+> Rows above corrected/added 2026-10-05 from `manage.py show_urls` on dev (217 distinct `/api/` routes). Full list: `vendorya-backend/API_ENDPOINT.MD`. — Adam (Gcademy's Claude) for Yakot, 2026-10-05
 
 ---
 
@@ -268,14 +285,14 @@ sudo service postgresql start
 
 ## ✦ Roadmap
 
-- Customer / Supplier / Product detail pages (drill-down views)
+- ~~Customer / Supplier / Product detail pages (drill-down views)~~ built (CustomerDetail, SupplierDetail, ProductDetail views exist — — Adam (Gcademy's Claude) for Yakot, 2026-10-05)
 - Returns: time-window enforcement, restocking fee, store-credit vs cash-refund
 - Reorder levels per variant (currently a hardcoded threshold)
 - Billing nightly scheduler (manual "Run cycle now" button exists; automation is opt-in)
 - Transactional emails (SMTP / Postmark / SES — needs credentials)
 - Egypt ETA e-invoicing / Saudi ZATCA (legal threshold research first)
-- Full RTL CSS layout flip + bilingual invoices (AR + EN)
-- Public API + per-store API key control center
+- ~~Full RTL CSS layout flip +~~ bilingual invoices (AR + EN) — the Arabic UI shipped as a translation layer with NO RTL flip, by decision (`En_to_Ar_plan.MD`); the bilingual print documents are still open. — Adam (Gcademy's Claude) for Yakot, 2026-10-05
+- ~~Public API + per-store API key control center~~ built (`public_api` app, `/api/api-keys/`, 6 scopes — — Adam (Gcademy's Claude) for Yakot, 2026-10-05)
 
 See [`TODO.md`](TODO.md) for the full ordered backlog.
 
