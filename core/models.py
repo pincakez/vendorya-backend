@@ -342,9 +342,11 @@ class StoreSettings(TimestampedModel):
         ITEM    = 'ITEM',    _('Item')
         MODEL   = 'MODEL',   _('Model')
 
+    # Free text since s157 (§AUDIT B6) — the 4 values above stay valid and keep their translations.
     item_noun = models.CharField(
-        _("Items are called"), max_length=10,
-        choices=ItemNoun.choices, default=ItemNoun.NAME,
+        _("Items are called"), max_length=10, default=ItemNoun.NAME,
+        validators=[RegexValidator(r'^[A-Za-z0-9-]{1,10}$',
+                                   _("Use 1–10 letters, digits or '-' (no spaces)."))],
         help_text=_("Word used for a catalog item across the UI (display only)."))
 
     # Store-wide default name for the smallest/base quantity unit (e.g. "Pill",

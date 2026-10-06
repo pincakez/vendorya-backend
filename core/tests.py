@@ -137,3 +137,30 @@ class AdminStoreUsageTests(TestCase):
         r = _client(self.sudo).get(f'/api/admin/stores/{self.store.pk}/usage/')
         self.assertEqual(r.status_code, 200, r.content[:300])
         self.assertEqual(float(r.data['revenue_month']), 200.0)
+
+
+class ItemNounTests(TestCase):
+    """§AUDIT B6 (s157): Settings → "Items are called" is free text (letters, digits, "-", max 10), as the
+    screen allows — the server only took NAME/PRODUCT/ITEM/MODEL, so e.g. "Device" was refused."""
+
+    def setUp(self):
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_n', password='x', role='OWNER')
+        self.store = Store.objects.create(name='N1', store_code='106', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.save(update_fields=['store'])
+
+    def _patch(self, word):
+        return _client(self.owner).patch('/api/core/settings/', {'item_noun': word}, format='json')
+
+    def test_free_word_is_saved(self):
+        r = self._patch('Device-2')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data['item_noun'], 'Device-2')
+
+    def test_old_fixed_values_still_work(self):
+        self.assertEqual(self._patch('MODEL').status_code, 200)
+
+    def test_bad_words_refused(self):
+        for bad in ('', 'two words', 'Way-too-long-1', 'x<y>'):
+            self.assertEqual(self._patch(bad).status_code, 400, bad)
