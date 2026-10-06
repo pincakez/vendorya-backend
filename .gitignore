@@ -6,3 +6,5 @@ staticfiles/
 db.sqlite3
 .env
 *.env
+.env.bak*
+*.env.bak*
