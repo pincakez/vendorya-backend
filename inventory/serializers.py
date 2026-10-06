@@ -1,3 +1,4 @@
+from decimal import Decimal
 from rest_framework import serializers
 from django.db.models import Sum
 from core.field_visibility import FieldVisibilityMixin
@@ -10,6 +11,7 @@ from .models import (
     StorageLocation, StorageStock, StorageMovement,
     ProductMedia,
     is_multi_unit_enabled, is_weight_selling_enabled,
+    is_expiry_tracked, draw_from_batches, restock_to_batch,
 )
 
 
@@ -597,19 +599,37 @@ class StockTransferSerializer(serializers.ModelSerializer):
             transfer = StockTransfer.objects.create(**validated_data)
             for item_data in items_data:
                 StockTransferItem.objects.create(transfer=transfer, **item_data)
+                variant, qty = item_data['variant'], Decimal(str(item_data['quantity']))
                 # Deduct from source
-                src, _ = StockLevel.objects.get_or_create(
-                    variant=item_data['variant'], branch=transfer.from_branch
+                src, _ = StockLevel.objects.select_for_update().get_or_create(
+                    variant=variant, branch=transfer.from_branch
                 )
-                src.quantity -= item_data['quantity']
+                src.quantity = Decimal(str(src.quantity)) - qty
                 src.save()
-                # Add to destination
-                dst, _ = StockLevel.objects.get_or_create(
-                    variant=item_data['variant'], branch=transfer.to_branch
+                # Add to destination (a brand-new row's default is a float → Decimal, s157: it crashed)
+                dst, _ = StockLevel.objects.select_for_update().get_or_create(
+                    variant=variant, branch=transfer.to_branch
                 )
-                dst.quantity += item_data['quantity']
+                dst.quantity = Decimal(str(dst.quantity)) + qty
                 dst.save()
+                if is_expiry_tracked(variant):
+                    self._move_batches(variant, transfer, qty)
         return transfer
+
+    @staticmethod
+    def _move_batches(variant, transfer, qty):
+        """s157 (§AUDIT B3): batches travel with the stock — FEFO out of the source, each part landing at the
+        destination with the same expiry / lot / cost. Any part the source's batches can't cover (old
+        un-batched stock) lands as unknown-expiry, so both branches' batches still add up to their totals."""
+        moved = Decimal('0')
+        for d in draw_from_batches(variant, transfer.from_branch, qty):
+            b = d['batch']
+            restock_to_batch(variant, transfer.to_branch, transfer.store, d['qty'],
+                             expiry_date=b.expiry_date, batch_number=b.batch_number,
+                             cost_per_base=d['cost_per_base'])
+            moved += d['qty']
+        if qty - moved > 0:
+            restock_to_batch(variant, transfer.to_branch, transfer.store, qty - moved)
 
 
 # --- STORAGE SERIALIZERS ---

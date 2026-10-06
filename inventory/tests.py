@@ -329,3 +329,72 @@ class MissingRoleEntriesTests(TestCase):
 
     def test_cashier_still_kept_out_of_manager_pages(self):
         self.assertEqual(self._get(self.cashier, f'/api/core/branches/{self.branch.id}/detail-data/').status_code, 403)
+
+
+class TransferExpiryBatchTests(TestCase):
+    """§AUDIT B3 (s157): a branch transfer of an expiry-tracked product moves its BATCHES too — earliest
+    expiry first, each landing at the destination with the same expiry / lot / cost — so every branch's
+    open batches keep adding up to its stock total."""
+
+    def setUp(self):
+        import datetime
+        from decimal import Decimal as D
+        from django.conf import settings as dj_settings
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from core.models import Store, StoreSettings, Branch, Address
+        from users.models import User
+        from inventory.models import Supplier, Product, ProductVariant, StockLevel, StockBatch
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_tr', password='x', role='OWNER')
+        self.store = Store.objects.create(name='Ph', store_code='108', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.save(update_fields=['store'])
+        st, _ = StoreSettings.objects.get_or_create(store=self.store)
+        st.expiry_tracking_enabled = True
+        st.save()
+        mk = lambda n: Branch.objects.create(store=self.store, name=n,
+                                             address=Address.objects.create(store=self.store, street_1='1', city='Cairo'))
+        self.a, self.b = mk('A'), mk('B')
+        sup = Supplier.objects.create(store=self.store, name='S', code_prefix='402', prefix_locked=True)
+        p = Product.objects.create(store=self.store, name='Panadol', supplier=sup, track_expiry=True)
+        self.v = ProductVariant.objects.create(product=p, sell_price=D('10'))
+        StockLevel.objects.create(variant=self.v, branch=self.a, quantity=D('15'))
+        today = datetime.date.today()
+        self.early = today + datetime.timedelta(days=30)
+        self.late = today + datetime.timedelta(days=300)
+        StockBatch.objects.create(store=self.store, variant=self.v, branch=self.a, batch_number='L1',
+                                  expiry_date=self.early, quantity_remaining=D('5'), cost_per_base=D('2'))
+        StockBatch.objects.create(store=self.store, variant=self.v, branch=self.a, batch_number='L2',
+                                  expiry_date=self.late, quantity_remaining=D('10'), cost_per_base=D('3'))
+        self.c = APIClient()
+        self.c.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(self.owner).access_token))
+
+    def _move(self, qty, to=None):
+        return self.c.post('/api/inventory/transfers/', {
+            'from_branch': str(self.a.id), 'to_branch': str((to or self.b).id),
+            'items': [{'variant': str(self.v.id), 'quantity': qty}]}, format='json')
+
+    def _batches(self, branch):
+        from inventory.models import StockBatch
+        return {(b.batch_number, b.expiry_date): b.quantity_remaining for b in
+                StockBatch.objects.filter(variant=self.v, branch=branch, quantity_remaining__gt=0)}
+
+    def test_batches_move_earliest_expiry_first(self):
+        from decimal import Decimal as D
+        from inventory.models import StockLevel, StockBatch
+        r = self._move('7')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._batches(self.a), {('L2', self.late): D('8')})
+        self.assertEqual(self._batches(self.b), {('L1', self.early): D('5'), ('L2', self.late): D('2')})
+        self.assertEqual(StockBatch.objects.get(branch=self.b, batch_number='L2').cost_per_base, D('3'))
+        for br in (self.a, self.b):     # the rule: open batches add up to the branch's stock total
+            self.assertEqual(sum(self._batches(br).values()), StockLevel.objects.get(variant=self.v, branch=br).quantity)
+
+    def test_other_shops_branch_refused(self):
+        from core.models import Store, Branch, Address
+        from users.models import User
+        o = User.objects.create_user(username='own_x', password='x', role='OWNER')
+        s2 = Store.objects.create(name='X', store_code='109', owner=o)
+        foreign = Branch.objects.create(store=s2, name='F', address=Address.objects.create(store=s2, street_1='1', city='Giza'))
+        self.assertEqual(self._move('1', to=foreign).status_code, 400)
