@@ -396,6 +396,8 @@ class StoreSettings(TimestampedModel):
     login_ip_allowlist = models.TextField(
         _("Login IP Allowlist"), blank=True,
         help_text=_("Restrict OWNER/ADMIN logins to these IPs/CIDRs (comma or newline separated). Empty = no restriction."))
+    # INERT ON PURPOSE since 2026-05-29 (316b9a1): forced enrolment locked OWNER/sudo out, so 2FA is opt-in only
+    # (users/twofa.py `requires_2fa` → False) and the Policies card was removed. Re-enabling = Yakot's call (s157).
     force_2fa_managers = models.BooleanField(
         _("Force 2FA for Managers+"), default=False,
         help_text=_("Require TOTP two-factor auth for all staff with role Manager or higher."))
