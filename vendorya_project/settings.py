@@ -40,8 +40,8 @@ def _env_required(key):
 # Core security knobs — must be supplied via env (no in-repo fallback).
 SECRET_KEY = _env_required('DJANGO_SECRET_KEY')
 DEBUG = _env_bool('DJANGO_DEBUG', default=False)
-ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '.trycloudflare.com', 'vendorya.gatesinnov.com', 'vendoryas-staging.gatesinnov.com'])
-CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=['https://vendorya.gatesinnov.com', 'https://vendoryas-staging.gatesinnov.com', 'https://*.trycloudflare.com'])
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '.trycloudflare.com', 'vendorya.gates-tech.com', 'vdev.gates-tech.com', 'vendorya.gatesinnov.com', 'vendoryas-staging.gatesinnov.com'])
+CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=['https://vendorya.gates-tech.com', 'https://vdev.gates-tech.com', 'https://vendorya.gatesinnov.com', 'https://vendoryas-staging.gatesinnov.com', 'https://*.trycloudflare.com'])
 
 
 # Application definition
@@ -204,6 +204,7 @@ if not _cors_origins:
         'http://localhost:5173', 'http://127.0.0.1:5173',
         'http://localhost:5174', 'http://127.0.0.1:5174',
         'http://localhost:8000', 'http://127.0.0.1:8000',
+        'https://vendorya.gates-tech.com', 'https://vdev.gates-tech.com',
         'https://vendorya.gatesinnov.com',
     ]
 CORS_ALLOWED_ORIGINS = _cors_origins
