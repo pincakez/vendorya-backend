@@ -134,6 +134,25 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
             cost = service.cost or Decimal('0.00')
 
+            # How the customer paid (Yakot 2026-10-06, option a — like the till; §AUDIT A8). Before, every
+            # finished job became an unpaid invoice = customer debt. A normal method pays the cost in full;
+            # Ajel leaves it unpaid as the NAMED customer's debt (same credit rules as the till). Free job → none.
+            from finance.models import PaymentMethod, Payment
+            method = None
+            if cost > 0:
+                if not request.data.get('method'):
+                    return Response({'detail': 'Choose how the customer paid.'}, status=status.HTTP_400_BAD_REQUEST)
+                method = PaymentMethod.objects.filter(store=store, pk=request.data['method']).first()
+                if method is None:
+                    return Response({'detail': 'Unknown payment method.'}, status=status.HTTP_400_BAD_REQUEST)
+                if method.is_agel:
+                    if customer.is_walk_in:
+                        return Response({'detail': 'A credit (Ajel) payment needs a named customer on the job.'},
+                                        status=status.HTTP_400_BAD_REQUEST)
+                    if not getattr(getattr(store, 'settings', None), 'enable_agel_selling', True):
+                        return Response({'detail': 'Credit sales are disabled for this store.'},
+                                        status=status.HTTP_400_BAD_REQUEST)
+
             invoice = SalesInvoice.objects.create(
                 store=store,
                 branch=branch,
@@ -146,6 +165,11 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 grand_total=cost,
                 paid_amount=Decimal('0.00'),
             )
+            if method is not None and method.is_agel:
+                from finance.serializers import enforce_credit_policy
+                enforce_credit_policy(invoice, paid_amount=Decimal('0.00'))   # BLOCK raises → whole Done rolls back
+            elif method is not None:
+                Payment.objects.create(invoice=invoice, method=method, amount=cost, created_by=request.user)
 
             service.status = Service.Status.DONE
             service.invoice = invoice
