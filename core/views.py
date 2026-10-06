@@ -789,7 +789,8 @@ class DashboardWidgetConfigView(APIView):
 
 class LabelPresetViewSet(viewsets.ModelViewSet):
     serializer_class = LabelPresetSerializer
-    permission_classes = [IsManagerOrAbove]
+    # s157 (§AUDIT B7): the role list below decides — cashiers read presets to print labels.
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
 
     role_map = {
         'list':    'CASHIER',

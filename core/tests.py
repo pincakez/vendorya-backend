@@ -164,3 +164,32 @@ class ItemNounTests(TestCase):
     def test_bad_words_refused(self):
         for bad in ('', 'two words', 'Way-too-long-1', 'x<y>'):
             self.assertEqual(self._patch(bad).status_code, 400, bad)
+
+
+class LabelPresetRoleTests(TestCase):
+    """§AUDIT B7 (s157): cashiers print labels, so they may LIST/READ the shop's label presets; only a
+    Manager+ may change them. The view's role list said so, but a Manager-only gate ran first."""
+
+    def setUp(self):
+        from core.models import LabelPreset
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_l', password='x', role='OWNER')
+        self.store = Store.objects.create(name='L1', store_code='107', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.save(update_fields=['store'])
+        self.cashier = User.objects.create_user(username='csh_l', password='x', role='CASHIER', store=self.store)
+        self.manager = User.objects.create_user(username='mgr_l', password='x', role='MANAGER', store=self.store)
+        self.preset = LabelPreset.objects.create(store=self.store, name='Small')
+
+    def test_cashier_can_list_and_read(self):
+        c = _client(self.cashier)
+        self.assertEqual(c.get('/api/core/label-presets/').status_code, 200)
+        self.assertEqual(c.get(f'/api/core/label-presets/{self.preset.pk}/').status_code, 200)
+
+    def test_cashier_cannot_change(self):
+        c = _client(self.cashier)
+        self.assertEqual(c.post('/api/core/label-presets/', {'name': 'X'}, format='json').status_code, 403)
+        self.assertEqual(c.delete(f'/api/core/label-presets/{self.preset.pk}/').status_code, 403)
+
+    def test_manager_can_create(self):
+        self.assertEqual(_client(self.manager).post('/api/core/label-presets/', {'name': 'Big'}, format='json').status_code, 201)
