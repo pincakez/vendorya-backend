@@ -12,7 +12,8 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .models import User, Customer
-from .permissions import RoleScopedPermission
+from .permissions import RoleScopedPermission, ROLE_RANK, _user_rank
+from rest_framework.exceptions import PermissionDenied
 from .serializers import VendoryaTokenObtainSerializer, UserProfileSerializer, CustomerSerializer, StaffSerializer
 from .throttling import LoginRateThrottle
 from .twofa import is_enrolled, verify_token
@@ -293,8 +294,30 @@ class StaffViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return User.objects.filter(store=self.request.user.store, is_superadmin=False).order_by('first_name', 'username')
 
+    # ── Rank guard (s156, §AUDIT B4) ────────────────────────────────────────
+    # Nobody creates, promotes to, or edits an account at or above their own rank: an Admin can't make an
+    # Owner/Admin, promote themselves, or deactivate / re-password the Owner. Own account: everyday fields
+    # only — never your own role or active flag. Super-admins are exempt.
+    def _check_rank(self, data, target=None):
+        actor = self.request.user
+        if getattr(actor, 'is_superadmin', False):
+            return
+        rank = _user_rank(actor)
+        new_role = data.get('role')
+        if target is not None and target.pk == actor.pk:
+            if (new_role and new_role != actor.role) or data.get('is_active') is False:
+                raise PermissionDenied("You can't change your own role or deactivate your own account.")
+            return
+        if target is not None and _user_rank(target) >= rank:
+            raise PermissionDenied("You can't change an account with the same or a higher role than yours.")
+        if new_role and (target is None or new_role != target.role) and ROLE_RANK.get(new_role, 99) >= rank:
+            raise PermissionDenied("You can only give roles below your own.")
+
     def perform_create(self, serializer):
         from billing.quota import enforce_quota
+        data = dict(serializer.validated_data)
+        data.setdefault('role', User.Role.CASHIER)   # the model default — still rank-checked
+        self._check_rank(data)
         enforce_quota(self.request.user.store, 'users')
         staff = serializer.save(store=self.request.user.store)
         log_activity(
@@ -305,6 +328,7 @@ class StaffViewSet(viewsets.ModelViewSet):
         )
 
     def perform_update(self, serializer):
+        self._check_rank(serializer.validated_data, target=serializer.instance)
         was_active = serializer.instance.is_active
         staff = serializer.save()
         if was_active and not staff.is_active:

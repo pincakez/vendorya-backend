@@ -1,3 +1,4 @@
+from django.utils.crypto import get_random_string
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
@@ -96,7 +97,8 @@ class StaffSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         password = validated_data.pop('password', None)
         user = User(**validated_data)
-        user.set_password(password or User.objects.make_random_password())
+        # make_random_password() was removed in Django 5.1 — it crashed every password-less add (s156).
+        user.set_password(password or get_random_string(20))
         user.save()
         return user
 
