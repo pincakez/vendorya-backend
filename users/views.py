@@ -146,6 +146,12 @@ class MeView(APIView):
         if 'photo' in request.FILES:
             user.photo = request.FILES['photo']
 
+        # Was ignored, so the reply ('en') flipped the app back to English right after picking Arabic (s156, §AUDIT B1).
+        if 'language' in data:
+            if data['language'] not in User.Language.values:
+                return Response({'language': 'Unknown language.'}, status=status.HTTP_400_BAD_REQUEST)
+            user.language = data['language']
+
         if 'default_branch' in data:
             branch_id = data['default_branch']
             if branch_id is None:

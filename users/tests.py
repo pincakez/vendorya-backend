@@ -88,3 +88,22 @@ class StaffRankTests(TestCase):
         self.assertEqual(c.patch(url, {'first_name': 'Me'}, format='json').status_code, 200)
         self.admin.refresh_from_db()
         self.assertEqual(self.admin.role, 'ADMIN')
+
+
+class ProfileLanguageTests(TestCase):
+    """§AUDIT B1 (s156): PATCH /api/auth/me/ ignored `language`, and the reply (still 'en') flipped the app back."""
+
+    def setUp(self):
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.user = User.objects.create_user(username='lang', password='x', role='CASHIER')
+
+    def test_language_is_saved(self):
+        r = _client(self.user).patch('/api/auth/me/', {'language': 'ar'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data['language'], 'ar')
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.language, 'ar')
+
+    def test_unknown_language_refused(self):
+        r = _client(self.user).patch('/api/auth/me/', {'language': 'xx'}, format='json')
+        self.assertEqual(r.status_code, 400)
