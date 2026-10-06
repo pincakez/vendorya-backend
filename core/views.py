@@ -99,11 +99,18 @@ class LockscreenLogoView(APIView):
 
 
 class LockscreenPinView(APIView):
-    """POST /api/core/lockscreen/pin/ — set, change, verify, or clear the lock-screen PIN."""
+    """POST /api/core/lockscreen/pin/ — set, change, verify, or clear the lock-screen PIN.
+
+    verify = any staff member (it unlocks the screen), capped at PIN_MAX_TRIES wrong tries per person per
+    PIN_LOCK_SECONDS. set / clear = Owner only, like the rest of the lock-screen settings (s156, §AUDIT B5).
+    """
     permission_classes = [IsAuthenticated]
+    PIN_MAX_TRIES = 5
+    PIN_LOCK_SECONDS = 300
 
     def post(self, request):
         from django.contrib.auth.hashers import make_password, check_password
+        from django.core.cache import cache
         if not request.user.store:
             return _NO_STORE
         s = request.user.store.settings
@@ -113,7 +120,18 @@ class LockscreenPinView(APIView):
             pin = str(request.data.get('pin', ''))
             if not s.lock_pin_hash:
                 return Response({'valid': True})
-            return Response({'valid': check_password(pin, s.lock_pin_hash)})
+            key = f'lockpin-fail:{request.user.store_id}:{request.user.pk}'
+            fails = cache.get(key, 0)
+            if fails >= self.PIN_MAX_TRIES:
+                return Response({'valid': False, 'locked': True, 'retry_after': self.PIN_LOCK_SECONDS}, status=429)
+            if check_password(pin, s.lock_pin_hash):
+                cache.delete(key)
+                return Response({'valid': True})
+            cache.set(key, fails + 1, self.PIN_LOCK_SECONDS)
+            return Response({'valid': False})
+
+        if not IsOwner().has_permission(request, self):
+            return Response({'detail': 'Only the shop owner can change the lock-screen PIN.'}, status=403)
 
         if action == 'set':
             new_pin = str(request.data.get('new_pin', ''))

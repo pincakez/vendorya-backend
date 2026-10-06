@@ -262,6 +262,20 @@ SIMPLE_JWT = {
 }
 
 # --- django-axes: account lockout after repeated failed logins ---------------
+# ONE cache shared by every gunicorn worker (s156, §AUDIT C9.9). Without it each worker kept its own
+# in-memory counters, so "5 logins/min" was really up to 5 × workers. Files on local disk: no new service.
+# Tests keep a private in-memory cache so their counters never touch the real one.
+import sys as _sys
+CACHES = {
+    'default': (
+        {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}
+        if 'test' in _sys.argv else
+        {'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+         'LOCATION': os.environ.get('DJANGO_CACHE_DIR', str(BASE_DIR / '.django_cache')),
+         'OPTIONS': {'MAX_ENTRIES': 5000}}
+    ),
+}
+
 AXES_FAILURE_LIMIT = 5
 AXES_COOLOFF_TIME = timedelta(hours=1)      # auto-unlock after 1h
 AXES_RESET_ON_SUCCESS = True                # clear the counter on a good login
