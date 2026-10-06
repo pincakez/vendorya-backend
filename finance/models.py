@@ -97,6 +97,9 @@ class SalesInvoice(TimestampedModel, SoftDeleteModel):
     discount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     grand_total = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    # The till's Idempotency-Key of the checkout that completed this sale (s157, §AUDIT A5): a retry with
+    # the same key gets the finished sale back instead of an error.
+    checkout_key = models.CharField(max_length=64, blank=True, default='', editable=False)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 

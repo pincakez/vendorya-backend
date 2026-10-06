@@ -147,7 +147,10 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         fire. CASHIER-allowed — unlike a raw PATCH to POSTED, which is MANAGER-only.
         This is the canonical 'complete the sale' call the POS till makes."""
         invoice = self.get_object()
+        idem_key = (request.headers.get('Idempotency-Key') or '').strip()[:64]
         if invoice.status == SalesInvoice.Status.POSTED:
+            if idem_key and invoice.checkout_key == idem_key:
+                return Response(SalesInvoiceSerializer(invoice).data)   # retry of a sale that already went through
             return Response({'detail': 'Invoice already posted.'},
                             status=status.HTTP_400_BAD_REQUEST)
         if invoice.status == SalesInvoice.Status.VOID:
@@ -196,6 +199,16 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         allow_negative = getattr(settings_obj, 'allow_negative_stock', False)
 
         with transaction.atomic():
+            # s157 (§AUDIT A5): lock the sale and re-check it is still a DRAFT — two checkouts arriving together
+            # (double click, retry) both passed the check above and both posted: stock out twice, paid twice.
+            locked = SalesInvoice.objects.select_for_update().filter(pk=invoice.pk).values_list(
+                'status', 'checkout_key').first()
+            if locked and locked[0] != SalesInvoice.Status.DRAFT:
+                if locked[0] == SalesInvoice.Status.POSTED and idem_key and locked[1] == idem_key:
+                    invoice.refresh_from_db()
+                    return Response(SalesInvoiceSerializer(invoice).data)
+                return Response({'detail': 'Invoice already posted.'}, status=status.HTTP_400_BAD_REQUEST)
+
             # Policy 2 — overselling. Lock the stock rows we're about to move and
             # verify availability INSIDE the transaction, so a concurrent checkout
             # can't slip between the check and the signal's decrement.
@@ -262,6 +275,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             # Flip to POSTED → fires handle_sale_stock (decrement + COGS snapshot)
             # and assigns the human-readable invoice_number.
             invoice.status = SalesInvoice.Status.POSTED
+            invoice.checkout_key = idem_key
             invoice.save()
             if pay_now > 0:
                 Payment.objects.create(invoice=invoice, method=method, amount=pay_now, created_by=request.user)

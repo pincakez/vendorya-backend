@@ -329,3 +329,33 @@ class ShiftCashRefundTests(_TillBase):
         s = WorkShift.objects.create(store=self.store, branch=self.branch, user=other, starting_cash=0)
         r = self.client.post(f'/api/finance/shifts/{s.id}/close/', {'counted_cash': '0'}, format='json')
         self.assertIn(r.status_code, (403, 404))
+
+
+class CheckoutIdempotencyTests(_TillBase):
+    """§AUDIT A5 (s157): the till sends an Idempotency-Key with checkout. A retry with the SAME key (the
+    reply was lost after the server finished) gets the finished sale back — no 2nd payment, no 2nd stock-out —
+    instead of an "already posted" error that tempts the cashier to ring the sale up again."""
+
+    def _post(self, inv, key):
+        return self.client.post(self.URL.format(inv.id), {'method': str(self.cash.id)}, format='json',
+                                HTTP_IDEMPOTENCY_KEY=key)
+
+    def test_same_key_replays_the_finished_sale(self):
+        from finance.models import Payment
+        inv = self._draft()
+        r1 = self._post(inv, 'k-1')
+        r2 = self._post(inv, 'k-1')
+        self.assertEqual((r1.status_code, r2.status_code), (200, 200), r2.content)
+        self.assertEqual(r2.data['invoice_number'], r1.data['invoice_number'])
+        self.assertEqual(Payment.objects.filter(invoice=inv).count(), 1)
+        self.assertEqual(StockLevel.objects.get(variant=self.variant, branch=self.branch).quantity, Decimal('9'))
+
+    def test_other_key_on_a_finished_sale_is_refused(self):
+        inv = self._draft()
+        self._post(inv, 'k-1')
+        self.assertEqual(self._post(inv, 'k-2').status_code, 400)
+
+    def test_no_key_on_a_finished_sale_is_refused(self):
+        inv = self._draft()
+        self._post(inv, 'k-1')
+        self.assertEqual(self._checkout(inv, self.cash).status_code, 400)
