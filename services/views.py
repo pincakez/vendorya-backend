@@ -78,7 +78,6 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
     def _fire_update_notification(self, service, cost_changed, diagnosis_changed):
         from notifications.models import Notification
-        from users.models import User
 
         store = service.store
         serial = service.serial_number
@@ -93,19 +92,11 @@ class ServiceViewSet(viewsets.ModelViewSet):
             title = f"Service {serial} — cost updated"
             body  = f"New cost: {service.cost}"
 
-        staff_ids = User.objects.filter(store=store, is_active=True).values_list('id', flat=True)
-        notifications = [
-            Notification(
-                store=store,
-                recipient_id=uid,
-                priority=Notification.Priority.WARNING,
-                title=title,
-                body=body,
-                link=f'/services',
-            )
-            for uid in staff_ids
-        ]
-        Notification.objects.bulk_create(notifications, ignore_conflicts=True)
+        # ONE store-wide notification (user=None = every member sees it). The old per-staff loop used a
+        # field that doesn't exist (`recipient_id`) and crashed the request AFTER the save (s156, §AUDIT A7).
+        from notifications.dispatcher import send_notification
+        send_notification(store=store, title=title, body=body,
+                          priority=Notification.Priority.WARNING, link='/services')
 
     @action(detail=True, methods=['post'])
     def done(self, request, pk=None):
