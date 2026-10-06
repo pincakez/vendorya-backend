@@ -135,10 +135,27 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
 
         settings_obj = getattr(invoice.store, 'settings', None)
 
+        # The till's payment comes WITH the checkout (s156, §AUDIT A2/A3) so the policies below judge the
+        # sale as it will really be. `method` = a PaymentMethod id: a normal method pays the whole remaining
+        # balance; an Ajel (credit) method pays nothing — the balance becomes the customer's debt. No method
+        # = post unpaid (old behaviour, kept for callers that pay separately).
+        method = None
+        if request.data.get('method'):
+            method = PaymentMethod.objects.filter(store=invoice.store, pk=request.data['method']).first()
+            if method is None:
+                return Response({'detail': 'Unknown payment method.'}, status=status.HTTP_400_BAD_REQUEST)
+        remaining = (invoice.grand_total or Decimal('0')) - (invoice.paid_amount or Decimal('0'))
+        pay_now = remaining if (method and not method.is_agel and remaining > 0) else Decimal('0')
+        paid_after = (invoice.paid_amount or Decimal('0')) + pay_now
+
+        if method and method.is_agel and (invoice.customer is None or invoice.customer.is_walk_in):
+            return Response({'detail': 'A credit (Ajel) sale needs a named customer — pick one first.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         # Policy 1 — credit (agel) selling. Block posting an unpaid invoice when
         # the owner disabled credit. No race here (reads invoice totals only).
         allow_agel = getattr(settings_obj, 'enable_agel_selling', True)
-        if not allow_agel and (invoice.grand_total - invoice.paid_amount) > 0:
+        if not allow_agel and (invoice.grand_total - paid_after) > 0:
             return Response(
                 {'detail': 'Credit sales are disabled for this store. '
                            'Collect full payment before completing the sale.'},
@@ -148,7 +165,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         # (if unpaid), enforce the store's ALLOW/WARN/BLOCK policy against the
         # customer's REAL outstanding balance. BLOCK raises → stays DRAFT.
         from .serializers import enforce_credit_policy
-        enforce_credit_policy(invoice)
+        enforce_credit_policy(invoice, paid_amount=paid_after)
 
         allow_negative = getattr(settings_obj, 'allow_negative_stock', False)
 
@@ -220,6 +237,9 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             # and assigns the human-readable invoice_number.
             invoice.status = SalesInvoice.Status.POSTED
             invoice.save()
+            if pay_now > 0:
+                Payment.objects.create(invoice=invoice, method=method, amount=pay_now, created_by=request.user)
+                invoice.refresh_from_db()
 
         log_activity(
             request=request,

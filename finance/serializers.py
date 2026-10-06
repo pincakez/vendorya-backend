@@ -11,7 +11,7 @@ from .models import (
 )
 
 
-def enforce_credit_policy(invoice):
+def enforce_credit_policy(invoice, paid_amount=None):
     """Apply the store's credit policy (ALLOW / WARN / BLOCK) to a sale whose
     unpaid balance would push the customer past their credit limit.
 
@@ -20,7 +20,9 @@ def enforce_credit_policy(invoice):
     Call this at the moment credit is actually extended — i.e. when posting
     (checkout), not when a draft cart is created. Raises ValidationError on BLOCK.
     """
-    unpaid = invoice.grand_total - invoice.paid_amount
+    # `paid_amount` = what WILL be paid when the till pays in the same step as checkout (s156).
+    paid = invoice.paid_amount if paid_amount is None else paid_amount
+    unpaid = invoice.grand_total - paid
     if unpaid <= 0:
         return  # fully paid — no credit involved
     customer = invoice.customer
@@ -189,6 +191,26 @@ class PaymentSerializer(serializers.ModelSerializer):
         model = Payment
         fields = ['id', 'invoice', 'method', 'amount', 'created_by', 'created_at']
         read_only_fields = ['id', 'created_by', 'created_at']
+
+    def validate(self, attrs):
+        """A payment is money actually received against a POSTED sale (s156, §AUDIT A2): never an Ajel
+        method (credit is the UNPAID part, not a payment), never zero/negative, never more than is owed."""
+        from decimal import Decimal
+        from django.db.models import Sum
+        invoice, method, amount = attrs['invoice'], attrs['method'], attrs['amount']
+        if method.store_id != invoice.store_id:
+            raise serializers.ValidationError({'method': 'Unknown payment method.'})
+        if method.is_agel:
+            raise serializers.ValidationError({'method': 'Ajel (credit) is not a payment — leave the sale unpaid instead.'})
+        if amount <= 0:
+            raise serializers.ValidationError({'amount': 'Amount must be more than zero.'})
+        if invoice.status != SalesInvoice.Status.POSTED:
+            raise serializers.ValidationError({'invoice': 'Payments can only be taken on a completed sale.'})
+        refunded = invoice.refunds.filter(is_deleted=False).aggregate(s=Sum('total_refunded'))['s'] or Decimal('0')
+        owed = (invoice.grand_total or 0) - (invoice.paid_amount or 0) - refunded
+        if amount > owed + Decimal('0.005'):
+            raise serializers.ValidationError({'amount': f'More than is owed on this sale ({owed}).'})
+        return attrs
 
 
 # --- PURCHASE ---
