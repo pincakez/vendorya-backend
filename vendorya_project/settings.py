@@ -233,6 +233,11 @@ REST_FRAMEWORK = {
     # 'login' throttles the token endpoint. 'api_key' is per-key (see
     # public_api.throttling.APIKeyRateThrottle) and only bites API-key traffic —
     # never the first-party app.
+    # Per-key limit for API-key traffic only (returns no cache key for JWT, so the app is never throttled).
+    # Views that set their own throttle_classes (login) replace this list. — s156
+    'DEFAULT_THROTTLE_CLASSES': (
+        'public_api.throttling.APIKeyRateThrottle',
+    ),
     'DEFAULT_THROTTLE_RATES': {
         'login': '5/min',
         'api_key': '120/min',

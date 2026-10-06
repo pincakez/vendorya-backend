@@ -86,20 +86,23 @@ class APIKeyAuthTests(TestCase):
             kw['HTTP_AUTHORIZATION'] = header_value
         if x_api_key is not None:
             kw['HTTP_X_API_KEY'] = x_api_key
-        return self.factory.get('/api/anything/', **kw)
+        req = self.factory.get('/api/anything/', **kw)
+        # The auth class reads the target view (s156 fail-closed check) — pose as an exposed one.
+        req.parser_context = {'view': type('ExposedView', (), {'api_scope_resource': 'inventory'})()}
+        return req
 
     def test_no_key_returns_none(self):
         self.assertIsNone(self.auth.authenticate(self._req()))
 
     def test_authorization_header_success_binds_store(self):
-        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user)
+        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user, scopes=['inventory:read'])
         user, api_key = self.auth.authenticate(self._req(header_value=f'Api-Key {raw}'))
         self.assertEqual(user, self.user)
         self.assertEqual(user.store, self.store)
         self.assertEqual(api_key, key)
 
     def test_x_api_key_header_success(self):
-        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user)
+        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user, scopes=['inventory:read'])
         user, api_key = self.auth.authenticate(self._req(x_api_key=raw))
         self.assertEqual(api_key, key)
 
@@ -108,14 +111,28 @@ class APIKeyAuthTests(TestCase):
             self.auth.authenticate(self._req(x_api_key='vdy_dead_beef'))
 
     def test_inactive_owner_rejected(self):
-        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user)
+        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user, scopes=['inventory:read'])
         self.user.is_active = False
         self.user.save(update_fields=['is_active'])
         with self.assertRaises(AuthenticationFailed):
             self.auth.authenticate(self._req(x_api_key=raw))
 
+    def test_unexposed_view_refused(self):
+        from rest_framework.exceptions import PermissionDenied
+        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user, scopes=['inventory:write'])
+        req = self._req(x_api_key=raw)
+        req.parser_context = {'view': object()}   # no api_scope_resource
+        with self.assertRaises(PermissionDenied):
+            self.auth.authenticate(req)
+
+    def test_missing_scope_refused(self):
+        from rest_framework.exceptions import PermissionDenied
+        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user, scopes=['finance:read'])
+        with self.assertRaises(PermissionDenied):
+            self.auth.authenticate(self._req(x_api_key=raw))
+
     def test_last_used_recorded(self):
-        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user)
+        key, raw = APIKey.generate(store=self.store, label='K', created_by=self.user, scopes=['inventory:read'])
         self.assertIsNone(key.last_used_at)
         self.auth.authenticate(self._req(x_api_key=raw))
         key.refresh_from_db()
@@ -195,3 +212,35 @@ class APIKeyCRUDTests(TestCase):
         r = self.client.get('/api/api-keys/scopes/')
         self.assertEqual(r.status_code, 200)
         self.assertIn('inventory:read', r.data['all_scopes'])
+
+
+class APIKeyExposureTests(TestCase):
+    """§AUDIT A1 (s156): a key must reach ONLY endpoints that opt in with `api_scope_resource`.
+    Before the fix a key acted as its owner on every endpoint and its scopes were ignored."""
+    def setUp(self):
+        from django.conf import settings as dj_settings
+        dj_settings.ALLOWED_HOSTS = ['*']
+        from rest_framework.test import APIClient
+        self.store, self.owner = make_store('Acme', 'ACM', 'owner')
+        _, self.raw = APIKey.generate(store=self.store, label='k', created_by=self.owner,
+                                      scopes=['inventory:read'])
+        self.client = APIClient()
+        self.client.credentials(HTTP_X_API_KEY=self.raw)
+
+    def test_key_refused_on_unexposed_endpoints(self):
+        for url in ('/api/inventory/products/', '/api/auth/me/', '/api/core/settings/',
+                    '/api/finance/invoices/', '/api/api-keys/keys/'):
+            r = self.client.get(url)
+            self.assertIn(r.status_code, (401, 403), f'{url} answered {r.status_code} to an API key')
+
+    def test_key_cannot_mint_keys(self):
+        r = self.client.post('/api/api-keys/keys/', {'label': 'x', 'scopes': ['inventory:write']}, format='json')
+        self.assertIn(r.status_code, (401, 403))
+        self.assertEqual(APIKey.objects.count(), 1)
+
+    def test_jwt_unaffected(self):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(self.owner).access_token))
+        self.assertEqual(c.get('/api/inventory/products/').status_code, 200)

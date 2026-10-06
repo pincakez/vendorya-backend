@@ -9,11 +9,18 @@ permissions still apply), bound to the key's store, and `request.auth` is the
 APIKey instance (carrying `.scopes` for HasAPIScope). The tenant thread-local
 is armed to the key's store so the secure-by-default managers scope correctly —
 identical to the JWT path.
+
+FAIL-CLOSED (s156, §AUDIT A1): this class is global (first in
+DEFAULT_AUTHENTICATION_CLASSES) but most ViewSets set their own
+permission_classes without HasAPIScope — so the exposure + scope check is done
+HERE, where no view can opt out by accident. A key reaches only a view that
+declares `api_scope_resource`, and only with the matching scope.
 """
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 
 from .models import APIKey
+from .scopes import required_scope, grants
 
 KEYWORD = 'api-key'   # Authorization: Api-Key <key>
 
@@ -27,6 +34,14 @@ class APIKeyAuthentication(BaseAuthentication):
         api_key = APIKey.resolve(raw_key)
         if api_key is None:
             raise AuthenticationFailed('Invalid, expired, or revoked API key.')
+
+        view = (getattr(request, 'parser_context', None) or {}).get('view')
+        resource = getattr(view, 'api_scope_resource', None)
+        if resource is None:
+            raise PermissionDenied('This endpoint is not exposed to API keys.')
+        needed = required_scope(resource, request.method)
+        if not grants(api_key.scopes or [], needed):
+            raise PermissionDenied(f"API key missing scope '{needed}'.")
 
         user = api_key.created_by
         if user is None or not user.is_active:
