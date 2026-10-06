@@ -322,8 +322,9 @@ class AdminStoreUsageView(APIView):
             store=store, is_deleted=False, created_at__gte=month_start
         ).count()
         revenue_month = (SalesInvoice.all_objects
-                         .filter(store=store, is_deleted=False, created_at__gte=month_start)
-                         .aggregate(t=Sum('total'))['t'] or 0)
+                         .filter(store=store, is_deleted=False, created_at__gte=month_start,
+                                 status=SalesInvoice.Status.POSTED)
+                         .aggregate(t=Sum('grand_total'))['t'] or 0)
 
         purchases_total = PurchaseInvoice.all_objects.filter(store=store, is_deleted=False).count()
 

@@ -110,3 +110,30 @@ class CashierSettingsTests(TestCase):
 
     def test_cashier_cannot_change_settings(self):
         self.assertEqual(_client(self.cashier).patch('/api/core/settings/', {'decimals': 3}, format='json').status_code, 403)
+
+
+class AdminStoreUsageTests(TestCase):
+    """s157: Admin → Usage crashed (500) — it summed a field `total` that does not exist on SalesInvoice.
+    Revenue this month = POSTED invoices' grand_total only (drafts and voids are not revenue)."""
+
+    def setUp(self):
+        from decimal import Decimal
+        from django.utils import timezone
+        from core.models import Address, Branch
+        from users.models import Customer
+        from finance.models import SalesInvoice
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_u', password='x', role='OWNER')
+        self.store = Store.objects.create(name='Usage Co', store_code='USG', owner=self.owner)
+        self.sudo = User.objects.create_user(username='sudo_u', password='x', is_superadmin=True)
+        branch = Branch.objects.create(store=self.store, name='Main',
+                                       address=Address.objects.create(store=self.store, street_1='1', city='Cairo'))
+        cust = Customer.objects.create(store=self.store, name='Buyer', phone_number='0100')
+        for st, amt in (('POSTED', '150'), ('POSTED', '50'), ('DRAFT', '999'), ('VOID', '777')):
+            SalesInvoice.objects.create(store=self.store, branch=branch, customer=cust, status=st,
+                                        date=timezone.now(), grand_total=Decimal(amt))
+
+    def test_usage_answers_with_posted_revenue(self):
+        r = _client(self.sudo).get(f'/api/admin/stores/{self.store.pk}/usage/')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(float(r.data['revenue_month']), 200.0)
