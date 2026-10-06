@@ -289,3 +289,43 @@ class CategoryApiTests(TestCase):
         self.assertTrue(archived.is_deleted)
         self.assertEqual(archived.delete_reason, 'DISCONTINUED')
         self.assertEqual(archived.deleted_by_id, self.owner.id)
+
+
+class MissingRoleEntriesTests(TestCase):
+    """§AUDIT B2 (s156): actions absent from a role_map fall back to OWNER-only. The POS's same-ingredient
+    finder (`alternatives`) was therefore refused to cashiers; three more pages were owner-only by accident."""
+
+    def setUp(self):
+        from django.conf import settings as dj_settings
+        from core.models import Store, Branch, Address
+        from users.models import User
+        from inventory.models import AttributeDefinition
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_m', password='x', role='OWNER')
+        self.store = Store.objects.create(name='M1', store_code='102', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.save(update_fields=['store'])
+        addr = Address.objects.create(store=self.store, street_1='1', city='Cairo')
+        self.branch = Branch.objects.create(store=self.store, name='Main', address=addr)
+        self.cashier = User.objects.create_user(username='csh_m', password='x', role='CASHIER', store=self.store)
+        self.manager = User.objects.create_user(username='mgr_m', password='x', role='MANAGER', store=self.store)
+        self.attr = AttributeDefinition.objects.create(store=self.store, name='Color')
+
+    def _get(self, user, url, method='get', data=None):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(user).access_token))
+        return getattr(c, method)(url, data or {}, format='json')
+
+    def test_cashier_can_use_alternatives_finder(self):
+        self.assertNotEqual(self._get(self.cashier, '/api/inventory/products/alternatives/?q=x').status_code, 403)
+
+    def test_manager_pages(self):
+        self.assertNotEqual(self._get(self.manager, '/api/inventory/products/media-specs/').status_code, 403)
+        self.assertNotEqual(self._get(self.manager, f'/api/core/branches/{self.branch.id}/detail-data/').status_code, 403)
+        self.assertNotEqual(self._get(self.manager, f'/api/inventory/attributes/{self.attr.id}/add-option/',
+                                      'post', {'value': 'Red'}).status_code, 403)
+
+    def test_cashier_still_kept_out_of_manager_pages(self):
+        self.assertEqual(self._get(self.cashier, f'/api/core/branches/{self.branch.id}/detail-data/').status_code, 403)

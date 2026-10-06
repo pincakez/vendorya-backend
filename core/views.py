@@ -290,6 +290,7 @@ class BranchViewSet(viewsets.ModelViewSet):
         'create':         'ADMIN',
         'update':         'ADMIN',
         'partial_update': 'ADMIN',
+        'detail_data':    'MANAGER',   # branch page: today's sales + staff + stock (was owner-only by omission — s156)
     }
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 

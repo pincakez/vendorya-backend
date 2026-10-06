@@ -56,6 +56,7 @@ class AttributeDefinitionViewSet(viewsets.ModelViewSet):
         'update':         'ADMIN',
         'partial_update': 'ADMIN',
         'destroy':        'ADMIN',
+        'add_option':     'MANAGER',   # add a dropdown value from the product form (was owner-only by omission — s156)
     }
 
     def get_queryset(self):
@@ -115,6 +116,8 @@ class ProductViewSet(viewsets.ModelViewSet):
         'import_memory_base': 'MANAGER',
         'dedup_memory_base': 'MANAGER',
         'autocomplete': 'CASHIER',
+        'alternatives': 'CASHIER',   # POS /sameing + /sametrade finder (was owner-only by omission — s156)
+        'media_specs':  'MANAGER',   # upload-limits note on the product page (s156),
     }
     filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
