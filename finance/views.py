@@ -9,7 +9,9 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from users.permissions import RoleScopedPermission
+from users.models import User
+from users.permissions import RoleScopedPermission, ROLE_RANK, _user_rank
+from rest_framework.exceptions import PermissionDenied
 from inventory.models import StockLevel
 from .models import (
     SalesInvoice, Payment, PaymentMethod,
@@ -55,10 +57,13 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         'list':           'CASHIER',
         'retrieve':       'CASHIER',
         'create':         'CASHIER',
-        'update':         'MANAGER',
-        'partial_update': 'MANAGER',
+        # update / partial_update / void: CASHIER may act on a DRAFT (the till's live cart); a POSTED sale
+        # still needs MANAGER — enforced in _guard_posted below (s156). Before, the till's cart sync was
+        # refused for cashiers, so checkout completed a stale cart.
+        'update':         'CASHIER',
+        'partial_update': 'CASHIER',
         'destroy':        'MANAGER',
-        'void':           'MANAGER',
+        'void':           'CASHIER',
         'checkout':       'CASHIER',
         'print_data':     'CASHIER',
     }
@@ -69,6 +74,22 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         return SalesInvoice.objects.filter(
             store=self.request.user.store
         ).prefetch_related('items', 'payments').select_related('customer', 'branch')
+
+    def _is_manager(self):
+        return _user_rank(self.request.user) >= ROLE_RANK[User.Role.MANAGER]
+
+    def _guard_posted(self, invoice, new_status=None):
+        """Below MANAGER you may only touch a DRAFT, and never move it out of DRAFT by editing."""
+        if self._is_manager():
+            return
+        if invoice.status != SalesInvoice.Status.DRAFT:
+            raise PermissionDenied('Only a manager can change a completed sale.')
+        if new_status and new_status != SalesInvoice.Status.DRAFT:
+            raise PermissionDenied('Complete the sale with checkout, not by editing it.')
+
+    def perform_update(self, serializer):
+        self._guard_posted(serializer.instance, serializer.validated_data.get('status'))
+        serializer.save()
 
     def perform_create(self, serializer):
         from billing.quota import enforce_quota
@@ -92,8 +113,13 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         invoice = self.get_object()
         if invoice.status == SalesInvoice.Status.VOID:
             return Response({'detail': 'Already voided.'}, status=status.HTTP_400_BAD_REQUEST)
+        self._guard_posted(invoice)
+        was_draft = invoice.status == SalesInvoice.Status.DRAFT
         invoice.status = SalesInvoice.Status.VOID
         invoice.save()
+        if was_draft:
+            # Discarding an unfinished cart (till hold/resume) is routine — no alert, no log noise (s156).
+            return Response(SalesInvoiceSerializer(invoice).data)
         send_notification(
             store=invoice.store,
             title=f"Invoice #{invoice.invoice_number} was voided",

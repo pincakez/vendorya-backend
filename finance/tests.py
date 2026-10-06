@@ -100,10 +100,8 @@ class ReturnsPolicyTests(TestCase):
         self.assertIsNotNone(refund.refund_number)
 
 
-class TillCheckoutPaymentTests(TestCase):
-    """§AUDIT A2/A3 (s156): the till completes the sale AND takes the payment in ONE step.
-    Before: checkout ran with paid=0, then a 2nd call always paid the FULL total — even with Ajel —
-    so credit sales never became debt, and turning credit selling off blocked every till sale."""
+class _TillBase(TestCase):
+    """Shared shop + cashier + cash/Ajel methods for the till tests (s156)."""
 
     URL = '/api/finance/invoices/{}/checkout/'
 
@@ -144,6 +142,12 @@ class TillCheckoutPaymentTests(TestCase):
 
     def _checkout(self, inv, method):
         return self.client.post(self.URL.format(inv.id), {'method': str(method.id)}, format='json')
+
+
+class TillCheckoutPaymentTests(_TillBase):
+    """§AUDIT A2/A3 (s156): the till completes the sale AND takes the payment in ONE step.
+    Before: checkout ran with paid=0, then a 2nd call always paid the FULL total — even with Ajel —
+    so credit sales never became debt, and turning credit selling off blocked every till sale."""
 
     def test_ajel_sale_becomes_customer_debt(self):
         from finance.models import customer_outstanding, Payment
@@ -200,3 +204,39 @@ class TillCheckoutPaymentTests(TestCase):
         self.assertEqual(self.client.post(url, {'invoice': str(inv.id), 'method': str(self.cash.id), 'amount': '40'}, format='json').status_code, 201)
         inv.refresh_from_db()
         self.assertEqual(inv.paid_amount, Decimal('40'))
+
+
+class CashierDraftEditTests(_TillBase):
+    """s156: the till keeps the server draft in step with the cart by PATCHing it. `partial_update` is
+    MANAGER-only, so for a CASHIER every change after the first was refused (silently, in the till) and
+    checkout completed the OLD cart. A cashier must be able to edit their own DRAFT — never a posted sale."""
+
+    def _payload(self, qty):
+        return {'branch': str(self.branch.id), 'customer': str(self.customer.id), 'date': timezone.now().isoformat(),
+                'status': 'DRAFT', 'discount': 0,
+                'items': [{'variant': str(self.variant.id), 'unit': None, 'quantity': qty,
+                           'unit_price': '100', 'discount_amount': 0}]}
+
+    def test_cashier_can_update_own_draft(self):
+        r = self.client.post('/api/finance/invoices/', self._payload(1), format='json')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        inv_id = r.data['id']
+        r = self.client.patch(f'/api/finance/invoices/{inv_id}/', self._payload(3), format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Decimal(r.data['grand_total']), Decimal('300'))
+
+    def test_cashier_cannot_edit_posted_sale(self):
+        r = self.client.post('/api/finance/invoices/', self._payload(1), format='json')
+        inv_id = r.data['id']
+        self.client.post(self.URL.format(inv_id), {'method': str(self.cash.id)}, format='json')
+        r = self.client.patch(f'/api/finance/invoices/{inv_id}/', self._payload(5), format='json')
+        self.assertEqual(r.status_code, 403)
+
+    def test_cashier_can_discard_own_draft(self):
+        r = self.client.post('/api/finance/invoices/', self._payload(1), format='json')
+        self.assertEqual(self.client.post(f"/api/finance/invoices/{r.data['id']}/void/").status_code, 200)
+
+    def test_cashier_cannot_post_by_editing(self):
+        r = self.client.post('/api/finance/invoices/', self._payload(1), format='json')
+        body = self._payload(1); body['status'] = 'POSTED'
+        self.assertEqual(self.client.patch(f"/api/finance/invoices/{r.data['id']}/", body, format='json').status_code, 403)
