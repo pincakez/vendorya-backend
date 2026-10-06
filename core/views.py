@@ -247,17 +247,26 @@ class NavSearchView(APIView):
 
 
 class StoreSettingsView(APIView):
-    """GET = manager+, PATCH = owner only."""
+    """GET = any staff (the till + lock screen need it), PATCH = owner only.
+
+    s156: GET was Manager+, so a cashier's till ran on defaults and the lock screen — seeing no
+    `lock_pin_set` — unlocked without the PIN. Below Manager the login IP allow-list is left out.
+    """
+    MANAGER_ONLY_FIELDS = ('login_ip_allowlist',)
 
     def get_permissions(self):
         if self.request.method == 'PATCH':
             return [IsAuthenticated(), IsOwner()]
-        return [IsAuthenticated(), IsManagerOrAbove()]
+        return [IsAuthenticated(), IsCashierOrAbove()]
 
     def get(self, request):
         if not request.user.store:
             return _NO_STORE
-        return Response(StoreSettingsSerializer(request.user.store.settings).data)
+        data = StoreSettingsSerializer(request.user.store.settings).data
+        if not IsManagerOrAbove().has_permission(request, self):
+            for f in self.MANAGER_ONLY_FIELDS:
+                data.pop(f, None)
+        return Response(data)
 
     def patch(self, request):
         if not request.user.store:
