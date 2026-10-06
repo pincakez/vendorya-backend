@@ -628,6 +628,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         'destroy':        'ADMIN',
         'close':          'CASHIER',
         'summary':        'CASHIER',
+        'drawer':         'CASHIER',
     }
 
     def get_queryset(self):
@@ -659,9 +660,17 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
         shift = self.get_object()
+        # s157: a cashier closes only their OWN drawer; Manager+ may close anyone's.
+        if shift.user_id != request.user.id and _user_rank(request.user) < ROLE_RANK[User.Role.MANAGER]:
+            return Response({'detail': 'You can only close your own shift.'}, status=status.HTTP_403_FORBIDDEN)
         if shift.status == WorkShift.Status.CLOSED:
             return Response({'detail': 'Shift already closed.'}, status=status.HTTP_400_BAD_REQUEST)
-        counted_cash = request.data.get('counted_cash', 0)
+        try:
+            counted_cash = Decimal(str(request.data.get('counted_cash', 0) or 0))
+        except (ArithmeticError, ValueError):
+            return Response({'counted_cash': 'Enter the cash you counted as a number.'}, status=status.HTTP_400_BAD_REQUEST)
+        if counted_cash < 0:
+            return Response({'counted_cash': 'Counted cash cannot be negative.'}, status=status.HTTP_400_BAD_REQUEST)
         shift.close_shift(counted_cash)
         if shift.difference != 0:
             direction = "over" if shift.difference > 0 else "short"
@@ -685,6 +694,32 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
             },
         )
         return Response(WorkShiftSerializer(shift).data)
+
+    @action(detail=False, methods=['get'])
+    def drawer(self, request):
+        """s157 (§AUDIT A10): the caller's open drawer — cash in (cash payments they took), cash out (cash
+        refunds paid from this drawer), expected balance, and each move. Same rules as closing the shift."""
+        shift = (WorkShift.objects.filter(store=request.user.store, user=request.user,
+                                          status=WorkShift.Status.OPEN).first())
+        if shift is None:
+            return Response({'shift': None, 'cash_in': '0', 'cash_out': '0', 'expected_balance': '0', 'moves': []})
+        pays = (Payment.objects.filter(invoice__store=shift.store, created_at__gte=shift.start_time,
+                                       method__is_cash=True, created_by=shift.user)
+                .values('created_at', 'amount', 'invoice__invoice_number'))
+        refunds = (RefundInvoice.objects.filter(shift=shift, drawer_cash__gt=0)
+                   .values('created_at', 'drawer_cash', 'refund_number', 'original_invoice__invoice_number'))
+        moves = [{'time': p['created_at'], 'kind': 'IN', 'invoice_number': p['invoice__invoice_number'],
+                  'refund_number': None, 'amount': str(p['amount'])} for p in pays]
+        moves += [{'time': r['created_at'], 'kind': 'OUT', 'invoice_number': r['original_invoice__invoice_number'],
+                   'refund_number': r['refund_number'], 'amount': str(r['drawer_cash'])} for r in refunds]
+        moves.sort(key=lambda m: m['time'], reverse=True)
+        cash_in, cash_out = shift.cash_in(), shift.cash_out()
+        return Response({
+            'shift': WorkShiftSerializer(shift).data,
+            'cash_in': str(cash_in), 'cash_out': str(cash_out),
+            'expected_balance': str(shift.starting_cash + cash_in - cash_out),
+            'moves': moves,
+        })
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):

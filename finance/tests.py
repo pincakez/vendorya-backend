@@ -240,3 +240,92 @@ class CashierDraftEditTests(_TillBase):
         r = self.client.post('/api/finance/invoices/', self._payload(1), format='json')
         body = self._payload(1); body['status'] = 'POSTED'
         self.assertEqual(self.client.patch(f"/api/finance/invoices/{r.data['id']}/", body, format='json').status_code, 403)
+
+
+class ShiftCashRefundTests(_TillBase):
+    """§AUDIT A9/A10 (s157): a cash refund paid out of the drawer lowers the shift's expected cash.
+    Refunds are Manager-only, so each refund records WHICH open drawer (shift) paid it and HOW MUCH
+    cash left it: only the cash part of the original sale goes back in cash — a card sale goes back to
+    the card, an unpaid (Ajel) sale just cancels debt, store credit never touches the drawer."""
+
+    def setUp(self):
+        super().setUp()
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from finance.models import PaymentMethod
+        self.card = PaymentMethod.objects.create(store=self.store, name='Card')
+        self.manager = User.objects.create_user(username='mgr_t', password='x', role='MANAGER', store=self.store)
+        self.mgr = APIClient()
+        self.mgr.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(self.manager).access_token))
+        r = self.client.post('/api/finance/shifts/', {'branch': str(self.branch.id), 'starting_cash': '100'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.shift_id = r.data['id']
+
+    def _sale(self, method):
+        inv = self._draft()
+        if method is not None:
+            self.assertEqual(self._checkout(inv, method).status_code, 200)
+        return inv
+
+    def _refund(self, inv, amount, method='CASH'):
+        r = self.mgr.post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(inv.customer_id),
+            'refund_method': method,
+            'items': [{'variant': str(self.variant.id), 'quantity': '1', 'refund_amount': amount}],
+        }, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        from finance.models import RefundInvoice
+        return RefundInvoice.objects.get(pk=r.data['id'])
+
+    def _close(self, counted):
+        r = self.client.post(f'/api/finance/shifts/{self.shift_id}/close/', {'counted_cash': counted}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.data
+
+    def test_cash_refund_comes_out_of_the_cashiers_drawer(self):
+        ref = self._refund(self._sale(self.cash), '40')
+        self.assertEqual(str(ref.shift_id), self.shift_id)
+        self.assertEqual(ref.drawer_cash, Decimal('40'))
+        d = self._close('160')                  # 100 start + 100 sale − 40 refund
+        self.assertEqual(Decimal(d['expected_cash']), Decimal('160'))
+        self.assertEqual(Decimal(d['difference']), Decimal('0'))
+
+    def test_card_sale_refund_goes_back_to_card_not_drawer(self):
+        self.assertEqual(self._refund(self._sale(self.card), '40').drawer_cash, Decimal('0'))
+        self.assertEqual(Decimal(self._close('100')['expected_cash']), Decimal('100'))
+
+    def test_ajel_sale_refund_only_cancels_debt(self):
+        self.assertEqual(self._refund(self._sale(self.agel), '40').drawer_cash, Decimal('0'))
+
+    def test_store_credit_refund_never_touches_drawer(self):
+        self.assertEqual(self._refund(self._sale(self.cash), '40', 'STORE_CREDIT').drawer_cash, Decimal('0'))
+
+    def test_restocking_fee_is_kept_in_the_drawer(self):
+        self.settings.restocking_fee_percent = Decimal('10')
+        self.settings.save()
+        self.assertEqual(self._refund(self._sale(self.cash), '50').drawer_cash, Decimal('45'))
+
+    def test_cash_paid_out_never_exceeds_cash_taken_on_that_sale(self):
+        inv = self._draft()                     # 2 × 50 = 100, paid in cash
+        inv.items.update(quantity=Decimal('2'), unit_price=Decimal('50'))
+        self.assertEqual(self._checkout(inv, self.cash).status_code, 200)
+        self.assertEqual(self._refund(inv, '70').drawer_cash, Decimal('70'))
+        self.assertEqual(self._refund(inv, '50').drawer_cash, Decimal('30'))
+
+    def test_drawer_endpoint_shows_cash_in_out_and_expected(self):
+        self._refund(self._sale(self.cash), '40')
+        self._sale(self.card)                   # card money is not drawer cash
+        r = self.client.get('/api/finance/shifts/drawer/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(str(r.data['shift']['id']), self.shift_id)
+        self.assertEqual(Decimal(r.data['cash_in']), Decimal('100'))
+        self.assertEqual(Decimal(r.data['cash_out']), Decimal('40'))
+        self.assertEqual(Decimal(r.data['expected_balance']), Decimal('160'))
+        self.assertEqual(len(r.data['moves']), 2)
+
+    def test_cashier_cannot_close_someone_elses_shift(self):
+        other = User.objects.create_user(username='csh2', password='x', role='CASHIER', store=self.store)
+        from finance.models import WorkShift
+        s = WorkShift.objects.create(store=self.store, branch=self.branch, user=other, starting_cash=0)
+        r = self.client.post(f'/api/finance/shifts/{s.id}/close/', {'counted_cash': '0'}, format='json')
+        self.assertIn(r.status_code, (403, 404))

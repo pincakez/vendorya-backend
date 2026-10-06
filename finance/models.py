@@ -197,20 +197,26 @@ class WorkShift(TimestampedModel):
     def __str__(self):
         return f"{self.user.username} - {self.start_time.date()}"
 
-    def close_shift(self, counted_cash):
-        """Closes the shift and calculates shortage/overage."""
-        from django.utils import timezone
-        
-        # 1. Calculate Expected Cash
-        cash_sales = Payment.objects.filter(
+    def cash_in(self):
+        """Cash taken by this shift's cashier since it opened."""
+        return Payment.objects.filter(
             invoice__store=self.store,
             created_at__gte=self.start_time,
             method__is_cash=True,
             created_by=self.user
-        ).aggregate(sum=Sum('amount'))['sum'] or 0
-        
-        self.expected_cash = self.starting_cash + cash_sales
-        self.closing_cash = counted_cash
+        ).aggregate(sum=Sum('amount'))['sum'] or Decimal('0')
+
+    def cash_out(self):
+        """Cash refunds paid out of this drawer (s157, §AUDIT A9)."""
+        return (RefundInvoice.all_objects.filter(shift=self, is_deleted=False)
+                .aggregate(sum=Sum('drawer_cash'))['sum'] or Decimal('0'))
+
+    def close_shift(self, counted_cash):
+        """Closes the shift and calculates shortage/overage."""
+        from django.utils import timezone
+
+        self.expected_cash = self.starting_cash + self.cash_in() - self.cash_out()
+        self.closing_cash = Decimal(str(counted_cash))
         self.difference = self.closing_cash - self.expected_cash
         
         self.end_time = timezone.now()
@@ -250,6 +256,13 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
     )
 
     reason = models.TextField(blank=True)
+
+    # Cash paid back out of a till (s157, §AUDIT A9): fixed when the refund is made. `drawer_cash` = the part
+    # of the payout that was cash (a card sale goes back to the card, an unpaid Ajel sale just cancels debt);
+    # `shift` = the open drawer it came from, so that shift's expected cash drops by it at close.
+    shift = models.ForeignKey('WorkShift', on_delete=models.SET_NULL, null=True, blank=True,
+                              related_name='cash_refunds')
+    drawer_cash = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 

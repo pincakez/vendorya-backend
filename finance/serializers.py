@@ -1,6 +1,7 @@
 from decimal import Decimal
 from rest_framework import serializers
 from django.db import transaction
+from django.db.models import Sum
 from .models import (
     SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod,
     PurchaseInvoice, PurchaseItem, SupplierPayment,
@@ -535,12 +536,12 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'branch', 'original_invoice', 'customer', 'customer_name',
             'refund_number', 'date', 'total_refunded', 'reason', 'items',
-            'restocking_fee', 'refund_method', 'net_refund',
+            'restocking_fee', 'refund_method', 'net_refund', 'drawer_cash',
         ]
         # restocking_fee is computed server-side from the store's policy %, not
         # client-supplied, so a caller can't zero it out.
         read_only_fields = ['id', 'refund_number', 'date', 'total_refunded',
-                            'restocking_fee', 'net_refund']
+                            'restocking_fee', 'net_refund', 'drawer_cash']
 
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])
@@ -564,6 +565,8 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                     .quantize(Decimal('0.01'))
                 )
                 refund.save(update_fields=['restocking_fee'])
+            if refund.refund_method == RefundInvoice.RefundMethod.CASH:
+                self._record_drawer_cash(refund, original)
             # Store-credit payout accrues to the customer's wallet (net of fee).
             if (refund.refund_method == RefundInvoice.RefundMethod.STORE_CREDIT
                     and refund.customer_id):
@@ -573,6 +576,26 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                 cust.store_credit = (cust.store_credit or Decimal('0')) + refund.net_refund
                 cust.save(update_fields=['store_credit'])
         return refund
+
+    @staticmethod
+    def _record_drawer_cash(refund, original):
+        """s157 (§AUDIT A9): fix how much of a "Cash / Original" payout left a till, and which one.
+        With an original sale, only the cash taken on it (less cash already given back) goes back in cash;
+        the rest returns to the card / cancels Ajel debt. The drawer = the refunder's own open shift in
+        this branch, else the branch's most recently opened one; none open → paid from outside a till."""
+        cash = refund.net_refund
+        if original is not None:
+            taken = (Payment.objects.filter(invoice=original, method__is_cash=True)
+                     .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+            given = (RefundInvoice.objects.filter(original_invoice=original, is_deleted=False)
+                     .exclude(pk=refund.pk).aggregate(s=Sum('drawer_cash'))['s'] or Decimal('0'))
+            cash = min(cash, taken - given)
+        refund.drawer_cash = max(cash, Decimal('0'))
+        open_shifts = WorkShift.objects.filter(store=refund.store, branch=refund.branch,
+                                               status=WorkShift.Status.OPEN)
+        refund.shift = (open_shifts.filter(user=refund.created_by).first()
+                        or open_shifts.order_by('-start_time').first())
+        refund.save(update_fields=['drawer_cash', 'shift'])
 
     @staticmethod
     def _store_restock_percent(store):
