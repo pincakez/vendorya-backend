@@ -2,7 +2,6 @@ import os
 import mimetypes
 from django.conf import settings
 from django.conf.urls.static import static
-from django.contrib import admin
 from django.urls import path, include, re_path
 from django.http import FileResponse, Http404
 from core.views import HealthView
@@ -18,7 +17,8 @@ def serve_vue(request, path=''):
     raise Http404
 
 urlpatterns = [
-    path('django-admin/', admin.site.urls),
+    # §PRIVACY-SUDO (s163, Yakot 2026-10-08 "close the django ofc"): /django-admin/ is CLOSED — it had no 2FA and
+    # read every shop's tables. The platform's own Admin pages (/admin/*, API under /api/admin/) cover the job.
 
     # Public health check
     path('api/health/', HealthView.as_view(), name='health'),
@@ -92,4 +92,4 @@ urlpatterns += [
 ]
 
 # Catch-all: serve Vue index.html for any non-API route (SPA routing)
-urlpatterns += [re_path(r'^(?!api/|django-admin/|static/|media/|assets/).*$', serve_vue)]
+urlpatterns += [re_path(r'^(?!api/|static/|media/|assets/).*$', serve_vue)]

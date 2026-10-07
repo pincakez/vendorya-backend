@@ -92,7 +92,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django_otp.middleware.OTPMiddleware',  # guards /django-admin/ TOTP
+    'django_otp.middleware.OTPMiddleware',  # 2FA device on request.user (/django-admin/ itself is closed — s163)
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.TenantContextMiddleware',

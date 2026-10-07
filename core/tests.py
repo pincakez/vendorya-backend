@@ -270,5 +270,13 @@ class PlatformAccountPrivacyTests(TestCase):
     def test_sudo_export_endpoint_is_gone(self):
         self.assertEqual(_client(self.sudo).get(f'/api/admin/stores/{self.store.pk}/export/').status_code, 404)
 
+    def test_django_admin_is_closed(self):
+        from django.urls import reverse, NoReverseMatch
+        with self.assertRaises(NoReverseMatch):
+            reverse('admin:index')
+        r = self.client.get('/django-admin/')   # falls through to the Vue app (or 404) — never the Django admin
+        body = b''.join(r.streaming_content) if getattr(r, 'streaming', False) else r.content
+        self.assertNotIn(b'Django administration', body)
+
     def test_currency_list_still_open_to_sudo(self):
         self.assertEqual(_client(self.sudo).get('/api/core/currencies/').status_code, 200)
