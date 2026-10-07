@@ -215,11 +215,14 @@ class ActivityLogSerializer(serializers.ModelSerializer):
 
 
 class AdminActivityLogSerializer(ActivityLogSerializer):
-    """Same as ActivityLog but also exposes the store (for the sudo global view)."""
+    """The sudo cross-shop view: WHO did WHAT KIND of operation, WHEN, in which shop.
+
+    §PRIVACY-SUDO (s163, Yakot 2026-10-08): `action` text and `details` are left out — they carry
+    amounts, customer names and invoice numbers, which the platform account must never see."""
     store_name = serializers.CharField(source='store.name', read_only=True)
 
     class Meta(ActivityLogSerializer.Meta):
-        fields = ActivityLogSerializer.Meta.fields + ['store_name']
+        fields = ['id', 'username', 'full_name', 'operation_type', 'ip_address', 'timestamp', 'store_name']
 
 
 class LabelPresetSerializer(serializers.ModelSerializer):

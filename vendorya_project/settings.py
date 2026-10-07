@@ -210,7 +210,7 @@ if not _cors_origins:
 CORS_ALLOWED_ORIGINS = _cors_origins
 # Allow the super-admin store-scoping header on cross-origin (dev) requests.
 from corsheaders.defaults import default_headers as _cors_default_headers
-CORS_ALLOW_HEADERS = list(_cors_default_headers) + ['x-store-id']
+CORS_ALLOW_HEADERS = list(_cors_default_headers)   # 'x-store-id' dropped — §PRIVACY-SUDO (s163)
 
 import os
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')

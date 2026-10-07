@@ -1,9 +1,8 @@
 """Reports v1 — read-only reporting endpoints.
 
 Every endpoint:
-  * filters by ``store=request.user.store`` (super-admins act on a store via the
-    X-Store-ID header, same as the rest of the app — request.user.store is resolved
-    for them upstream);
+  * filters by ``store=request.user.store`` (the platform super-admin is storeless and
+    is refused — §PRIVACY-SUDO);
   * counts only POSTED sales and RECEIVED purchases, is_deleted=False everywhere;
   * uses the cost_at_sale COGS snapshot — never ProductVariant.cost_price;
   * returns plain dict payloads (no model writes), mirroring core.views.DashboardView.

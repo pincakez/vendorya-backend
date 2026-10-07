@@ -298,7 +298,10 @@ class StaffViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
-        return User.objects.filter(store=self.request.user.store, is_superadmin=False).order_by('first_name', 'username')
+        store = self.request.user.store
+        if store is None:   # never list the storeless accounts (filter(store=None) would)
+            return User.objects.none()
+        return User.objects.filter(store=store, is_superadmin=False).order_by('first_name', 'username')
 
     # ── Rank guard (s156, §AUDIT B4) ────────────────────────────────────────
     # Nobody creates, promotes to, or edits an account at or above their own rank: an Admin can't make an

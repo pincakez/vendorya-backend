@@ -23,24 +23,27 @@ from finance.models import (
 )
 
 
-def _invoice_label(obj):
-    return f"#{obj.invoice_number}" if obj.invoice_number else "(unposted)"
+def _hidden(kind):
+    """§PRIVACY-SUDO (s163): business records show NO name/amount/number to the platform account —
+    only what kind of row it is and when it was deleted. The shop's owner tells sudo the date."""
+    return lambda o: f"{kind} · {str(o.pk)[:8]}"
 
 
-# slug -> (Model, human label, label callable)
+# slug -> (Model, human label, label callable). Setup lists (categories, taxes…) keep their names;
+# business records (products, customers, suppliers, expenses, invoices) are labelled without content.
 TRASH_REGISTRY = {
-    'product':          (Product,            'Products',         lambda o: o.name),
+    'product':          (Product,            'Products',         _hidden('Product')),
     'category':         (Category,           'Categories',       lambda o: o.name),
-    'supplier':         (Supplier,           'Suppliers',        lambda o: o.name),
+    'supplier':         (Supplier,           'Suppliers',        _hidden('Supplier')),
     'attribute':        (AttributeDefinition,'Attributes',       lambda o: o.name),
     'tax':              (Tax,                'Taxes',            lambda o: o.name),
-    'customer':         (Customer,           'Customers',        lambda o: o.name),
-    'expense':          (Expense,            'Expenses',         lambda o: o.description or str(o.amount)),
+    'customer':         (Customer,           'Customers',        _hidden('Customer')),
+    'expense':          (Expense,            'Expenses',         _hidden('Expense')),
     'expense_category': (ExpenseCategory,    'Expense Categories', lambda o: o.name),
     'payment_method':   (PaymentMethod,      'Payment Methods',  lambda o: o.name),
-    'sales_invoice':    (SalesInvoice,       'Sales Invoices',   _invoice_label),
-    'purchase_invoice': (PurchaseInvoice,    'Purchases',        lambda o: o.invoice_number or '(draft)'),
-    'refund':           (RefundInvoice,      'Refunds',          lambda o: f"#{o.id}"[:10]),
+    'sales_invoice':    (SalesInvoice,       'Sales Invoices',   _hidden('Sales invoice')),
+    'purchase_invoice': (PurchaseInvoice,    'Purchases',        _hidden('Purchase')),
+    'refund':           (RefundInvoice,      'Refunds',          _hidden('Refund')),
     'branch':           (Branch,             'Branches',         lambda o: o.name),
 }
 

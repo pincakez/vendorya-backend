@@ -4,7 +4,7 @@ from .api_admin import (
     AdminStoreViewSet, AdminBranchViewSet, AdminUserViewSet,
     AdminActivityLogViewSet, AdminActivityLogMetaView, AdminActivityLogPurgeView,
     AdminStoreCodeCheckView, AdminStoreForceLogoutView,
-    AdminStoreUsageView, AdminStoreExportView,
+    AdminStoreUsageView,
     AdminSessionsView, AdminUserForceLogoutView,
 )
 from .api_admin_trash import AdminTrashListView, AdminTrashRestoreView
@@ -23,7 +23,6 @@ urlpatterns = [
     path('stores/check-code/',  AdminStoreCodeCheckView.as_view(),  name='admin-store-check-code'),
     path('stores/<uuid:store_id>/force-logout/', AdminStoreForceLogoutView.as_view(), name='admin-store-force-logout'),
     path('stores/<uuid:store_id>/usage/',        AdminStoreUsageView.as_view(),       name='admin-store-usage'),
-    path('stores/<uuid:store_id>/export/',       AdminStoreExportView.as_view(),       name='admin-store-export'),
     path('stores/<uuid:store_id>/sku/',          AdminStoreSkuView.as_view(),          name='admin-store-sku'),
     path('stores/<uuid:store_id>/sku2/disable/', AdminStoreSku2DisableView.as_view(),  name='admin-store-sku2-disable'),
     path('trash/',         AdminTrashListView.as_view(),    name='admin-trash-list'),

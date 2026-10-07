@@ -12,6 +12,9 @@ ROLE_RANK = {
 }
 SUPERADMIN_RANK = 99
 
+# §PRIVACY-SUDO (s163): the platform super-admin never opens a shop's data (sales, customers, reports…).
+PLATFORM_ACCOUNT_REFUSED = "The platform admin account cannot open a shop's data."
+
 
 def _user_rank(user):
     if not user or not user.is_authenticated:
@@ -53,7 +56,9 @@ class _MinRolePermission(BasePermission):
         if not user.is_active:          # inactive == locked out, super-admin included
             return False
         if getattr(user, 'is_superadmin', False):
-            return True
+            # §PRIVACY-SUDO (s163, Yakot 2026-10-08): shop screens are for the shop's own staff only.
+            self.message = PLATFORM_ACCOUNT_REFUSED
+            return False
         return _user_rank(user) >= _required_rank(self.min_role)
 
 
@@ -94,7 +99,7 @@ class RoleScopedPermission(BasePermission):
         }
 
     Falls back to `view.default_min_role` (defaults to OWNER — fail-closed) if
-    an action is not listed.  Super-admins always pass.  Inactive users fail.
+    an action is not listed.  Super-admins are REFUSED (§PRIVACY-SUDO).  Inactive users fail.
     """
     message = "Insufficient role for this action."
 
@@ -105,7 +110,9 @@ class RoleScopedPermission(BasePermission):
         if not user.is_active:          # inactive == locked out, super-admin included
             return False
         if getattr(user, 'is_superadmin', False):
-            return True
+            # §PRIVACY-SUDO (s163, Yakot 2026-10-08): shop screens are for the shop's own staff only.
+            self.message = PLATFORM_ACCOUNT_REFUSED
+            return False
 
         role_map = getattr(view, 'role_map', None) or {}
         default = getattr(view, 'default_min_role', User.Role.OWNER)

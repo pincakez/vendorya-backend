@@ -1,6 +1,6 @@
 import json
 from datetime import timedelta
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Q
 from django.utils import timezone as tz
 from django.http import HttpResponse
 from rest_framework import viewsets, filters, status
@@ -104,7 +104,7 @@ class AdminBranchViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return (
-            Branch.objects
+            Branch.all_objects   # cross-shop admin list — the tenant manager returns nothing for sudo
             .filter(is_deleted=False)
             .select_related('store', 'address')
             .order_by('store__name', 'name')
@@ -321,14 +321,11 @@ class AdminStoreUsageView(APIView):
         invoices_month = SalesInvoice.all_objects.filter(
             store=store, is_deleted=False, created_at__gte=month_start
         ).count()
-        revenue_month = (SalesInvoice.all_objects
-                         .filter(store=store, is_deleted=False, created_at__gte=month_start,
-                                 status=SalesInvoice.Status.POSTED)
-                         .aggregate(t=Sum('grand_total'))['t'] or 0)
+        # §PRIVACY-SUDO (s163): no revenue here — the platform account sees activity COUNTS, never a shop's money.
 
         purchases_total = PurchaseInvoice.all_objects.filter(store=store, is_deleted=False).count()
 
-        branches_count = Branch.objects.filter(store=store, is_deleted=False).count()
+        branches_count = Branch.all_objects.filter(store=store, is_deleted=False).count()
 
         return Response({
             'store_id':       str(store.pk),
@@ -341,87 +338,13 @@ class AdminStoreUsageView(APIView):
             'variants_count': variants_count,
             'invoices_total': invoices_total,
             'invoices_month': invoices_month,
-            'revenue_month':  str(revenue_month),
             'purchases_total': purchases_total,
             'as_of':          now.isoformat(),
         })
 
 
-class AdminStoreExportView(APIView):
-    """GET /api/admin/stores/{store_id}/export/ — full tenant data export (GDPR / offboarding)."""
-    permission_classes = [IsSuperAdmin]
-
-    def get(self, request, store_id):
-        try:
-            store = Store.objects.get(pk=store_id, is_deleted=False)
-        except Store.DoesNotExist:
-            return Response({'detail': 'Store not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        from inventory.models import Product, ProductVariant, Supplier, Category
-        from finance.models import SalesInvoice, PurchaseInvoice, Expense
-        from users.models import User as U
-
-        def _qs_to_list(qs, fields):
-            return list(qs.values(*fields))
-
-        payload = {
-            'export_meta': {
-                'store_id':   str(store.pk),
-                'store_name': store.name,
-                'store_code': store.store_code,
-                'exported_at': tz.now().isoformat(),
-                'exported_by': request.user.username,
-            },
-            'staff': _qs_to_list(
-                U.objects.filter(store=store),
-                ['id', 'username', 'email', 'first_name', 'last_name', 'role', 'is_active', 'date_joined']
-            ),
-            'suppliers': _qs_to_list(
-                Supplier.all_objects.filter(store=store, is_deleted=False),
-                ['id', 'name', 'code_prefix', 'phone_number', 'email', 'created_at']
-            ),
-            'categories': _qs_to_list(
-                Category.all_objects.filter(store=store, is_deleted=False),
-                ['id', 'name', 'parent_id', 'created_at']
-            ),
-            'products': _qs_to_list(
-                Product.all_objects.filter(store=store, is_deleted=False),
-                ['id', 'name', 'supplier_id', 'category_id', 'created_at']
-            ),
-            'variants': _qs_to_list(
-                ProductVariant.all_objects.filter(product__store=store, is_deleted=False),
-                ['id', 'sku', 'product_id', 'sell_price', 'cost_price', 'created_at']
-            ),
-            'sales_invoices': _qs_to_list(
-                SalesInvoice.all_objects.filter(store=store, is_deleted=False),
-                ['id', 'invoice_number', 'status', 'total', 'created_at']
-            ),
-            'purchase_invoices': _qs_to_list(
-                PurchaseInvoice.all_objects.filter(store=store, is_deleted=False),
-                ['id', 'invoice_number', 'total', 'created_at']
-            ),
-            'expenses': _qs_to_list(
-                Expense.all_objects.filter(store=store, is_deleted=False),
-                ['id', 'description', 'amount', 'created_at']
-            ),
-        }
-
-        def default_serializer(obj):
-            import uuid, decimal
-            if isinstance(obj, (uuid.UUID,)):
-                return str(obj)
-            if isinstance(obj, decimal.Decimal):
-                return float(obj)
-            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
-
-        filename = f"vendorya_export_{store.store_code}_{tz.now().strftime('%Y%m%d_%H%M')}.json"
-        content = json.dumps(payload, default=default_serializer, indent=2, ensure_ascii=False)
-        response = HttpResponse(content, content_type='application/json')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
-
-
-# ── Commands: live session management ────────────────────────────────────────
+# §PRIVACY-SUDO (s163): the sudo "export a shop's full data" endpoint was removed — a shop's data leaves
+# only through its OWN owner (TODO: owner-side export).
 
 class AdminSessionsView(APIView):
     """GET /api/admin/commands/sessions/
@@ -452,7 +375,7 @@ class AdminSessionsView(APIView):
 
         for token in active_tokens:
             user = token.user
-            if not user.store_id:
+            if user is None or not user.store_id:   # token of a deleted user → skip (was a 500)
                 continue  # skip superadmins — they have no store
             sid = str(user.store_id)
             if sid not in store_meta:

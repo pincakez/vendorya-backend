@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from inventory.models import Product
 from inventory.serializers import ProductListSerializer
-from users.permissions import RoleScopedPermission
+from users.permissions import RoleScopedPermission, IsCashierOrAbove
 from .models import POSFavoriteItem
 from .serializers import POSFavoriteItemSerializer
 
@@ -49,7 +49,7 @@ class POSFavoriteItemViewSet(viewsets.ModelViewSet):
 
 class TopSellingView(APIView):
     """GET /api/pos/top-selling/?period=month&category=<uuid>&limit=8"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsCashierOrAbove]   # shop staff only (§PRIVACY-SUDO)
 
     def get(self, request):
         from finance.models import SalesInvoiceItem

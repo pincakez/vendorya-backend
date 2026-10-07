@@ -18,7 +18,7 @@ class User(AbstractUser):
     is_superadmin = models.BooleanField(
         _("Super Admin"),
         default=False,
-        help_text=_("Vendorya platform-level admin. Bypasses per-store filtering via X-Store-ID header."),
+        help_text=_("Vendorya platform-level admin. Never belongs to a shop and never sees a shop's business data (§PRIVACY-SUDO)."),
     )
     force_password_change = models.BooleanField(
         _("Force Password Change"),
@@ -45,6 +45,14 @@ class User(AbstractUser):
         _("Preferred Language"), max_length=5,
         choices=Language.choices, default=Language.EN,
     )
+
+    def save(self, *args, **kwargs):
+        # §PRIVACY-SUDO (s163, Yakot 2026-10-08): the platform account is never inside a shop —
+        # a store link would let it read that shop's sales, customers and reports.
+        if self.is_superadmin:
+            self.store = None
+            self.default_branch = None
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.username

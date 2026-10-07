@@ -1,7 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User, Customer
-from core.admin import SoftDeleteAdmin
+from .models import User
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
@@ -26,8 +25,4 @@ class CustomUserAdmin(UserAdmin):
             return fieldsets # For now, let's just secure the list view
         return fieldsets
 
-@admin.register(Customer)
-class CustomerAdmin(SoftDeleteAdmin):
-    list_display = ('name', 'phone_number', 'balance', 'store')
-    list_filter = ('store',)
-    search_fields = ('name', 'phone_number')
+# §PRIVACY-SUDO (s163): Customer is NOT registered — the platform account never sees a shop's customers.

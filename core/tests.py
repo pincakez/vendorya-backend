@@ -114,7 +114,7 @@ class CashierSettingsTests(TestCase):
 
 class AdminStoreUsageTests(TestCase):
     """s157: Admin → Usage crashed (500) — it summed a field `total` that does not exist on SalesInvoice.
-    Revenue this month = POSTED invoices' grand_total only (drafts and voids are not revenue)."""
+    s163 §PRIVACY-SUDO: usage shows activity COUNTS only — the shop's revenue is no longer sent to sudo."""
 
     def setUp(self):
         from decimal import Decimal
@@ -133,10 +133,11 @@ class AdminStoreUsageTests(TestCase):
             SalesInvoice.objects.create(store=self.store, branch=branch, customer=cust, status=st,
                                         date=timezone.now(), grand_total=Decimal(amt))
 
-    def test_usage_answers_with_posted_revenue(self):
+    def test_usage_answers_with_counts_but_no_money(self):
         r = _client(self.sudo).get(f'/api/admin/stores/{self.store.pk}/usage/')
         self.assertEqual(r.status_code, 200, r.content[:300])
-        self.assertEqual(float(r.data['revenue_month']), 200.0)
+        self.assertEqual(r.data['invoices_total'], 4)
+        self.assertNotIn('revenue_month', r.data)
 
 
 class ItemNounTests(TestCase):
@@ -193,3 +194,81 @@ class LabelPresetRoleTests(TestCase):
 
     def test_manager_can_create(self):
         self.assertEqual(_client(self.manager).post('/api/core/label-presets/', {'name': 'Big'}, format='json').status_code, 201)
+
+
+class PlatformAccountPrivacyTests(TestCase):
+    """§PRIVACY-SUDO (s163, Yakot 2026-10-08): the platform super-admin ("sudo") never sees a shop's business
+    data — no "Enter store" (X-Store-ID), never inside a shop, shop endpoints refuse it, and the admin pages
+    show counts and kinds of activity, never amounts, names or invoice numbers."""
+
+    SHOP_URLS = ('/api/finance/invoices/', '/api/inventory/products/', '/api/core/dashboard/',
+                 '/api/reports/pnl/', '/api/core/store/', '/api/core/settings/', '/api/pos/top-selling/')
+
+    def setUp(self):
+        from decimal import Decimal
+        from django.utils import timezone
+        from core.models import Address, Branch, ActivityLog
+        from users.models import Customer
+        from finance.models import SalesInvoice
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_p', password='x', role='OWNER')
+        self.store = Store.objects.create(name='Private Co', store_code='PRV', owner=self.owner)
+        self.owner.store = self.store; self.owner.save()
+        branch = Branch.objects.create(store=self.store, name='Main',
+                                       address=Address.objects.create(store=self.store, street_1='1', city='Cairo'))
+        cust = Customer.objects.create(store=self.store, name='Secret Buyer', phone_number='0100')
+        SalesInvoice.objects.create(store=self.store, branch=branch, customer=cust, status='POSTED',
+                                          date=timezone.now(), grand_total=Decimal('31000'))
+        cust.delete()   # soft delete → lands in the admin trash
+        ActivityLog.all_objects.create(store=self.store, user=self.owner, operation_type='OTHER',
+                                       action='Sold to Secret Buyer for 31,000', details={'amount': '31000'})
+        # even if someone tries to put sudo inside a shop, saving takes it out again
+        self.sudo = User.objects.create_user(username='sudo_p', password='x', is_superadmin=True, store=self.store)
+
+    def test_sudo_is_never_inside_a_shop(self):
+        self.sudo.refresh_from_db()
+        self.assertIsNone(self.sudo.store_id)
+
+    def test_shop_endpoints_refuse_sudo_with_or_without_the_old_header(self):
+        c = _client(self.sudo)
+        for url in self.SHOP_URLS:
+            self.assertEqual(c.get(url).status_code, 403, url)
+            self.assertEqual(c.get(url, HTTP_X_STORE_ID=str(self.store.pk)).status_code, 403, url)
+
+    def test_the_owner_still_sees_his_shop(self):
+        c = _client(self.owner)
+        self.assertEqual(c.get('/api/core/store/').status_code, 200)
+        self.assertEqual(c.get('/api/finance/invoices/').status_code, 200)
+
+    def test_tenant_manager_returns_nothing_for_sudo(self):
+        from core.tenancy import set_current_request, set_current_store, clear_current_request
+        from finance.models import SalesInvoice
+        class _Req: pass
+        req = _Req(); req.user = self.sudo
+        set_current_request(req); set_current_store(None)
+        try:
+            self.assertEqual(SalesInvoice.objects.count(), 0)
+        finally:
+            clear_current_request()
+        self.assertGreaterEqual(SalesInvoice.all_objects.count(), 1)   # outside a request: unchanged
+
+    def test_admin_activity_log_has_no_action_text_or_details(self):
+        rows = _client(self.sudo).get('/api/admin/activity-logs/').data
+        rows = rows.get('results', rows) if isinstance(rows, dict) else rows
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertNotIn('action', row)
+            self.assertNotIn('details', row)
+        self.assertNotIn('31,000', str(rows))
+        self.assertNotIn('Secret Buyer', str(rows))
+
+    def test_admin_trash_hides_business_names(self):
+        r = _client(self.sudo).get(f'/api/admin/trash/?store={self.store.pk}')
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn('Secret Buyer', str(r.data))
+
+    def test_sudo_export_endpoint_is_gone(self):
+        self.assertEqual(_client(self.sudo).get(f'/api/admin/stores/{self.store.pk}/export/').status_code, 404)
+
+    def test_currency_list_still_open_to_sudo(self):
+        self.assertEqual(_client(self.sudo).get('/api/core/currencies/').status_code, 200)

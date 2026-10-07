@@ -30,7 +30,7 @@ _NO_STORE = Response({'detail': 'User has no store assigned.'}, status=status.HT
 
 class StoreView(APIView):
     """GET = any active staff (the sidebar needs the store name).
-    PATCH = OWNER only (or super-admin acting as store)."""
+    PATCH = OWNER only."""
 
     def get_permissions(self):
         if self.request.method == 'PATCH':
@@ -286,7 +286,7 @@ class CurrencyViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.request.method == 'GET':
-            return [IsAuthenticated(), IsCashierOrAbove()]
+            return [IsAuthenticated()]   # platform master list — shop staff AND sudo (store setup) read it
         return [IsAuthenticated(), IsSuperAdmin()]
 
 

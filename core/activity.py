@@ -16,10 +16,8 @@ def log_activity(*, request, action, op_type, details=None, store=None):
     Create an ActivityLog row for the active request's store + user.
 
     Pass `store` explicitly only when the request's user has no store attached
-    (e.g. a super-admin acting via X-Store-ID where you've already resolved
-    the target store some other way). In the common case the helper picks
-    `request.user.store`, which our VendoryaJWTAuthentication already swaps
-    for the X-Store-ID target when a super-admin is acting on a store.
+    (e.g. a sudo admin action about one shop, resolved some other way). In the
+    common case the helper picks `request.user.store`.
     """
     if request is None:
         return None

@@ -1,9 +1,5 @@
 from django.contrib import admin
-from django.urls import path, reverse
-from django.utils.html import format_html
-from .models import Store, Address, Branch, ActivityLog
-from .admin_views import store_global_search_view, store_global_search_api
-from .models import Store, Address, Branch, ActivityLog, StoreSettings
+from .models import Store, Address, Branch, StoreSettings
 
 # --- BASE ADMIN CLASS (Security + Soft Delete) ---
 class SoftDeleteAdmin(admin.ModelAdmin):
@@ -56,7 +52,7 @@ class BranchInline(admin.TabularInline):
 
 @admin.register(Store)
 class StoreAdmin(SoftDeleteAdmin):
-    list_display = ('name', 'owner', 'plan', 'is_active', 'actions_column')
+    list_display = ('name', 'owner', 'plan', 'is_active')
     list_filter = ('plan', 'is_active')
     search_fields = ('name', 'owner__username')
     inlines = [AddressInline, BranchInline]
@@ -78,20 +74,9 @@ class StoreAdmin(SoftDeleteAdmin):
         # Explicitly show stores owned by the user
         return qs.filter(owner=request.user)
 
-    def get_urls(self):
-        urls = super().get_urls()
-        custom_urls = [
-            path('<uuid:store_id>/search/', self.admin_site.admin_view(store_global_search_view), name='store_global_search'),
-            path('<uuid:store_id>/search/api/', self.admin_site.admin_view(store_global_search_api), name='store_global_search_api'),
-        ]
-        return custom_urls + urls
+    # §PRIVACY-SUDO (s163): the per-store "Search" page (products, suppliers, customers + phones) was removed.
 
-    def actions_column(self, obj):
-        search_url = reverse('admin:store_global_search', args=[obj.id])
-        search_btn = f'<a class="button" href="{search_url}" style="background-color:#17a2b8; color:white; padding:5px 10px; border-radius:4px;">🔍 Search</a>'
-        return format_html(search_btn)
-    actions_column.short_description = "Actions"
-    
+
 @admin.register(Address)
 class AddressAdmin(SoftDeleteAdmin):
     list_display = ('store', 'city', 'street_1')
@@ -101,19 +86,8 @@ class BranchAdmin(SoftDeleteAdmin):
     list_display = ('name', 'store', 'is_main_branch')
     search_fields = ('name',)
 
-@admin.register(ActivityLog)
-class ActivityLogAdmin(admin.ModelAdmin):
-    list_display = ('timestamp', 'user', 'action', 'store', 'ip_address')
-    list_filter = ('timestamp', 'store')
-    search_fields = ('user__username', 'action', 'details')
-    readonly_fields = ('timestamp', 'user', 'action', 'details', 'ip_address', 'store')
-    
-    def has_add_permission(self, request):
-        return False # Logs are read-only
-    
-    def has_delete_permission(self, request, obj=None):
-        return False # Logs cannot be deleted
-    
+# §PRIVACY-SUDO (s163): ActivityLog is NOT registered — its details carry amounts and customer names.
+
 @admin.register(StoreSettings)
 class StoreSettingsAdmin(SoftDeleteAdmin):
     list_display = ('store', 'allow_negative_stock', 'enable_agel_selling')

@@ -41,9 +41,8 @@ def set_current_request(request):
 def set_current_store(store):
     """Record the active tenant for the rest of this request.
 
-    Called from `VendoryaJWTAuthentication` right after the user (and, for
-    sudo, the X-Store-ID acting-store) is resolved. This is what actually
-    arms the tenant-scoped managers.
+    Called from `VendoryaJWTAuthentication` right after the user is resolved.
+    This is what actually arms the tenant-scoped managers.
     """
     _state.store = store
 
@@ -60,7 +59,7 @@ def get_current_request():
 
 
 def get_current_store():
-    """The active tenant, or None outside a request / for un-acting sudo.
+    """The active tenant, or None outside a request / for the storeless sudo.
 
     Falls back to resolving from the live request's user if the auth layer
     hasn't pushed it explicitly (defensive — e.g. session-auth code paths).
@@ -114,9 +113,11 @@ class TenantScopedQuerySet(models.QuerySet):
     def current_tenant(self):
         store = get_current_store()
         if store is None:
-            # Outside a request context (management command, signal) — return
-            # the full queryset.  Super-admin without X-Store-ID also lands
-            # here.  Caller is responsible for narrowing further if needed.
+            # §PRIVACY-SUDO (s163): the platform super-admin is storeless and must read NO shop rows
+            # through `.objects` — cross-shop admin code goes through `all_objects` on purpose.
+            if is_superadmin_context():
+                return self.none()
+            # Outside a request context (management command, signal, migration) — the full queryset.
             return self
         return self.for_tenant(store)
 
@@ -132,9 +133,9 @@ class TenantScopedManager(models.Manager.from_queryset(TenantScopedQuerySet)):
             all_objects = models.Manager()         # escape hatch (cross-tenant)
 
     In a request context `objects.all()` returns only the active tenant's
-    rows; outside a request (command/migration) or for un-acting sudo it
-    returns everything — same as a plain manager. Cross-tenant code (sudo
-    admin API, isolation audit) must go through `all_objects`.
+    rows; outside a request (command/migration) it returns everything — same as
+    a plain manager; for the storeless sudo it returns NOTHING (§PRIVACY-SUDO).
+    Cross-tenant code (sudo admin API, isolation audit) must go through `all_objects`.
     """
 
     tenant_lookup = 'store'

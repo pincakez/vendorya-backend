@@ -4,9 +4,10 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 
 class VendoryaJWTAuthentication(JWTAuthentication):
     """
-    Standard JWT auth, but for super-admin requests it honors the
-    X-Store-ID header by swapping the authenticated user's .store
-    attribute to the requested store. Regular users are unaffected.
+    Standard JWT auth that also arms the tenant-scoped managers for the request.
+
+    §PRIVACY-SUDO (s163, Yakot 2026-10-08): a platform super-admin is ALWAYS storeless. The old
+    X-Store-ID "Enter store" swap (sudo acting as any shop's owner) was a privacy breach and is gone.
 
     Rejects "pre-auth" tokens (the short-lived token issued mid-login to let a
     user enrol in 2FA): those are only valid on the 2FA enrolment endpoints.
@@ -22,18 +23,11 @@ class VendoryaJWTAuthentication(JWTAuthentication):
             raise InvalidToken('Pre-auth token cannot be used for general API access.')
 
         if user.is_authenticated and getattr(user, 'is_superadmin', False):
-            store_id = request.META.get('HTTP_X_STORE_ID')
-            if store_id:
-                from core.models import Store
-                try:
-                    store = Store.objects.get(id=store_id, is_active=True, is_deleted=False)
-                    user.store = store
-                except (Store.DoesNotExist, ValueError):
-                    user.store = None
+            user.store = None   # belt and braces — the model + migration already keep it NULL
 
-        # Arm the tenant-scoped managers for the rest of this request now that
-        # the real user (and any sudo acting-store) is resolved. For a normal
-        # user this is their store; for un-acting sudo it's None (= all rows).
+        # Arm the tenant-scoped managers for the rest of this request. For a normal user this is
+        # their store; for sudo it's None, which `TenantScopedQuerySet.current_tenant` turns into
+        # NO rows (sudo reads shops only through the admin API's explicit `all_objects`).
         from core.tenancy import set_current_store
         set_current_store(getattr(user, 'store', None))
 
