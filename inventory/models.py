@@ -37,9 +37,11 @@ class Supplier(TimestampedModel, SoftDeleteModel):
     
     code_prefix = models.CharField(
         _("Supplier Code Prefix"),
-        max_length=3,
-        validators=[RegexValidator(r'^\d{3}$', _('Prefix must be exactly 3 digits (100–999).'))],
-        help_text=_("Unique 3-digit code for this supplier within this store (100–999). Part of every SKU.")
+        max_length=4,
+        # 2–4 digits since s159: the shop picks 2 or 3 (SKU Management) and it grows by one digit when every
+        # code of that width is taken (`inventory/sku.py` supplier_code_width). Existing codes stay 3 digits.
+        validators=[RegexValidator(r'^\d{2,4}$', _('Supplier code must be 2 to 4 digits.'))],
+        help_text=_("Unique code for this supplier within this store. Part of every SKU.")
     )
     prefix_locked = models.BooleanField(
         _("Prefix Locked"), default=False,
@@ -329,15 +331,29 @@ class ProductMedia(models.Model):
 class ProductVariant(TimestampedModel, SoftDeleteModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variants')
+    # Copied from product.store on save (s159): a SKU is unique PER SHOP, and a DB constraint can't reach
+    # through product → store. Never set by hand.
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='variants',
+                              null=True, blank=True, editable=False)
     sku = models.CharField(
         _("SKU"),
-        max_length=10,
-        unique=True,
+        max_length=20,
         blank=True,
         null=True,   # superfix §2: Memory Base entries are SKU-less. NULLs are distinct
                      # under the unique constraint (unlike ''), so many can coexist.
-        validators=[RegexValidator(r'^\d{10}$', _('SKU must be exactly 10 digits.'))]
+        # product + supplier + shop digits, optionally joined by dashes (s159 SKU setup). The old
+        # fixed 10 digits is one case of this.
+        validators=[RegexValidator(r'^\d+(-\d+){0,2}$', _('SKU must be digits, optionally split by dashes.'))]
     )
+    # The parts the SKU was built from (s159) — the next number is counted from these, never read
+    # back out of the SKU text (widths and dashes vary). Old 10-digit SKUs were back-filled.
+    sku_number = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    sku_prefix = models.CharField(max_length=4, blank=True, default='', editable=False)
+    # SKU2 — a second code per product (s159, Yakot): e.g. the old system's code printed on the
+    # stickers already on the shelf. Digits only, unique per shop. Lives only while the shop's
+    # sku2_state is ON; after "disable for good" it stays as history (or is wiped).
+    sku2 = models.CharField(_("SKU2"), max_length=8, blank=True, null=True,
+                            validators=[RegexValidator(r'^\d{1,8}$', _('SKU2 must be 1 to 8 digits.'))])
     barcode = models.CharField(_("Barcode"), max_length=100, blank=True, null=True)
 
     cost_price = models.DecimalField(_("Cost (Avg)"), max_digits=12, decimal_places=2, default=0.00)
@@ -350,70 +366,36 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
         _("Reorder Level"), max_digits=12, decimal_places=3, default=5,
         help_text=_("Alert when on-hand stock falls to or below this. Default 5."))
 
+    class Meta:
+        ordering = ['-updated_at', '-created_at']   # kept from TimestampedModel's Meta
+        constraints = [
+            # Unique PER SHOP (s159, Yakot): two shops may both have SKU 1234567 — each only sees its own.
+            models.UniqueConstraint(fields=['store', 'sku'], condition=models.Q(sku__isnull=False),
+                                    name='uniq_variant_sku_per_store'),
+            models.UniqueConstraint(fields=['store', 'sku2'], condition=models.Q(sku2__isnull=False),
+                                    name='uniq_variant_sku2_per_store'),
+        ]
+
     def __str__(self):
         return f"{self.product.name} ({self.sku})"
 
     def save(self, *args, **kwargs):
+        from inventory import sku as sku_engine
+        self.store_id = self.product.store_id
+        if not self.sku2:
+            self.sku2 = None   # blank → NULL so SKU2-less variants don't collide on '' (unique)
         # Memory Base entries (superfix §2) are SKU-less: keep sku NULL, never generate.
         if not self.sku and self.product.source != Product.Source.MEMORY_BASE:
             with transaction.atomic():
-                self.sku = self._generate_sku()
+                self.sku, self.sku_number, self.sku_prefix = sku_engine.next_sku(self.product)
+                if self._state.adding and self.sku2 is None:
+                    self.sku2 = sku_engine.next_sku2(self.product.store)
                 super().save(*args, **kwargs)
             return
         # Normalize blank → NULL so SKU-less variants don't collide on '' (unique).
         if not self.sku:
             self.sku = None
         super().save(*args, **kwargs)
-
-    def _generate_sku(self):
-        store    = self.product.store
-        supplier = self.product.supplier
-
-        if not store.store_code:
-            raise ValueError("Store must have a store_code set before products can be created.")
-        if not supplier:
-            raise ValueError("Product must be assigned a supplier before a variant can be saved.")
-        if not supplier.prefix_locked:
-            raise ValueError("Supplier prefix must be confirmed (locked) before products can be created.")
-
-        store_part    = store.store_code        # 3 digits (trails — owner's constant code)
-        supplier_part = supplier.code_prefix    # 3 digits
-        # superfix §1 SKU order: product(4) + supplier(3) + store(3).
-        # Product number LEADS so search keys on the meaningful digits; the
-        # owner's constant store code trails. e.g. product 1515, supplier 400,
-        # store 100 -> "1515400100". The trailing 6 digits (supplier+store) are
-        # fixed for a given supplier in a given store, so the leading 4 digits
-        # are the per-(supplier,store) running product number.
-        suffix        = f"{supplier_part}{store_part}"   # last 6 digits
-
-        with transaction.atomic():
-            # Lock the supplier row — prevents concurrent SKU generation for same supplier
-            Supplier.objects.select_for_update().get(pk=supplier.pk)
-
-            existing_nums = set()
-            for sku in ProductVariant.all_objects.filter(
-                sku__endswith=suffix
-            ).values_list('sku', flat=True):
-                head = sku[:4]
-                if head.isdigit():
-                    existing_nums.add(int(head))
-
-            try:
-                mode = store.settings.product_numbering_mode
-            except Exception:
-                mode = 'PROGRESSIVE'
-
-            if mode == 'RANDOM':
-                available = set(range(1, 10000)) - existing_nums
-                if not available:
-                    raise ValueError("All 9999 product slots for this supplier are used.")
-                counter = _random.choice(list(available))
-            else:
-                counter = max(existing_nums, default=0) + 1
-                if counter > 9999:
-                    raise ValueError("Maximum product count (9999) reached for this supplier.")
-
-            return f"{counter:04d}{suffix}"
 
 class ProductAttribute(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

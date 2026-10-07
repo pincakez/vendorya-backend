@@ -1,7 +1,7 @@
 import uuid
 from django.db import models
 from django.conf import settings
-from django.core.validators import RegexValidator
+from django.core.validators import RegexValidator, MinValueValidator, MaxValueValidator
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
@@ -388,6 +388,44 @@ class StoreSettings(TimestampedModel):
         choices=ProductNumberingMode.choices,
         default=ProductNumberingMode.PROGRESSIVE,
     )
+
+    # 5b. SKU setup + SKU2 (s159, Yakot 2026-10-07) — set by SUDO only on Admin → SYSTEM → SKU Management
+    #     (`core/sku_admin.py`); the store's own settings endpoint never writes them. Defaults = the old
+    #     fixed 4 + 3 + 3, no dashes, so every existing shop keeps making exactly the SKUs it made before.
+    sku_product_digits = models.PositiveSmallIntegerField(
+        _("SKU product digits"), default=4, choices=[(3, '3'), (4, '4'), (5, '5')],
+        help_text=_("Width of the product number. It grows by one digit by itself when the numbers run out."))
+    sku_supplier_digits = models.PositiveSmallIntegerField(
+        _("SKU supplier digits"), default=3, choices=[(2, '2'), (3, '3')],
+        help_text=_("Width of a NEW supplier's code. Grows by one digit when every code of this width is taken."))
+    sku_shop_code = models.CharField(
+        _("SKU shop code"), max_length=3, blank=True, default='',
+        validators=[RegexValidator(r'^\d{2,3}$', _('Shop code must be 2 or 3 digits.'))],
+        help_text=_("The shop part of every SKU. Empty = the store code."))
+    sku_dashes = models.BooleanField(
+        _("Dashes in SKU"), default=False,
+        help_text=_("123-45-67 instead of 1234567. Dashes make two different SKUs impossible to look the same."))
+
+    class Sku2State(models.TextChoices):
+        OFF      = 'OFF',      _('Off')
+        ON       = 'ON',       _('On')
+        DISABLED = 'DISABLED', _('Disabled for good')   # one way — can never be switched on again
+
+    class Sku2Mode(models.TextChoices):
+        SEQUENCE = 'SEQUENCE', _('In sequence')
+        RANDOM   = 'RANDOM',   _('Random')
+
+    sku2_state = models.CharField(_("SKU2 state"), max_length=10, choices=Sku2State.choices, default=Sku2State.OFF)
+    sku2_digits = models.PositiveSmallIntegerField(
+        _("SKU2 digits"), default=5,
+        validators=[MinValueValidator(5), MaxValueValidator(8)])
+    sku2_mode = models.CharField(_("SKU2 numbering"), max_length=10, choices=Sku2Mode.choices, default=Sku2Mode.SEQUENCE)
+    sku2_auto_new = models.BooleanField(_("SKU2 for new products"), default=False,
+        help_text=_("Give every new product a SKU2 automatically."))
+    sku2_hide_tables = models.BooleanField(_("Hide SKU2 in tables"), default=False)
+    sku2_hide_search = models.BooleanField(_("Hide SKU2 in search results"), default=False,
+        help_text=_("Not shown in results — typing or scanning it still finds the product."))
+    sku2_print_label = models.BooleanField(_("Print SKU2 on price stickers"), default=False)
 
     # 6. Security (Auth Hardening)
     session_timeout_minutes = models.PositiveSmallIntegerField(

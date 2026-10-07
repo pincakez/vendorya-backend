@@ -93,6 +93,23 @@ class MemoryBasePagination(PageNumberPagination):
     max_page_size = 100
 
 
+class ProductSearchFilter(filters.SearchFilter):
+    """Name search as before, OR any code (SKU / SKU2 / barcode) containing the text — dashes
+    ignored, SKU2 only while the shop's SKU2 is ON (s159)."""
+
+    def filter_queryset(self, request, queryset, view):
+        terms = self.get_search_terms(request)
+        if not terms:
+            return queryset
+        from inventory.code_search import code_contains
+        from inventory.sku import sku2_active
+        by_name = super().filter_queryset(request, queryset, view)
+        text = ' '.join(terms)
+        store = getattr(request.user, 'store', None)
+        return queryset.filter(Q(pk__in=by_name.values('pk')) |
+                               Q(code_contains(text, bool(store) and sku2_active(store))))
+
+
 class ProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, RoleScopedPermission]
     role_map = {
@@ -119,11 +136,12 @@ class ProductViewSet(viewsets.ModelViewSet):
         'alternatives': 'CASHIER',   # POS /sameing + /sametrade finder (was owner-only by omission — s156)
         'media_specs':  'MANAGER',   # upload-limits note on the product page (s156),
     }
-    filter_backends = [filters.SearchFilter, VisibilityOrderingFilter]
+    filter_backends = [ProductSearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
     # Keep search_fields lean — no category joins (those caused 3-4s lag over 27k MB rows).
     # Attribute search is handled by the dedicated /autocomplete/ action.
-    search_fields = ['name', 'variants__sku', 'variants__barcode']
+    # SKU / SKU2 / barcode are matched by ProductSearchFilter itself (dashes ignored, s159).
+    search_fields = ['name']
     # Server-side sort. FE maps column keys -> these (see Products.vue ORDER_MAP).
     ordering_fields = ['name', 'supplier__name', 'created_at',
                        'o_sku', 'o_wholesale', 'o_retail', 'o_profit', 'o_stock']
@@ -605,10 +623,15 @@ class ProductViewSet(viewsets.ModelViewSet):
         # POS scanner: SKU + barcode aren't in the Typesense index — match them
         # directly in the DB and surface them FIRST (a scan should always beat a
         # fuzzy name hit), then fall back to the name/ingredient matches.
+        # s159: an EXACT code (SKU / SKU2 / barcode, dashes ignored) comes before one that merely
+        # contains the typed digits — `12077` must land on 12077, not on 1207740010.
         if pos_mode:
-            sku_hits = list(base.filter(
-                Q(variants__sku__icontains=q) | Q(variants__barcode__icontains=q)
-            ).distinct()[:20])
+            from inventory.code_search import exact_code, code_contains
+            from inventory.sku import sku2_active
+            with_sku2 = sku2_active(store)
+            exact_hits = list(base.filter(exact_code(q, with_sku2))[:20])
+            seen = {p.id for p in exact_hits}
+            sku_hits = exact_hits + [p for p in base.filter(code_contains(q, with_sku2))[:20] if p.id not in seen]
             seen = {p.id for p in sku_hits}
             results = (sku_hits + [p for p in results if p.id not in seen])[:20]
 
@@ -893,15 +916,23 @@ class SupplierViewSet(viewsets.ModelViewSet):
 
 
 class SupplierPrefixCheckView(APIView):
-    """GET /api/inventory/suppliers/check-prefix/?prefix=101 — store-scoped availability check."""
+    """GET /api/inventory/suppliers/check-prefix/?prefix=101 — store-scoped availability check.
+    No `prefix` → just the width a new code needs + the next free code (s159 SKU setup)."""
     permission_classes = [IsAuthenticated, IsManagerOrAbove]
 
     def get(self, request):
+        from inventory.sku import supplier_code_width, next_free_supplier_code
+        store = request.user.store
+        width = supplier_code_width(store)
+        info = {'width': width, 'next_free': next_free_supplier_code(store)}
         prefix = request.query_params.get('prefix', '').strip()
-        if not prefix or not prefix.isdigit() or len(prefix) != 3:
-            return Response({'detail': 'Provide a 3-digit prefix.'}, status=status.HTTP_400_BAD_REQUEST)
-        taken = Supplier.objects.filter(store=request.user.store, code_prefix=prefix).exists()
-        return Response({'prefix': prefix, 'available': not taken})
+        if not prefix:
+            return Response(info)
+        if not prefix.isdigit() or len(prefix) != width or prefix[0] == '0':
+            return Response({**info, 'detail': f'Provide a {width}-digit code (not starting with 0).'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        taken = Supplier.all_objects.filter(store=store, code_prefix=prefix).exists()
+        return Response({**info, 'prefix': prefix, 'available': not taken})
 
 
 class TaxViewSet(viewsets.ModelViewSet):

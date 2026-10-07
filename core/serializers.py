@@ -89,6 +89,14 @@ class BranchSerializer(serializers.ModelSerializer):
         return instance
 
 
+#: s159 — sudo-only SKU setup + SKU2 fields (read-only in the shop's own settings).
+SKU_SETTING_FIELDS = [
+    'sku_product_digits', 'sku_supplier_digits', 'sku_shop_code', 'sku_dashes',
+    'sku2_state', 'sku2_digits', 'sku2_mode', 'sku2_auto_new',
+    'sku2_hide_tables', 'sku2_hide_search', 'sku2_print_label',
+]
+
+
 class StoreSettingsSerializer(serializers.ModelSerializer):
     lock_logo_url = serializers.SerializerMethodField()
     lock_pin_set  = serializers.SerializerMethodField()
@@ -130,8 +138,10 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'pos_respect_mb_units', 'pos_tier_count',
             'default_info_sound', 'default_warning_sound', 'default_alert_sound',
             'lock_timeout_minutes', 'lock_facts_bank', 'lock_logo_url', 'lock_pin_set',
-        ]
-        read_only_fields = ['lock_logo_url', 'lock_pin_set']
+        ] + SKU_SETTING_FIELDS
+        # The SKU setup + SKU2 are SUDO's (Admin → SYSTEM → SKU Management, `core/sku_admin.py`):
+        # the shop reads them here (to show/hide SKU2), never writes them.
+        read_only_fields = ['lock_logo_url', 'lock_pin_set'] + SKU_SETTING_FIELDS
 
     def validate_pos_cart_display_fields(self, value):
         if not isinstance(value, list):

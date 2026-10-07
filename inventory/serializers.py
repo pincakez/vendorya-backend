@@ -93,6 +93,21 @@ class SupplierSerializer(serializers.ModelSerializer):
                   'phone_number', 'whatsapp_number', 'email', 'instagram', 'website', 'country', 'city', 'notes']
         read_only_fields = ['id', 'prefix_locked']
 
+    def validate_code_prefix(self, value):
+        # s159: a NEW supplier's code has the shop's current width (2 or 3, +1 once a width is used up —
+        # `inventory/sku.py`). Locked codes never change, so an edit is checked by the view, not here.
+        if self.instance is not None:
+            return value
+        from inventory.sku import supplier_code_width
+        request = self.context.get('request')
+        store = getattr(getattr(request, 'user', None), 'store', None)
+        if store is None:
+            return value
+        width = supplier_code_width(store)
+        if not value.isdigit() or len(value) != width or value[0] == '0':
+            raise serializers.ValidationError(f'Supplier code must be {width} digits (not starting with 0).')
+        return value
+
 class AttributeDefinitionSerializer(serializers.ModelSerializer):
     class Meta:
         model = AttributeDefinition
@@ -129,7 +144,7 @@ class ProductVariantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ProductVariant
-        fields = ['id', 'product', 'product_name', 'sku', 'barcode',
+        fields = ['id', 'product', 'product_name', 'sku', 'sku2', 'barcode',
                   'cost_price', 'sell_price', 'reorder_level',
                   'attributes', 'stock_levels', 'total_stock', 'storage_qty']
 
@@ -168,6 +183,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
     default_variant_stock = serializers.SerializerMethodField()
     selling_units         = serializers.SerializerMethodField()
     sku_display           = serializers.SerializerMethodField()
+    sku2_display          = serializers.SerializerMethodField()
     cost_display          = serializers.SerializerMethodField()
     # Enriched packaging from the linked Memory Base drug (§MB-COLS columns + modal auto-fill)
     strips_per_pack       = serializers.IntegerField(source='drug_profile.strips_per_pack', read_only=True)
@@ -179,7 +195,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'id', 'name', 'source', 'category', 'category_name', 'supplier_name',
             'total_stock', 'price_display', 'cost_display', 'profit_display',
             'attributes_summary', 'default_variant_id', 'default_variant_price',
-            'default_variant_stock', 'selling_units', 'sku_display', 'hide_from_pos',
+            'default_variant_stock', 'selling_units', 'sku_display', 'sku2_display', 'hide_from_pos',
             'track_expiry', 'selling_mode', 'sell_base_unit',
             'category_l1', 'category_l2', 'category_l3', 'category_l4',
             'strips_per_pack', 'tablets_per_strip',
@@ -225,6 +241,10 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
 
     def get_selling_units(self, obj):
         return build_selling_units(obj.variants.first(), obj)
+
+    def get_sku2_display(self, obj):
+        v = next(iter(obj.variants.all()), None)
+        return v.sku2 if v else None
 
     def get_sku_display(self, obj):
         variants = list(obj.variants.all())
@@ -369,13 +389,32 @@ class ProductWriteSerializer(serializers.ModelSerializer):
     selling_units = serializers.ListField(
         child=serializers.DictField(), write_only=True, required=False
     )
+    # SKU2 (s159): only while the shop's SKU2 is ON. Blank on create = the auto one (if the shop has
+    # "for new products" on); blank on edit = clear it.
+    sku2 = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=8)
 
     class Meta:
         model = Product
         fields = ['id', 'name', 'description', 'category', 'supplier',
                   'base_price', 'attributes', 'cost_price', 'sell_price',
                   'reorder_level', 'unit', 'selling_units', 'track_expiry',
-                  'selling_mode', 'sell_base_unit']
+                  'selling_mode', 'sell_base_unit', 'sku2']
+
+    def validate_sku2(self, value):
+        from inventory.sku import sku2_active
+        value = (value or '').strip()
+        store = self.context['request'].user.store
+        if not sku2_active(store):
+            raise serializers.ValidationError(_('SKU2 is not switched on for this shop.'))
+        if value and (not value.isdigit() or len(value) > 8):
+            raise serializers.ValidationError(_('SKU2 must be 1 to 8 digits.'))
+        if value:
+            taken = ProductVariant.all_objects.filter(store=store, sku2=value)
+            if self.instance is not None:
+                taken = taken.exclude(product=self.instance)
+            if taken.exists():
+                raise serializers.ValidationError(_('Another product already has this SKU2.'))
+        return value
         read_only_fields = ['id']
 
     def validate(self, data):
@@ -442,6 +481,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         sell_price = validated_data.pop('sell_price', 0)
         reorder    = validated_data.pop('reorder_level', None)
         units      = validated_data.pop('selling_units', None)
+        sku2       = validated_data.pop('sku2', None)
 
         store    = validated_data.pop('store')
         name     = validated_data.pop('name')
@@ -457,6 +497,10 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             extra_product_fields=validated_data,
         )
         self._sync_selling_units(product.variants.first(), units)
+        if sku2:
+            variant = product.variants.first()
+            variant.sku2 = sku2
+            variant.save(update_fields=['sku2', 'updated_at'])
         return product
 
     def update(self, instance, validated_data):
@@ -466,6 +510,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         sell_price = validated_data.pop('sell_price', None)
         reorder    = validated_data.pop('reorder_level', None)
         units      = validated_data.pop('selling_units', None)
+        sku2       = validated_data.pop('sku2', None)
         # Supplier is locked after creation — the SKU embeds the supplier prefix,
         # so changing it would invalidate every SKU on this product.
         validated_data.pop('supplier', None)
@@ -486,6 +531,8 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                     variant.sell_price = sell_price
                 if reorder is not None:
                     variant.reorder_level = reorder
+                if sku2 is not None:
+                    variant.sku2 = sku2 or None
                 variant.save()
 
                 self._sync_selling_units(variant, units)
