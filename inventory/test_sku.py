@@ -211,3 +211,37 @@ class Sku2Tests(_Shop, TestCase):
 
     def test_shop_cannot_reach_the_sudo_page(self):
         self.assertEqual(self.shop.get(self.url).status_code, 403)
+
+
+class Sku2CsvTests(_Shop, TestCase):
+    def setUp(self):
+        from core.models import Address, Branch
+        self.store, self.st, self.owner = self.make_shop('100')
+        self.sup = self.supplier(self.store, '400')
+        addr = Address.objects.create(store=self.store, street_1='1', city='Cairo')
+        Branch.objects.create(store=self.store, name='Main', address=addr)
+
+    def _import(self, csv_text):
+        from inventory.import_export import CatalogImporter, parse_csv
+        headers, rows = parse_csv(csv_text.encode())
+        return CatalogImporter(self.store, self.owner).commit(headers, rows)
+
+    def test_sku2_column_needs_sku2_on(self):
+        r = self._import('A_SUPP,M_CAT,P_NAME,W_PRICE,R_PRICE,SKU2\nSup400,Laptops,ZBook,10,20,12015\n')
+        self.assertFalse(r['ok'])
+
+    def test_sku2_column_imports_and_exports(self):
+        from inventory.import_export import export_catalog
+        self.st.sku2_state = 'ON'
+        self.st.save()
+        r = self._import('A_SUPP,M_CAT,P_NAME,W_PRICE,R_PRICE,SKU2\nSup400,Laptops,ZBook,10,20,12015\n')
+        self.assertTrue(r['ok'], r)
+        self.assertEqual(ProductVariant.objects.get(product__name='ZBook', product__source='STORE').sku2, '12015')
+        self.store.refresh_from_db()
+        out = export_catalog(Store.objects.get(pk=self.store.pk))
+        self.assertIn('SKU2', out.splitlines()[0])
+        self.assertIn('12015', out)
+        # the exported file's SKU column is no longer refused as "unknown", and its SKU2 is checked
+        again = self._import(out)
+        self.assertFalse(any('Unknown column' in e for e in again['errors']), again)
+        self.assertTrue(any('already belongs' in e for e in again['errors']), again)

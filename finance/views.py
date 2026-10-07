@@ -469,6 +469,10 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         """Returns fully-resolved label payload for all items in this purchase."""
         invoice = self.get_object()
         store = invoice.store
+        # SKU2 on the sticker only while SKU2 is ON and sudo ticked "print on price stickers" (s159).
+        from inventory.sku import sku2_active
+        st = store.settings
+        with_sku2 = sku2_active(store) and st.sku2_print_label
         items = []
         for item in invoice.items.select_related('variant__product'):
             v = item.variant
@@ -476,6 +480,7 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
                 'variant_id':   str(v.id),
                 'product_name': v.product.name,
                 'sku':          v.sku,
+                'sku2':         (v.sku2 or '') if with_sku2 else '',
                 'barcode':      v.barcode or v.sku,
                 'sell_price':   str(v.sell_price),
                 'quantity':     int(item.quantity),

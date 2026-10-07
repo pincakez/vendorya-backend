@@ -31,6 +31,9 @@ from .models import (
 CAT_COLUMNS = ['M_CAT', 'S1_CAT', 'S2_CAT', 'S3_CAT']          # tiers 1..4
 MANDATORY_COLUMNS = set(CAT_COLUMNS) | {
     'M_BRANCH', 'A_SUPP', 'Q_QTY', 'W_PRICE', 'R_PRICE', 'P_NAME',
+    # SKU: read-only reference in the export — accepted and IGNORED on import (s159: before this an
+    # exported file could not be imported back). SKU2: the product's second code (shop's SKU2 must be ON).
+    'SKU', 'SKU2',
 }
 REQUIRED_COLUMNS = ['A_SUPP', 'M_CAT', 'W_PRICE', 'R_PRICE']
 
@@ -134,6 +137,11 @@ class CatalogImporter:
             for p in Product.objects.filter(store=self.store).only('name', 'supplier_id')
         }
         attr_headers = [h for h in headers if _is_attr(h)]
+        from inventory.sku import sku2_active
+        sku2_on = sku2_active(self.store)
+        sku2_taken = set(ProductVariant.all_objects.filter(store=self.store, sku2__isnull=False)
+                         .values_list('sku2', flat=True))
+        sku2_in_file = set()
 
         seen_in_file = set()
         new_cat_paths, new_attr_options = set(), {}
@@ -204,6 +212,20 @@ class CatalogImporter:
                 err(f'R_PRICE "{row.get("R_PRICE")}" is not a number.'); r = None
             if w is not None and r is not None and r < w:
                 warnings.append(f'Row {i}: retail ({r}) is below wholesale ({w}) — negative margin.')
+
+            # SKU2 (s159)
+            code2 = (row.get('SKU2') or '').strip()
+            if code2:
+                if not sku2_on:
+                    err('SKU2 is not switched on for this shop (ask the platform admin).')
+                elif not code2.isdigit() or len(code2) > 8:
+                    err(f'SKU2 "{code2}" must be 1 to 8 digits.')
+                elif code2 in sku2_taken:
+                    err(f'SKU2 "{code2}" already belongs to another product.')
+                elif code2 in sku2_in_file:
+                    err(f'SKU2 "{code2}" appears twice in the file.')
+                else:
+                    sku2_in_file.add(code2)
 
             # quantity
             if 'Q_QTY' in headers:
@@ -279,6 +301,7 @@ class CatalogImporter:
                 product=product,
                 cost_price=_parse_decimal(row.get('W_PRICE')) or Decimal('0'),
                 sell_price=_parse_decimal(row.get('R_PRICE')) or Decimal('0'),
+                sku2=(row.get('SKU2') or '').strip() or None,
             )
             variant.save()   # auto-generates SKU from the locked supplier prefix
 
@@ -356,10 +379,14 @@ def export_catalog(store):
                 'W_PRICE': v.cost_price,
                 'R_PRICE': v.sell_price,
                 'SKU': v.sku,
+                'SKU2': v.sku2 or '',
             })
 
     cat_headers = CAT_COLUMNS[:max_depth]
-    header = ['M_BRANCH', 'A_SUPP'] + cat_headers + attr_headers + ['Q_QTY', 'W_PRICE', 'R_PRICE', 'SKU']
+    # SKU2 column once the shop has ever had SKU2 (ON, or DISABLED with history kept).
+    with_sku2 = store.settings.sku2_state != 'OFF'
+    header = (['M_BRANCH', 'A_SUPP'] + cat_headers + attr_headers + ['Q_QTY', 'W_PRICE', 'R_PRICE', 'SKU']
+              + (['SKU2'] if with_sku2 else []))
 
     out = io.StringIO()
     writer = csv.writer(out)
@@ -370,6 +397,6 @@ def export_catalog(store):
             line.append(r['_path'][idx] if idx < len(r['_path']) else '')
         for h in attr_headers:
             line.append(r['_attrs'].get(h, ''))
-        line += [r['Q_QTY'], r['W_PRICE'], r['R_PRICE'], r['SKU']]
+        line += [r['Q_QTY'], r['W_PRICE'], r['R_PRICE'], r['SKU']] + ([r['SKU2']] if with_sku2 else [])
         writer.writerow(line)
     return out.getvalue()
