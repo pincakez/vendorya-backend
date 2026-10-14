@@ -98,12 +98,12 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         model = SalesInvoice
         fields = [
             'id', 'branch', 'customer', 'invoice_number', 'status', 'date',
-            'subtotal', 'tax_total', 'discount', 'grand_total', 'paid_amount',
+            'subtotal', 'tax_total', 'discount', 'grand_total', 'paid_amount', 'change_given',
             'items', 'created_at',
         ]
         read_only_fields = [
             'id', 'invoice_number', 'subtotal', 'tax_total',
-            'grand_total', 'paid_amount', 'created_at',
+            'grand_total', 'paid_amount', 'change_given', 'created_at',
         ]
 
     def create(self, validated_data):
@@ -210,6 +210,8 @@ class PaymentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'method': 'Unknown payment method.'})
         if method.is_agel:
             raise serializers.ValidationError({'method': 'Ajel (credit) is not a payment — leave the sale unpaid instead.'})
+        if method.is_store_credit:   # s167: store credit is spent only at checkout, where the wallet goes down
+            raise serializers.ValidationError({'method': 'Unknown payment method.'})
         if amount <= 0:
             raise serializers.ValidationError({'amount': 'Amount must be more than zero.'})
         if invoice.status != SalesInvoice.Status.POSTED:
@@ -258,6 +260,8 @@ class CustomerReceiptSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'method': 'Unknown payment method.'})
         if method.is_agel:
             raise serializers.ValidationError({'method': 'Ajel (credit) is not a payment — choose how the money came in.'})
+        if method.is_store_credit:   # s167: store credit is spent only at checkout, where the wallet goes down
+            raise serializers.ValidationError({'method': 'Unknown payment method.'})
         return attrs
 
 
@@ -583,12 +587,12 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'branch', 'original_invoice', 'customer', 'customer_name',
             'refund_number', 'date', 'total_refunded', 'reason', 'items',
-            'restocking_fee', 'refund_method', 'net_refund', 'drawer_cash', 'paid_back',
+            'restocking_fee', 'refund_method', 'net_refund', 'drawer_cash', 'paid_back', 'store_credit_back',
         ]
         # restocking_fee is computed server-side from the store's policy %, not
         # client-supplied, so a caller can't zero it out.
         read_only_fields = ['id', 'refund_number', 'date', 'total_refunded',
-                            'restocking_fee', 'net_refund', 'drawer_cash', 'paid_back']
+                            'restocking_fee', 'net_refund', 'drawer_cash', 'paid_back', 'store_credit_back']
 
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])
@@ -613,17 +617,38 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                 )
                 refund.save(update_fields=['restocking_fee'])
             self._record_paid_back(refund, original)
+            self._record_store_credit_back(refund, original)
             if refund.refund_method == RefundInvoice.RefundMethod.CASH:
                 self._record_drawer_cash(refund, original)
-            # Store-credit payout accrues to the customer's wallet — only what is really paid back (s165).
-            if (refund.refund_method == RefundInvoice.RefundMethod.STORE_CREDIT
-                    and refund.customer_id and refund.paid_back > 0):
+            # The wallet part of the payout accrues to the customer's store credit — only what is really paid
+            # back (s165): all of it on a Store Credit refund; on a Cash / Original refund, the share of the
+            # sale that was paid WITH store credit (s167).
+            if refund.customer_id and refund.store_credit_back > 0:
                 from users.models import Customer
                 cust = (Customer.all_objects.select_for_update()
                         .get(pk=refund.customer_id))
-                cust.store_credit = (cust.store_credit or Decimal('0')) + refund.paid_back
+                cust.store_credit = (cust.store_credit or Decimal('0')) + refund.store_credit_back
                 cust.save(update_fields=['store_credit'])
         return refund
+
+    @staticmethod
+    def _record_store_credit_back(refund, original):
+        """s167 (split payment): how much of paid_back goes into the customer's store-credit wallet.
+        Store Credit refund → all of it. Cash / Original refund → first the part of the sale that was paid with
+        store credit (less what earlier returns already put back in the wallet), so store credit is never
+        turned into cash; the rest is cash (then card) as before."""
+        if refund.refund_method == RefundInvoice.RefundMethod.STORE_CREDIT:
+            back = refund.paid_back
+        elif original is not None:
+            spent = (Payment.objects.filter(invoice=original, method__is_store_credit=True)
+                     .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
+            earlier = (RefundInvoice.objects.filter(original_invoice=original, is_deleted=False)
+                       .exclude(pk=refund.pk).aggregate(s=Sum('store_credit_back'))['s'] or Decimal('0'))
+            back = min(refund.paid_back, spent - earlier)
+        else:
+            back = Decimal('0')
+        refund.store_credit_back = max(back, Decimal('0'))
+        refund.save(update_fields=['store_credit_back'])
 
     @staticmethod
     def _record_paid_back(refund, original):
@@ -646,7 +671,7 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         With an original sale, only the cash taken on it (less cash already given back) goes back in cash;
         the rest returns to the card / cancels Ajel debt. The drawer = the refunder's own open shift in
         this branch, else the branch's most recently opened one; none open → paid from outside a till."""
-        cash = refund.paid_back
+        cash = refund.paid_back - refund.store_credit_back   # s167: the wallet share never leaves the till as cash
         if original is not None:
             taken = (Payment.objects.filter(invoice=original, method__is_cash=True)
                      .aggregate(s=Sum('amount'))['s'] or Decimal('0'))

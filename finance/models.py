@@ -68,8 +68,19 @@ class PaymentMethod(TimestampedModel, SoftDeleteModel):
     name = models.CharField(max_length=100)
     is_cash = models.BooleanField(default=False)
     is_agel = models.BooleanField(default=False, help_text="Agel (credit) sales only. Enforces credit limit and tracks customer debt.")
+    # s167 (PROLINE-PARITY Upgrade 5): the shop's ONE system method for spending a customer's store credit at
+    # the till. Made on first use by finance.split_payment.store_credit_method(); hidden from the methods list
+    # (nobody edits or picks it by id) — the till sends {"method": "STORE_CREDIT"}. Never cash: it never
+    # touches the drawer. A Payment with it = wallet money spent on that sale (auditable, reversible on return).
+    is_store_credit = models.BooleanField(default=False, editable=False)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
+    class Meta(TimestampedModel.Meta):   # keep the inherited ordering
+        constraints = [
+            models.UniqueConstraint(fields=['store'], condition=models.Q(is_store_credit=True),
+                                    name='one_store_credit_method_per_store'),
+        ]
 
     def __str__(self):
         return self.name
@@ -100,6 +111,9 @@ class SalesInvoice(TimestampedModel, SoftDeleteModel):
     # The till's Idempotency-Key of the checkout that completed this sale (s157, §AUDIT A5): a retry with
     # the same key gets the finished sale back instead of an error.
     checkout_key = models.CharField(max_length=64, blank=True, default='', editable=False)
+    # Cash handed back at the till when the customer paid more cash than was due (s167, split payment). The
+    # cash Payment stores only the money KEPT; this is printed on the receipt as "Change".
+    change_given = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, editable=False)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
@@ -320,6 +334,10 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
     # was paid on the original sale (less earlier returns' paid_back); the unpaid part of the net refund only
     # cancels debt. Without an original sale = the whole net refund. Feeds invoice_outstanding().
     paid_back = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    # The part of paid_back that went back into the customer's store-credit wallet (s167): all of it on a
+    # Store Credit refund; on a "Cash / Original" refund, the share of the sale that was PAID with store
+    # credit goes back to the wallet first (never turned into cash), then cash, then the card.
+    store_credit_back = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 

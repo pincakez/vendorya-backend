@@ -44,7 +44,9 @@ class PaymentMethodViewSet(viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        return PaymentMethod.objects.filter(store=self.request.user.store)
+        # s167: the system "Store credit" method stays out of the list — the till spends store credit with a
+        # STORE_CREDIT payment line, and the shop can't rename / delete / pick it by hand.
+        return PaymentMethod.objects.filter(store=self.request.user.store, is_store_credit=False)
 
     def perform_create(self, serializer):
         serializer.save(store=self.request.user.store)
@@ -169,21 +171,11 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         settings_obj = getattr(invoice.store, 'settings', None)
 
         # The till's payment comes WITH the checkout (s156, §AUDIT A2/A3) so the policies below judge the
-        # sale as it will really be. `method` = a PaymentMethod id: a normal method pays the whole remaining
-        # balance; an Ajel (credit) method pays nothing — the balance becomes the customer's debt. No method
-        # = post unpaid (old behaviour, kept for callers that pay separately).
-        method = None
-        if request.data.get('method'):
-            method = PaymentMethod.objects.filter(store=invoice.store, pk=request.data['method']).first()
-            if method is None:
-                return Response({'detail': 'Unknown payment method.'}, status=status.HTTP_400_BAD_REQUEST)
-        remaining = (invoice.grand_total or Decimal('0')) - (invoice.paid_amount or Decimal('0'))
-        pay_now = remaining if (method and not method.is_agel and remaining > 0) else Decimal('0')
-        paid_after = (invoice.paid_amount or Decimal('0')) + pay_now
-
-        if method and method.is_agel and (invoice.customer is None or invoice.customer.is_walk_in):
-            return Response({'detail': 'A credit (Ajel) sale needs a named customer — pick one first.'},
-                            status=status.HTTP_400_BAD_REQUEST)
+        # sale as it will really be. s167: `payments` = several lines (cash + card + store credit + Ajel rest,
+        # change on cash) — rules in finance/split_payment.py; the old single `method` still works.
+        from .split_payment import plan_checkout_payments
+        plan = plan_checkout_payments(invoice, request.data)
+        paid_after = (invoice.paid_amount or Decimal('0')) + plan.paying
 
         # Policy 1 — credit (agel) selling. Block posting an unpaid invoice when
         # the owner disabled credit. No race here (reads invoice totals only).
@@ -285,9 +277,20 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             # and assigns the human-readable invoice_number.
             invoice.status = SalesInvoice.Status.POSTED
             invoice.checkout_key = idem_key
+            invoice.change_given = plan.change
             invoice.save()
-            if pay_now > 0:
-                Payment.objects.create(invoice=invoice, method=method, amount=pay_now, created_by=request.user)
+            if plan.store_credit > 0:
+                # s167: spend the wallet with the customer row LOCKED, re-checked here — two tills spending the
+                # same credit at once can't both succeed. Raising rolls the whole sale back to DRAFT.
+                from users.models import Customer
+                cust = Customer.all_objects.select_for_update().get(pk=invoice.customer_id)
+                if plan.store_credit > (cust.store_credit or Decimal('0')):
+                    raise ValidationError({'detail': f'{cust.name} has only {cust.store_credit:.2f} store credit.'})
+                cust.store_credit = cust.store_credit - plan.store_credit
+                cust.save(update_fields=['store_credit'])
+            for pay_method, amount in plan.lines:
+                Payment.objects.create(invoice=invoice, method=pay_method, amount=amount, created_by=request.user)
+            if plan.lines:
                 invoice.refresh_from_db()
 
         log_activity(
@@ -299,6 +302,9 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'invoice_number': invoice.invoice_number,
                 'grand_total': str(invoice.grand_total),
                 'paid_amount': str(invoice.paid_amount),
+                'payments': [{'method': m.name, 'amount': str(a)} for m, a in plan.lines],
+                'change': str(plan.change),
+                'on_account': str(max(invoice.grand_total - invoice.paid_amount, Decimal('0'))),
             },
         )
         return Response(SalesInvoiceSerializer(invoice).data)
@@ -338,10 +344,13 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             'total': str(item.total),
         } for item in invoice.items.select_related('variant__product', 'unit').all()]
 
+        # s167: one line per tender (split payment) — the flags let the receipt word them in its own language.
         payments = [{
             'method': p.method.name,
             'amount': str(p.amount),
-        } for p in invoice.payments.select_related('method').all()]
+            'is_cash': p.method.is_cash,
+            'is_store_credit': p.method.is_store_credit,
+        } for p in invoice.payments.select_related('method').order_by('created_at')]
 
         # Tax ID only travels to the client when the store opts in — off means
         # it is omitted entirely, not blanked to "N/A".
@@ -357,6 +366,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'discount': str(invoice.discount),
                 'grand_total': str(invoice.grand_total),
                 'paid_amount': str(invoice.paid_amount),
+                'change_given': str(invoice.change_given),
             },
             'store': {
                 'name': store.name,

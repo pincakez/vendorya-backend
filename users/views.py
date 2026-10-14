@@ -338,8 +338,9 @@ class CustomerViewSet(viewsets.ModelViewSet):
                 model = M
                 fields = ['id', 'invoice_number', 'status', 'date', 'grand_total', 'paid_amount', 'discount', 'payment_method', 'created_at']
             def get_payment_method(self, obj):
-                p = Payment.objects.filter(invoice=obj).select_related('method').first()
-                return p.method.name if p and p.method else None
+                names = list(dict.fromkeys(   # s167: a split sale shows "Cash + Visa"
+                    Payment.objects.filter(invoice=obj).order_by('created_at').values_list('method__name', flat=True)))
+                return ' + '.join(n for n in names if n) or None
 
         pager = PageNumberPagination()
         pager.page_size = 20
