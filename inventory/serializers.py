@@ -148,12 +148,13 @@ class ProductVariantSerializer(serializers.ModelSerializer):
     total_stock  = serializers.SerializerMethodField()
     storage_qty  = serializers.SerializerMethodField()
     product_name = serializers.CharField(source='product.name', read_only=True)
+    track_serials = serializers.BooleanField(source='product.track_serials', read_only=True)   # New 7
 
     class Meta:
         model = ProductVariant
         fields = ['id', 'product', 'product_name', 'sku', 'sku2', 'barcode',
                   'cost_price', 'sell_price', 'reorder_level',
-                  'attributes', 'stock_levels', 'total_stock', 'storage_qty']
+                  'attributes', 'stock_levels', 'total_stock', 'storage_qty', 'track_serials']
 
     def validate(self, attrs):
         from inventory.code_search import barcode_owner
@@ -229,6 +230,7 @@ class ProductListSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
             'attributes_summary', 'default_variant_id', 'default_variant_price',
             'default_variant_stock', 'selling_units', 'sku_display', 'sku2_display', 'hide_from_pos',
             'track_expiry', 'selling_mode', 'sell_base_unit',
+            'track_serials', 'condition', 'warranty_months',
             'category_l1', 'category_l2', 'category_l3', 'category_l4',
             'strips_per_pack', 'tablets_per_strip',
         ]
@@ -443,7 +445,8 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description', 'category', 'supplier',
                   'base_price', 'attributes', 'cost_price', 'sell_price',
                   'reorder_level', 'unit', 'selling_units', 'track_expiry',
-                  'selling_mode', 'sell_base_unit', 'sku2']
+                  'selling_mode', 'sell_base_unit', 'sku2',
+                  'track_serials', 'condition', 'warranty_months']
 
     def validate_sku2(self, value):
         from inventory.sku import sku2_active
@@ -486,6 +489,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             self._check_unit_barcodes(data['selling_units'])
         if 'attributes' in (getattr(self, 'initial_data', None) or {}):
             self._check_spec_values(data)
+        self._check_serial_tracking(data)
         return data
 
     def _check_spec_values(self, data):
@@ -536,6 +540,31 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'attributes': _('Please fill in the required specs: %(names)s') % {'names': ', '.join(missing)},
                 'missing_specs': missing})
+
+    def _check_serial_tracking(self, data):
+        """New 7: a serial-tracked product is bought and sold one whole unit at a time — never by weight,
+        and its single unit must be sellable. Switching tracking OFF is refused while units with a serial
+        are still on the shelf (their serials would silently stop meaning anything)."""
+        inst = self.instance
+        track = data.get('track_serials', inst.track_serials if inst is not None else False)
+        if track:
+            mode = data.get('selling_mode', inst.selling_mode if inst is not None else Product.SellingMode.UNIT)
+            if mode == Product.SellingMode.WEIGHT:
+                raise serializers.ValidationError(
+                    {'track_serials': _('A product sold by weight cannot track serial numbers.'),
+                     'serial_code': 'serial_weight'})
+            if not data.get('sell_base_unit', inst.sell_base_unit if inst is not None else True):
+                raise serializers.ValidationError(
+                    {'track_serials': _('A product with serial numbers is sold one unit at a time — '
+                                        'keep "sell by base unit" on.'),
+                     'serial_code': 'serial_base_unit'})
+        elif inst is not None and inst.track_serials:
+            from inventory.serials import has_units_on_shelf
+            if has_units_on_shelf(inst):
+                raise serializers.ValidationError(
+                    {'track_serials': _('Units with a serial number are still in stock — sell them, write them '
+                                        'off or remove their serials before switching tracking off.'),
+                     'serial_code': 'serial_still_in_stock'})
 
     def _check_unit_barcodes(self, units):
         """A pack barcode is unique per shop, across variants AND packs (live STORE products only).
@@ -702,10 +731,30 @@ class StockAdjustmentSerializer(serializers.ModelSerializer):
             'id', 'variant', 'variant_sku', 'product_name',
             'branch', 'branch_name',
             'quantity_change', 'reason', 'notes',
-            'batch_expiry_date', 'batch_number',
+            'batch_expiry_date', 'batch_number', 'serial_numbers',
             'adjusted_by', 'adjusted_by_name', 'created_at',
         ]
         read_only_fields = ['id', 'adjusted_by', 'created_at']
+
+    def get_fields(self):
+        fields = super().get_fields()
+        # New 7: the units added / removed, one serial each (required for a serial-tracked product).
+        from finance.serializers import SerialListField
+        fields['serial_numbers'] = SerialListField(required=False)
+        return fields
+
+    def validate(self, attrs):
+        """A serial-tracked product moves by serial: one serial per unit, whole units only (the
+        units are applied in StockAdjustment.save, in the same locked transaction as the stock)."""
+        from inventory import serials as serial_engine
+        variant = attrs.get('variant')
+        if variant is not None and serial_engine.is_tracked(variant):
+            name = variant.product.name
+            need = serial_engine.whole_units(name, abs(Decimal(str(attrs.get('quantity_change') or 0))))
+            serial_engine._check_count(name, attrs.get('serial_numbers') or [], need)
+        else:
+            attrs['serial_numbers'] = []
+        return attrs
 
     def get_adjusted_by_name(self, obj):
         u = obj.adjusted_by
@@ -719,8 +768,14 @@ class StockTransferItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StockTransferItem
-        fields = ['id', 'variant', 'variant_sku', 'product_name', 'quantity']
+        fields = ['id', 'variant', 'variant_sku', 'product_name', 'quantity', 'serial_numbers']
         read_only_fields = ['id']
+
+    def get_fields(self):
+        fields = super().get_fields()
+        from finance.serializers import SerialListField
+        fields['serial_numbers'] = SerialListField(required=False)   # New 7: the units that travel
+        return fields
 
 
 class StockTransferSerializer(serializers.ModelSerializer):
@@ -773,8 +828,13 @@ class StockTransferSerializer(serializers.ModelSerializer):
                     )
 
             transfer = StockTransfer.objects.create(**validated_data)
+            from inventory import serials as serial_engine
             for item_data in items_data:
-                StockTransferItem.objects.create(transfer=transfer, **item_data)
+                if not serial_engine.is_tracked(item_data['variant']):
+                    item_data['serial_numbers'] = []
+                ti = StockTransferItem.objects.create(transfer=transfer, **item_data)
+                # New 7: serial-tracked units travel by serial (one per unit, IN_STOCK at the source).
+                serial_engine.transfer_item(ti, transfer)
                 variant, qty = item_data['variant'], Decimal(str(item_data['quantity']))
                 # Deduct from source
                 src, _ = StockLevel.objects.select_for_update().get_or_create(

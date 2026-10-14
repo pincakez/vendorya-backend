@@ -301,6 +301,30 @@ class Product(TimestampedModel, SoftDeleteModel):
         help_text=_("Allow selling single base units (e.g. one pill) in POS. Stock is still counted in base units either way."),
     )
 
+    # Opt-in serial / IMEI / service-tag tracking (PROLINE-PARITY New 7). ON = every unit of this product
+    # carries its own serial (SerialUnit): typed or scanned on purchase receive, picked on sale, checked
+    # on return. Stock still lives in StockLevel and still moves only through receive / sale / refund /
+    # adjustment / transfer — the serials ride along (inventory/serials.py). Base unit only (no packs).
+    track_serials = models.BooleanField(
+        _("Track serial numbers"), default=False,
+        help_text=_("Each unit has its own serial / IMEI / service tag, entered on purchase and picked on sale."),
+    )
+
+    # Condition + warranty (PROLINE-PARITY New 8) — generic retail facts, printed on the receipt when set.
+    # Both are SNAPSHOTTED on each sale line at checkout, so editing the product never rewrites an old sale.
+    class Condition(models.TextChoices):
+        NEW                = 'NEW',                _('New')
+        IMPORTED_INSPECTED = 'IMPORTED_INSPECTED', _('Imported, inspected')
+        USED               = 'USED',               _('Used')
+
+    condition = models.CharField(
+        _("Condition"), max_length=20, choices=Condition.choices, blank=True, default='',
+        help_text=_("Blank = not stated (nothing printed)."),
+    )
+    warranty_months = models.PositiveSmallIntegerField(
+        _("Warranty (months)"), default=0, help_text=_("0 = no warranty."),
+    )
+
     # Soft-delete audit (captured on delete; free-text note for OTHER).
     delete_reason = models.CharField(max_length=20, choices=DeleteReason.choices, blank=True, default='')
     delete_note   = models.CharField(max_length=255, blank=True, default='')
@@ -679,7 +703,10 @@ class StockAdjustment(TimestampedModel):
     # change draws FEFO from existing batches (no expiry needed).
     batch_expiry_date = models.DateField(null=True, blank=True)
     batch_number = models.CharField(max_length=60, blank=True, default='')
-    
+    # Serial-tracked products only: the units added (gain) or removed (loss) — one serial per unit.
+    # Required by the API for a tracked product (StockAdjustmentSerializer); applied in save().
+    serial_numbers = models.JSONField(default=list, blank=True)
+
     # Who did it?
     adjusted_by = models.ForeignKey('users.User', on_delete=models.PROTECT)
 
@@ -715,6 +742,11 @@ class StockAdjustment(TimestampedModel):
                     )
             stock.quantity = new_quantity
             stock.save()
+
+            # Serial-tracked: the listed units enter (gain) or leave (loss) this branch with the stock.
+            if self.serial_numbers:
+                from inventory import serials as serial_engine
+                serial_engine.apply_adjustment(self)
 
             # Keep batch stock in lock-step with the cached total for tracked variants.
             if is_expiry_tracked(self.variant):
@@ -754,6 +786,8 @@ class StockTransferItem(models.Model):
     transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name='items')
     variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=3)
+    # Serial-tracked products only: the units that travelled on this line.
+    serial_numbers = models.JSONField(default=list, blank=True)
 
 
 # --- 8. STORAGE (operational visibility filter) ---------------------------
@@ -840,3 +874,106 @@ class StorageMovement(TimestampedModel):
 
     def __str__(self):
         return f"{self.get_direction_display()} {self.variant.sku} ×{self.quantity}"
+
+
+# --- 9. SERIAL / IMEI / SERVICE TAG PER UNIT (PROLINE-PARITY New 7) ---------
+# Only for products with `track_serials` ON. A SerialUnit is ONE physical unit; it is not a stock path:
+# StockLevel stays the on-hand number and moves only through receive / sale / refund / adjustment /
+# transfer, and the serials ride along inside the same locked transaction (inventory/serials.py).
+# Invariant per (variant, branch): units IN_STOCK there ≤ StockLevel.quantity there (stock that was
+# on hand before tracking was switched on may have no serial yet — "Register serials" fills that gap).
+
+class SerialUnit(TimestampedModel, SoftDeleteModel):
+    class Status(models.TextChoices):
+        IN_STOCK    = 'IN_STOCK',    _('In stock')
+        SOLD        = 'SOLD',        _('Sold')
+        # Came back on a return but was NOT put back on sale (the refund line had restock off —
+        # e.g. faulty). Not sellable; a stock adjustment / a new receive is the way back.
+        RETURNED    = 'RETURNED',    _('Returned (not restocked)')
+        WRITTEN_OFF = 'WRITTEN_OFF', _('Written off')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='serial_units')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT, related_name='serial_units')
+    # Where the unit is (IN_STOCK) or was last (sold / returned / written off from).
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, null=True, blank=True,
+                               related_name='serial_units')
+    # Stored trimmed + UPPER-CASE (inventory.serials.normalize): a scanner and a typist must match.
+    serial = models.CharField(_("Serial / IMEI"), max_length=100)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.IN_STOCK)
+
+    # The current cycle (a unit bought back later is a NEW row — the old one keeps its history).
+    purchase_item = models.ForeignKey('finance.PurchaseItem', on_delete=models.SET_NULL,
+                                      null=True, blank=True, related_name='serial_units')
+    sale_item = models.ForeignKey('finance.SalesInvoiceItem', on_delete=models.SET_NULL,
+                                  null=True, blank=True, related_name='serial_units')
+    sold_at = models.DateTimeField(null=True, blank=True)
+    # Warranty of THIS sold unit, frozen at sale time from the product (0 = none).
+    warranty_months = models.PositiveSmallIntegerField(default=0)
+    warranty_ends_on = models.DateField(null=True, blank=True)
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            # One serial can be ON THE SHELF only once per shop (any product): a scan at the till must
+            # mean exactly one unit. History rows (sold / written off) may repeat — a trade-in of a unit
+            # we sold before comes back as a new row.
+            models.UniqueConstraint(
+                fields=['store', 'serial'],
+                condition=models.Q(status='IN_STOCK', is_deleted=False),
+                name='uniq_in_stock_serial_per_store'),
+        ]
+        indexes = [
+            models.Index(fields=['store', 'serial']),
+            models.Index(fields=['variant', 'branch', 'status']),
+        ]
+
+    def __str__(self):
+        return f"{self.serial} ({self.get_status_display()})"
+
+
+class SerialMove(models.Model):
+    """Insert-only history of one serial unit — the Proline `tb_Serial` in/out ledger. Each stock path
+    that moves a tracked unit writes one row, pointing at its document."""
+    class Kind(models.TextChoices):
+        RECEIVED     = 'RECEIVED',     _('Received (purchase)')
+        SOLD         = 'SOLD',         _('Sold')
+        RETURNED     = 'RETURNED',     _('Returned by customer')
+        VOIDED       = 'VOIDED',       _('Sale voided')
+        ADJUSTED_IN  = 'ADJUSTED_IN',  _('Added by stock adjustment')
+        ADJUSTED_OUT = 'ADJUSTED_OUT', _('Removed by stock adjustment')
+        TRANSFERRED  = 'TRANSFERRED',  _('Transferred')
+        REGISTERED   = 'REGISTERED',   _('Registered on existing stock')
+        REMOVED      = 'REMOVED',      _('Registration removed')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='serial_moves')
+    unit = models.ForeignKey(SerialUnit, on_delete=models.CASCADE, related_name='moves')
+    kind = models.CharField(max_length=14, choices=Kind.choices)
+    branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    to_branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    purchase_item = models.ForeignKey('finance.PurchaseItem', on_delete=models.SET_NULL, null=True, blank=True,
+                                      related_name='serial_moves')
+    sale_item = models.ForeignKey('finance.SalesInvoiceItem', on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='serial_moves')
+    refund_item = models.ForeignKey('finance.RefundItem', on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='serial_moves')
+    adjustment = models.ForeignKey(StockAdjustment, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='serial_moves')
+    transfer = models.ForeignKey(StockTransfer, on_delete=models.SET_NULL, null=True, blank=True,
+                                 related_name='serial_moves')
+    note = models.CharField(max_length=255, blank=True, default='')
+    created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects     = TenantScopedManager()   # secure-by-default
+    all_objects = models.Manager()        # unscoped escape hatch (signals, commands)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"{self.unit.serial} {self.kind}"

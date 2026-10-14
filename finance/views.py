@@ -363,6 +363,12 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             'discount_amount': str(item.discount_amount),   # s165 (§AUDIT A19): the receipt shows "Disc: − X"
             'tax_amount': str(item.tax_amount),
             'total': str(item.total),
+            # New 7/8 — printed only when present. condition = a code (NEW / IMPORTED_INSPECTED / USED) the
+            # receipt words in the shop's language; on a DRAFT these are still empty (frozen at checkout).
+            'serial_numbers': list(item.serial_numbers or []),
+            'condition': item.condition or '',
+            'warranty_months': item.warranty_months or 0,
+            'warranty_ends_on': item.warranty_ends_on.isoformat() if item.warranty_ends_on else None,
         } for item in invoice.items.select_related('variant__product', 'unit').all()]
 
         # s167: one line per tender (split payment) — the flags let the receipt word them in its own language.
@@ -647,6 +653,7 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
                 'base_cost':  str(item.unit_cost),
                 'retail':     str(retail),
                 'line_total': str(item.total_cost),
+                'serial_numbers': list(item.serial_numbers or []),   # New 7
             })
             base_total += item.total_cost
             retail_total += qty * retail

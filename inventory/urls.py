@@ -8,6 +8,7 @@ from .views import (
     StorageLocationViewSet, MoveToStorageView, RetrieveFromStorageView,
     WriteOffStorageView, StorageMovementsView,
 )
+from .serial_api import SerialUnitViewSet
 
 router = DefaultRouter()
 router.register(r'products',    ProductViewSet,             basename='product')
@@ -20,6 +21,7 @@ router.register(r'taxes',       TaxViewSet,                 basename='tax')
 router.register(r'adjustments', StockAdjustmentViewSet,    basename='adjustment')
 router.register(r'transfers',   StockTransferViewSet,      basename='transfer')
 router.register(r'storage-locations', StorageLocationViewSet, basename='storage-location')
+router.register(r'serials',     SerialUnitViewSet,         basename='serial')   # New 7: serial lookup
 
 urlpatterns = [
     path('suppliers/check-prefix/', SupplierPrefixCheckView.as_view(), name='supplier-check-prefix'),

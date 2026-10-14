@@ -96,6 +96,14 @@ def move_to_storage(*, variant, qty, from_branch, storage_location, user,
             f"branch instead."
         )
 
+    # New 7: storage doesn't know serials either — parking a serial-tracked unit would leave its serial
+    # "in stock" at the branch while the stock number went down. Blocked the same way.
+    if getattr(variant.product, 'track_serials', False):
+        raise ValidationError(
+            f"{variant.sku} has serial numbers and can't be moved to storage yet — storage doesn't track "
+            f"serials. Keep it in its branch (or transfer it to another branch) instead."
+        )
+
     store = storage_location.store
     stock = (StockLevel.objects.select_for_update()
              .filter(variant=variant, branch=from_branch).first())

@@ -729,6 +729,18 @@ class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
             with_sku2 = sku2_active(store)
             packs = is_multi_unit_enabled(store.id)
             exact_hits = list(base.filter(exact_code(q, with_sku2, packs))[:20])
+            # New 7: a scanned serial / IMEI of a unit on the shelf lands on its product FIRST, and the
+            # row says which serial was scanned so the till pre-picks it (checked again at checkout).
+            from inventory.serials import in_stock_unit
+            serial_unit = in_stock_unit(store, q)
+            if serial_unit is not None and serial_unit.variant.product.track_serials:
+                hit = base.filter(pk=serial_unit.variant.product_id).first()
+                if hit is not None:
+                    exact_hits = [hit] + [p for p in exact_hits if p.id != hit.id]
+                else:
+                    serial_unit = None
+            else:
+                serial_unit = None
             exact_ids = {p.id for p in exact_hits}
             seen = set(exact_ids)
             sku_hits = exact_hits + [p for p in base.filter(code_contains(q, with_sku2, packs))[:20]
@@ -755,6 +767,10 @@ class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
             from inventory.code_search import scan_unit_id
             for p, row in zip(results, data):
                 row['scan_unit'] = scan_unit_id(row.get('selling_units'), q) if p.id in exact_ids else None
+                hit_serial = serial_unit is not None and p.id == serial_unit.variant.product_id
+                row['scan_serial'] = serial_unit.serial if hit_serial else None
+                row['scan_serial_variant'] = str(serial_unit.variant_id) if hit_serial else None
+                row['scan_serial_branch'] = str(serial_unit.branch_id) if hit_serial else None
         return Response({'results': data, 'no_history': no_history})
 
     # strength tokens to drop when matching on ingredient NAME ("Acetazolamide 250 mg"

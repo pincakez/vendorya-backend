@@ -87,12 +87,30 @@ def _stamp_unit_factor(item_data):
     return item_data
 
 
+class SerialListField(serializers.ListField):
+    """A list of serial numbers (New 7) — normalised (no spaces, upper-case), blanks dropped, a serial
+    typed twice refused. Whether the count is right is checked where the stock moves."""
+    child = serializers.CharField(max_length=120, allow_blank=True)
+
+    def to_internal_value(self, data):
+        from inventory.serials import clean_list
+        if isinstance(data, str):
+            return clean_list(data)
+        return clean_list(super().to_internal_value(data))
+
+
 class SalesInvoiceItemSerializer(serializers.ModelSerializer):
+    # New 7: the serials the till picked for a serial-tracked line (checked + applied at checkout).
+    serial_numbers = SerialListField(required=False)
+
     class Meta:
         model = SalesInvoiceItem
         fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_price',
-                  'discount_amount', 'tax_amount', 'total']
-        read_only_fields = ['id', 'unit_factor', 'tax_amount', 'total']
+                  'discount_amount', 'tax_amount', 'total',
+                  'serial_numbers', 'condition', 'warranty_months', 'warranty_ends_on']
+        # condition + warranty are frozen from the product when the sale is posted (New 8).
+        read_only_fields = ['id', 'unit_factor', 'tax_amount', 'total',
+                            'condition', 'warranty_months', 'warranty_ends_on']
 
 
 class SalesInvoiceSerializer(serializers.ModelSerializer):
@@ -290,11 +308,12 @@ class CustomerReceiptSerializer(serializers.ModelSerializer):
 
 class PurchaseItemSerializer(serializers.ModelSerializer):
     track_expiry = serializers.BooleanField(source='variant.product.track_expiry', read_only=True)
+    track_serials = serializers.BooleanField(source='variant.product.track_serials', read_only=True)
 
     class Meta:
         model = PurchaseItem
         fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_cost', 'total_cost',
-                  'expiry_date', 'batch_number', 'track_expiry']
+                  'expiry_date', 'batch_number', 'track_expiry', 'serial_numbers', 'track_serials']
         read_only_fields = ['id', 'unit_factor', 'total_cost']
 
 
@@ -356,6 +375,8 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 'expiry_date': it.expiry_date.isoformat() if it.expiry_date else '',
                 'batch_number': it.batch_number or '',
                 'track_expiry': v.product.track_expiry,
+                'track_serials': v.product.track_serials,
+                'serial_numbers': list(it.serial_numbers or []),
                 'kind': 'existing',
             })
         return out
@@ -384,7 +405,7 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
         return unit, Decimal(str(unit.factor))
 
     def _materialize_new(self, invoice, name, category_id, attributes, base, retail,
-                         track_expiry=False):
+                         track_expiry=False, track_serials=False):
         """Create a real Product+Variant (SKU generated) under the invoice's
         supplier, then a PurchaseItem. Caller guarantees invoice.supplier_id.
 
@@ -397,11 +418,16 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
         category = None
         if category_id:
             category = Category.objects.filter(id=category_id, store=invoice.store).first()
+        extra = {}
+        if track_expiry:
+            extra['track_expiry'] = True
+        if track_serials:   # New 7: a brand-new laptop / phone model tracked by serial from its first receipt
+            extra['track_serials'] = True
         product = create_product_with_variant(
             invoice.store, name=name, supplier=invoice.supplier, category=category,
             base_price=base, cost_price=base, sell_price=retail,
             attributes=attributes or [],
-            extra_product_fields={'track_expiry': True} if track_expiry else None,
+            extra_product_fields=extra or None,
             auto_mb_units=True,   # §MU-MB: seed Strip/Pack tiers from the drug reference
         )
         return product.variants.first()
@@ -424,6 +450,11 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
             expiry = line.get('expiry_date') or None
             batch  = (line.get('batch_number') or '').strip()
             track  = bool(line.get('track_expiry'))
+            # New 7: one serial per unit for a serial-tracked product (a list, or a pasted text column).
+            # A draft may be incomplete; receive checks the count exactly.
+            from inventory.serials import clean_list
+            serials = clean_list(line.get('serial_numbers'), name)
+            track_serials = bool(line.get('track_serials'))
 
             if variant_id:
                 # existing product (or a previously-materialized new product)
@@ -440,20 +471,30 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 # variant, and freeze its factor; quantity/unit_cost stay per-unit and
                 # the receive engine (handle_purchase_stock) converts to base.
                 unit, factor = self._resolve_unit(line.get('unit'), variant)
+                if variant.product.track_serials:
+                    from inventory.serials import whole_units
+                    whole_units(variant.product.name, qty, factor)   # base unit, whole units only
+                else:
+                    serials = []
                 PurchaseItem.objects.create(invoice=invoice, variant=variant,
                                             unit=unit, unit_factor=factor,
                                             quantity=qty, unit_cost=base,
-                                            expiry_date=expiry, batch_number=batch)
+                                            expiry_date=expiry, batch_number=batch,
+                                            serial_numbers=serials)
             elif invoice.supplier_id:
                 # new product, supplier present → materialize now
                 cat_id  = line.get('subcategory') or line.get('category')
                 variant = self._materialize_new(
                     invoice, name, cat_id, line.get('attributes'),
-                    base, self._dec(retail), track_expiry=track,
+                    base, self._dec(retail), track_expiry=track, track_serials=track_serials,
                 )
+                if track_serials:
+                    from inventory.serials import whole_units
+                    whole_units(name, qty)
                 PurchaseItem.objects.create(invoice=invoice, variant=variant,
                                             quantity=qty, unit_cost=base,
-                                            expiry_date=expiry, batch_number=batch)
+                                            expiry_date=expiry, batch_number=batch,
+                                            serial_numbers=serials if track_serials else [])
             else:
                 # new product, NO supplier → stage it (no SKU, not real inventory)
                 staged.append({
@@ -467,6 +508,8 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                     'track_expiry': track,
                     'expiry_date': expiry.isoformat() if hasattr(expiry, 'isoformat') else (expiry or None),
                     'batch_number': batch,
+                    'track_serials': track_serials,
+                    'serial_numbers': serials if track_serials else [],
                 })
         invoice.draft_items = staged
         invoice.save(update_fields=['draft_items'])
@@ -481,12 +524,14 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
                 invoice, line.get('name') or 'Unnamed', cat_id,
                 line.get('attributes'), base, self._dec(line.get('retail_price')),
                 track_expiry=bool(line.get('track_expiry')),
+                track_serials=bool(line.get('track_serials')),
             )
             PurchaseItem.objects.create(
                 invoice=invoice, variant=variant,
                 quantity=self._dec(line.get('quantity'), '1'), unit_cost=base,
                 expiry_date=line.get('expiry_date') or None,
                 batch_number=(line.get('batch_number') or '').strip(),
+                serial_numbers=list(line.get('serial_numbers') or []) if line.get('track_serials') else [],
             )
         invoice.draft_items = []
         invoice.save(update_fields=['draft_items'])
@@ -635,10 +680,13 @@ class RefundItemSerializer(serializers.ModelSerializer):
     unit = serializers.PrimaryKeyRelatedField(
         queryset=ProductUnit.objects.filter(is_deleted=False),
         required=False, allow_null=True, write_only=True)
+    # New 7: the serials coming back on a serial-tracked line (each must have been sold on that sale).
+    serial_numbers = SerialListField(required=False)
 
     class Meta:
         model = RefundItem
-        fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'refund_amount', 'restock_inventory']
+        fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'refund_amount', 'restock_inventory',
+                  'serial_numbers']
         read_only_fields = ['id', 'unit_factor']
 
     def validate(self, attrs):
@@ -684,9 +732,12 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                 self._validate_against_original(original, items_data)
                 self._validate_return_window(store, original)
             refund = RefundInvoice.objects.create(**validated_data)
+            from inventory import serials as serial_engine
             for item_data in items_data:
                 item_data.pop('unit', None)   # only its factor is kept (frozen by RefundItemSerializer)
-                RefundItem.objects.create(refund=refund, **item_data)
+                ri = RefundItem.objects.create(refund=refund, **item_data)
+                # New 7: a serial-tracked line's units come back (checked against the sale) — raises → rollback.
+                serial_engine.return_units(ri, original=original, user=validated_data.get('created_by'))
             # RefundItem.save() recomputed total_refunded on a separate instance;
             # reload so we see the gross total here.
             refund.refresh_from_db()

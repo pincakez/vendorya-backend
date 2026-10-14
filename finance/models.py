@@ -152,6 +152,15 @@ class SalesInvoiceItem(models.Model):
     # moment the invoice is POSTED. Reports use THIS, never ProductVariant.cost_price.
     cost_at_sale = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
+    # Serial-tracked products (PROLINE-PARITY New 7): on a DRAFT the serials the till picked; once POSTED
+    # the serials really sold (normalised). Checked + applied at posting (inventory.serials.sell_item).
+    serial_numbers = models.JSONField(default=list, blank=True)
+    # Condition + warranty (New 8), frozen from the product when the sale is POSTED — editing the
+    # product later never rewrites an old receipt. warranty_ends_on = sale date + warranty_months.
+    condition = models.CharField(max_length=20, blank=True, default='')
+    warranty_months = models.PositiveSmallIntegerField(default=0)
+    warranty_ends_on = models.DateField(null=True, blank=True)
+
     def save(self, *args, **kwargs):
         discount = Decimal(str(self.discount_amount or '0'))
         tax = Decimal(str(self.tax_amount or '0'))
@@ -371,6 +380,9 @@ class RefundItem(models.Model):
     refund_amount = models.DecimalField(max_digits=12, decimal_places=2)
 
     restock_inventory = models.BooleanField(default=True, help_text="If True, adds item back to stock.")
+    # Serial-tracked products: the units that came back (each must have been sold — on the original sale
+    # when there is one). Applied by inventory.serials.return_units after the line is saved.
+    serial_numbers = models.JSONField(default=list, blank=True)
 
     def save(self, *args, **kwargs):
         is_new = self._state.adding
@@ -457,6 +469,9 @@ class PurchaseItem(models.Model):
     # the product isn't expiry-tracked.
     expiry_date = models.DateField(null=True, blank=True)
     batch_number = models.CharField(max_length=60, blank=True, default='')
+    # Serial-tracked products: one serial per unit delivered on this line (base unit only). May be
+    # incomplete while the purchase is a DRAFT; must match the quantity exactly to receive.
+    serial_numbers = models.JSONField(default=list, blank=True)
 
     def save(self, *args, **kwargs):
         self.total_cost = self.quantity * self.unit_cost
@@ -618,6 +633,13 @@ def receipts_unallocated(customer):
             .aggregate(s=Sum('unallocated'))['s'] or Decimal('0'))
 
 
+def _request_user():
+    """The signed-in user of the request in flight (for the serial history), else None."""
+    from core.tenancy import get_current_request
+    user = getattr(get_current_request(), 'user', None)
+    return user if getattr(user, 'is_authenticated', False) else None
+
+
 @receiver(pre_save, sender=SalesInvoice)
 def handle_sale_stock(sender, instance, **kwargs):
     if instance.pk:
@@ -625,6 +647,10 @@ def handle_sale_stock(sender, instance, **kwargs):
             old = SalesInvoice.objects.get(pk=instance.pk)
             if old.status == SalesInvoice.Status.DRAFT and instance.status == SalesInvoice.Status.POSTED:
                 with transaction.atomic():
+                    # New 7/8: picked serials → SOLD (locked; refused if not on the shelf at this branch),
+                    # condition + warranty frozen on every line. Raises → the whole post rolls back.
+                    from inventory import serials as serial_engine
+                    serial_engine.post_sale(instance, user=_request_user())
                     for item in instance.items.all():
                         # Stock lives in base units; convert the sold quantity
                         # (which may be in Strips/Packs) down to base units.
@@ -679,6 +705,8 @@ def handle_sale_stock(sender, instance, **kwargs):
                 # accurate. Mirrors the DRAFT→POSTED decrement above. (DRAFT→VOID
                 # never decremented, so it must NOT add stock.)
                 with transaction.atomic():
+                    from inventory import serials as serial_engine
+                    serial_engine.void_sale(instance, user=_request_user())   # its sold serials → back on the shelf
                     for item in instance.items.all():
                         base_qty = Decimal(str(item.quantity)) * Decimal(str(item.unit_factor or 1))
                         stock = StockLevel.objects.select_for_update().filter(
@@ -706,6 +734,9 @@ def handle_purchase_stock(sender, instance, **kwargs):
             old = PurchaseInvoice.objects.get(pk=instance.pk)
             if old.status == PurchaseInvoice.Status.DRAFT and instance.status == PurchaseInvoice.Status.RECEIVED:
                 with transaction.atomic():
+                    # New 7: a serial-tracked line needs one serial per unit; each becomes an IN_STOCK unit.
+                    from inventory import serials as serial_engine
+                    serial_engine.receive_purchase(instance, user=_request_user())
                     for item in instance.items.all():
                         factor = Decimal(str(item.unit_factor or 1))
                         base_qty = Decimal(str(item.quantity)) * factor
