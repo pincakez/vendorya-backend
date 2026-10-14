@@ -1,7 +1,7 @@
 from decimal import Decimal
 from rest_framework import serializers
 from django.db.models import Sum
-from core.field_visibility import FieldVisibilityMixin
+from core.field_visibility import FieldVisibilityMixin, hides_cost, hides_supplier, request_user
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from .models import (
@@ -173,6 +173,12 @@ class ProductVariantSerializer(serializers.ModelSerializer):
 
     def get_total_stock(self, obj):
         return sum(s.quantity for s in obj.stock_levels.all())
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if hides_cost(request_user(self)):
+            data.pop('cost_price', None)   # s167: no cost to a role the shop hides it from (cashier by default)
+        return data
 
     def get_storage_qty(self, obj):
         # Sum of active (non-deleted) storage layers for this variant — the
@@ -390,6 +396,19 @@ class ProductDetailSerializer(serializers.ModelSerializer):
                 'days_left': (b.expiry_date - today).days if b.expiry_date else None,
             })
         return out
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        user = request_user(self)
+        if hides_cost(user):
+            # s167: base price is a buying price too; batches carry their own cost. Variants strip themselves.
+            data.pop('base_price', None)
+            for b in data.get('batches') or []:
+                b.pop('cost_per_base', None)
+        if hides_supplier(user):
+            for f in ('supplier', 'supplier_name', 'supplier_contact'):
+                data.pop(f, None)
+        return data
 
     class Meta:
         model = Product
@@ -757,6 +776,12 @@ class StorageStockSerializer(serializers.ModelSerializer):
             'quantity_remaining', 'cost_at_move', 'moved_in_at', 'days_in_storage',
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if hides_cost(request_user(self)):
+            data.pop('cost_at_move', None)   # s167: storage contents is open to cashiers
+        return data
 
     def get_days_in_storage(self, obj):
         return (timezone.now() - obj.moved_in_at).days

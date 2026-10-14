@@ -1194,7 +1194,7 @@ class StorageLocationViewSet(viewsets.ModelViewSet):
             .select_related('variant__product')
             .order_by('variant__sku', 'moved_in_at')
         )
-        return Response(StorageStockSerializer(layers, many=True).data)
+        return Response(StorageStockSerializer(layers, many=True, context={"request": request}).data)
 
 
 class _StorageOpsBase(APIView):

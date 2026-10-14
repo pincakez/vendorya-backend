@@ -47,3 +47,21 @@ class FieldVisibilityMixin:
             for field in hidden_fields_for(request.user, self.table_id):
                 data.pop(field, None)
         return data
+
+
+def hides_cost(user):
+    """True when `user` must receive NO cost figure anywhere (s167, Yakot: "hide cost from cashiers").
+    Follows the products-table rule for `cost_display`, so ONE switch (the shop's field_visibility,
+    default = hidden for CASHIER) covers the list, the product page, the variants API and storage."""
+    return 'cost_display' in hidden_fields_for(user, 'inventory_products')
+
+
+def hides_supplier(user):
+    """Same idea for the supplier: hidden on the product page only when the shop hides the
+    products-table supplier column for this role (not hidden by default)."""
+    return 'supplier_name' in hidden_fields_for(user, 'inventory_products')
+
+
+def request_user(serializer):
+    request = serializer.context.get('request')
+    return getattr(request, 'user', None) if request is not None else None
