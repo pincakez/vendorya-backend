@@ -20,7 +20,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from services.models import Service
-        from notifications.dispatcher import send_notification
+        from notifications.dispatcher import send_notification, msg, word
         from notifications.models import Notification
 
         dry_run = options['dry_run']
@@ -79,6 +79,14 @@ class Command(BaseCommand):
                         notif_type=Notification.Type.GENERAL,
                         link='/services',
                         payload={'service_id': str(svc.id)},
+                        # s167: key + params → each reader's screen language
+                        i18n=msg('service_eta.title',
+                                 'service_eta.body_hm' if hours_left else 'service_eta.body_m',
+                                 serial=svc.serial_number,
+                                 client=(svc.client.name if svc.client_id
+                                         else svc.client_name or word('walk_in')),
+                                 service=svc.service_type or word('service'),
+                                 h=hours_left, m=minutes_left),
                     )
                     svc.notified = True
                     svc.save(update_fields=['notified', 'updated_at'])

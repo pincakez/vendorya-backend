@@ -48,7 +48,7 @@ def enforce_credit_policy(invoice, paid_amount=None):
             f"Limit: {effective_limit}, would-be balance: {new_balance}."
         )
     if policy == 'WARN':
-        from notifications.dispatcher import send_notification
+        from notifications.dispatcher import send_notification, msg
         from notifications.models import Notification
         send_notification(
             store=store,
@@ -57,6 +57,9 @@ def enforce_credit_policy(invoice, paid_amount=None):
                   f"New balance {new_balance} exceeds limit {effective_limit}."),
             priority=Notification.Priority.WARNING,
             link="/people/customers",
+            i18n=msg('credit_limit.title', 'credit_limit.body',   # s167
+                     customer=customer.name, number=invoice.invoice_number or '—',
+                     unpaid=unpaid, balance=new_balance, limit=effective_limit),
         )
 
 

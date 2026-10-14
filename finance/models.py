@@ -606,7 +606,7 @@ def handle_sale_stock(sender, instance, **kwargs):
                             # Fire low-stock notification once per variant crossing
                             # its own reorder_level threshold.
                             if stock.quantity <= (item.variant.reorder_level or 5):
-                                from notifications.dispatcher import send_notification
+                                from notifications.dispatcher import send_notification, msg, qty_str
                                 from notifications.models import Notification as Notif
                                 send_notification(
                                     store=instance.store,
@@ -615,6 +615,9 @@ def handle_sale_stock(sender, instance, **kwargs):
                                     priority=Notif.Priority.WARNING,
                                     notif_type=Notif.Type.LOW_STOCK,
                                     link="/inventory/products",
+                                    i18n=msg('low_stock.title', 'low_stock.body',   # s167
+                                             product=item.variant.product.name, sku=item.variant.sku,
+                                             qty=qty_str(stock.quantity), branch=instance.branch.name),
                                 )
                         if is_expiry_tracked(item.variant):
                             # FEFO: draw the base qty from the earliest-expiry batches,

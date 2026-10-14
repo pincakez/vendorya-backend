@@ -82,21 +82,25 @@ class ServiceViewSet(viewsets.ModelViewSet):
         store = service.store
         serial = service.serial_number
 
+        from notifications.dispatcher import send_notification, msg
         if diagnosis_changed and cost_changed:
             title = f"Service {serial} — diagnosis & cost updated"
             body  = f"Diagnosis added and cost changed to {service.cost}."
+            i18n  = msg('service_both.title', 'service_both.body', serial=serial, cost=service.cost)
         elif diagnosis_changed:
             title = f"Service {serial} — diagnosis updated"
             body  = service.diagnosis[:200] if service.diagnosis else ''
+            i18n  = msg('service_diagnosis.title', serial=serial)   # body = the diagnosis itself (free text)
         else:
             title = f"Service {serial} — cost updated"
             body  = f"New cost: {service.cost}"
+            i18n  = msg('service_cost.title', 'service_cost.body', serial=serial, cost=service.cost)
 
         # ONE store-wide notification (user=None = every member sees it). The old per-staff loop used a
         # field that doesn't exist (`recipient_id`) and crashed the request AFTER the save (s156, §AUDIT A7).
-        from notifications.dispatcher import send_notification
         send_notification(store=store, title=title, body=body,
-                          priority=Notification.Priority.WARNING, link='/services')
+                          priority=Notification.Priority.WARNING, link='/services',
+                          i18n=i18n)   # s167
 
     @action(detail=True, methods=['post'])
     def done(self, request, pk=None):

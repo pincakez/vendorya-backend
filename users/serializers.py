@@ -19,6 +19,7 @@ class StoreMinimalSerializer(serializers.Serializer):
     name          = serializers.CharField()
     plan          = serializers.CharField()
     timezone      = serializers.CharField()
+    default_language = serializers.CharField()   # s167: receipts print in the shop's language
     currency      = _CurrencyNestedSerializer(allow_null=True)
     logo_light_url = serializers.SerializerMethodField()
     logo_dark_url  = serializers.SerializerMethodField()

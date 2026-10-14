@@ -1162,13 +1162,15 @@ class ExpiryScanView(_StoreMixin, APIView):
         soon = qs.filter(expiry_date__gte=today, expiry_date__lte=soon_cutoff).count()
 
         if expired or soon:
-            from notifications.dispatcher import send_notification
+            from notifications.dispatcher import send_notification, msg
             from notifications.models import Notification as Notif
             bits = []
             if expired:
                 bits.append(f"{expired} expired")
             if soon:
                 bits.append(f"{soon} expiring within {window} days")
+            body_key = ('expiry.body_both' if expired and soon
+                        else 'expiry.body_expired' if expired else 'expiry.body_soon')
             send_notification(
                 store=store,
                 title="Expiry alert: stock needs attention",
@@ -1176,5 +1178,6 @@ class ExpiryScanView(_StoreMixin, APIView):
                 priority=Notif.Priority.WARNING,
                 notif_type=Notif.Type.EXPIRY,
                 link="/reports/expiry",
+                i18n=msg('expiry.title', body_key, expired=expired, soon=soon, days=window),   # s167
             )
         return Response({'expired': expired, 'expiring_soon': soon, 'window_days': window})

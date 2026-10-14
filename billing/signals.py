@@ -38,7 +38,12 @@ def notify_on_issue(sender, instance, created, **kwargs):
     if already:
         return
 
+    from notifications.dispatcher import msg
     owner = instance.store.owner
+    # s167: key + params → shown in the reader's language; a free-text line description stays as typed.
+    i18n = (msg('billing_invoice.title', number=instance.invoice_number) if instance.line_description
+            else msg('billing_invoice.title', 'billing_invoice.body', number=instance.invoice_number,
+                     amount=instance.amount, currency=instance.currency))
     Notification.objects.create(
         store=instance.store,
         user=owner,
@@ -53,5 +58,6 @@ def notify_on_issue(sender, instance, created, **kwargs):
             'amount': str(instance.amount),
             'currency': instance.currency,
             'due_at': instance.due_at.isoformat() if instance.due_at else None,
+            'i18n': i18n,
         },
     )

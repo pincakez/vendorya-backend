@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.db import models, transaction
 from django.utils import timezone as tz
 from rest_framework import viewsets, filters, status
-from notifications.dispatcher import send_notification
+from notifications.dispatcher import send_notification, msg
 from notifications.models import Notification
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -133,6 +133,8 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             priority=Notification.Priority.ALERT,
             notif_type=Notification.Type.INVOICE_VOIDED,
             link="/finance/invoices",
+            i18n=msg('invoice_voided.title', 'invoice_voided.body',   # s167
+                     number=invoice.invoice_number or '—', total=invoice.grand_total),
         )
         log_activity(
             request=request,
@@ -373,6 +375,8 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'phone_number': getattr(store, 'phone_number', '') or '',
                 'city': getattr(store, 'city', '') or '',
                 'country': getattr(store, 'country', '') or '',
+                # s167: the receipt prints in the SHOP's language, whoever's screen prints it.
+                'default_language': store.default_language or 'en',
             },
             'branch': {'name': invoice.branch.name} if invoice.branch else None,
             'customer': {'name': invoice.customer.name} if invoice.customer else None,
@@ -639,6 +643,7 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
                 'phone_number': getattr(store, 'phone_number', '') or '',
                 'city':         getattr(store, 'city', '') or '',
                 'country':      getattr(store, 'country', '') or '',
+                'default_language': store.default_language or 'en',   # s167: prints in the shop's language
             },
             'supplier': {'name': invoice.supplier.name} if invoice.supplier else None,
             'branch':   {'name': invoice.branch.name} if invoice.branch else None,
@@ -805,6 +810,9 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
                 priority=Notification.Priority.WARNING,
                 notif_type=Notification.Type.SHIFT_DIFFERENCE,
                 link="/finance/shifts",
+                i18n=msg(f'shift_{direction}.title', 'shift_diff.body',   # s167
+                         cashier=shift.user.get_full_name() or shift.user.username,
+                         diff=f"{shift.difference:+.2f}"),
             )
         log_activity(
             request=request,

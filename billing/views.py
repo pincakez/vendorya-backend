@@ -126,6 +126,7 @@ class AdminBillingInvoiceViewSet(viewsets.ModelViewSet):
         invoice.mark_paid(method=method, reference=reference)
         # Drop a "payment received" notification in the tenant inbox.
         from notifications.models import Notification
+        from notifications.dispatcher import msg
         if invoice.status == BillingInvoice.Status.PAID:
             Notification.objects.create(
                 store=invoice.store,
@@ -134,7 +135,10 @@ class AdminBillingInvoiceViewSet(viewsets.ModelViewSet):
                 title=f"Payment received for {invoice.invoice_number}",
                 body=f"Thank you — {invoice.amount} {invoice.currency} received.",
                 link=f"/settings/billing/invoices/{invoice.id}",
-                payload={'invoice_id': str(invoice.id), 'invoice_number': invoice.invoice_number},
+                payload={'invoice_id': str(invoice.id), 'invoice_number': invoice.invoice_number,
+                         # s167: key + params → shown in the reader's language
+                         'i18n': msg('billing_paid.title', 'billing_paid.body', number=invoice.invoice_number,
+                                     amount=invoice.amount, currency=invoice.currency)},
             )
         return Response(BillingInvoiceSerializer(invoice).data)
 
