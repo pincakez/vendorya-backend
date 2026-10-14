@@ -17,7 +17,8 @@ from core.models import ActivityLog, Address, Branch, Store
 from core.shop_export import PRODUCTS_FILE, TABLES, _cell
 from finance.models import (CustomerReceipt, Expense, ExpenseCategory, PaymentMethod, Payment, PurchaseInvoice,
                             PurchaseItem, RefundInvoice, RefundItem, SalesInvoice, SalesInvoiceItem, SupplierPayment)
-from inventory.models import Product, ProductVariant, Supplier
+from inventory.models import AttributeDefinition, Product, ProductAttribute, ProductVariant, SerialUnit, Supplier
+from services.models import Service, ServicePart
 from users.models import Customer, User
 
 URL = '/api/core/shop-export/'
@@ -92,13 +93,50 @@ class ShopExportTests(TestCase):
             store=self.store, customer=self.arabic, amount=Decimal('20.00'), method=bank,
             unallocated=Decimal('20.00'), note='Deposit', created_by=self.owner)
 
-        # Another shop with its own customer + sale — must never appear.
+        # s168 tables: a spec value, a serial that came in on the purchase and went out on the sale, a service
+        # job with one part — plus a soft-deleted serial, job, part and attribute that must all be left out.
+        ram = AttributeDefinition.objects.create(store=self.store, name='RAM', key='ram', unit='GB')
+        ProductAttribute.objects.create(variant=self.variant, definition=ram, value='16')
+        gone_attr = AttributeDefinition.objects.create(store=self.store, name='Old Spec', key='old_spec')
+        ProductAttribute.objects.create(variant=self.variant, definition=gone_attr, value='ZAPPED-SPEC')
+        gone_attr.delete()
+        prod.condition = 'NEW'
+        prod.save(update_fields=['condition'])
+        self.serial = SerialUnit.objects.create(
+            store=self.store, variant=self.variant, branch=self.branch, serial='SN-ACME-1',
+            status=SerialUnit.Status.SOLD, purchase_item=PurchaseItem.objects.get(invoice=self.purchase),
+            sale_item=SalesInvoiceItem.objects.get(invoice=self.sale), sold_at=self.sale.date,
+            warranty_months=12, warranty_ends_on=timezone.localdate())
+        SerialUnit.objects.create(store=self.store, variant=self.variant, branch=self.branch,
+                                  serial='SN-ZAPPED').delete()
+        self.job = Service.objects.create(
+            store=self.store, client=self.arabic, receive_date=timezone.localdate(), device='Dell 5420',
+            device_serial='DL-77', damage='No power', technician=self.owner, is_warranty=True,
+            detection_fee=Decimal('10.00'), cost=Decimal('40.00'), invoice=self.sale)
+        ServicePart.objects.create(store=self.store, service=self.job, variant=self.variant,
+                                   quantity=Decimal('2'), unit_price=Decimal('15.50'))
+        ServicePart.objects.create(store=self.store, service=self.job, variant=self.variant,
+                                   quantity=Decimal('9'), unit_price=Decimal('99.99')).delete()
+        gone_job = Service.objects.create(store=self.store, client_name='Zapped Job', receive_date=timezone.localdate())
+        ServicePart.objects.create(store=self.store, service=gone_job, variant=self.variant,
+                                   quantity=Decimal('5'), unit_price=Decimal('7.77'))
+        gone_job.delete()
+
+        # Another shop with its own customer + sale + spec + serial + job — must never appear.
         self.other, _o_owner, o_branch = _shop('Other', 'OTH', 'b')
         o_prod = Product.objects.create(store=self.other, name='Other Phone')
         o_var = ProductVariant.objects.create(product=o_prod, store=self.other, sku='B-1',
                                               cost_price=Decimal('1'), sell_price=Decimal('2'))
         self.o_cust = Customer.objects.create(store=self.other, name='Secret Sam')
         self.o_sale = _sale(self.other, o_branch, self.o_cust, 777, o_var)
+        o_def = AttributeDefinition.objects.create(store=self.other, name='Secret Spec', key='secret_spec')
+        ProductAttribute.objects.create(variant=o_var, definition=o_def, value='SECRET-VALUE')
+        self.o_serial = SerialUnit.objects.create(store=self.other, variant=o_var, branch=o_branch,
+                                                  serial='SN-OTHER-SHOP')
+        self.o_job = Service.objects.create(store=self.other, client_name='Other Client', device='Other Device',
+                                            receive_date=timezone.localdate())
+        ServicePart.objects.create(store=self.other, service=self.o_job, variant=o_var,
+                                   quantity=Decimal('1'), unit_price=Decimal('3.00'))
 
     def _download(self, user):
         r = _client(user).get(URL)
@@ -206,6 +244,40 @@ class ShopExportTests(TestCase):
         self.assertNotIn(str(self.o_cust.id), everything)
         self.assertNotIn('Other Phone', everything)
         self.assertNotIn('b_own', everything)
+        for secret in ('SECRET-VALUE', 'Secret Spec', 'SN-OTHER-SHOP', str(self.o_serial.id), 'Other Client',
+                       'Other Device', str(self.o_job.id)):
+            self.assertNotIn(secret, everything)
+
+    def test_spec_values_serials_and_service_jobs(self):
+        _r, zf = self._download(self.owner)
+        [sv] = self._dicts(zf, 'spec_values.csv')          # the deleted 'Old Spec' attribute is left out
+        self.assertEqual((sv['sku'], sv['product_name'], sv['spec'], sv['spec_key'], sv['value'], sv['unit']),
+                         ('A-1', 'Laptop X', 'RAM', 'ram', '16', 'GB'))
+        [sn] = self._dicts(zf, 'serials.csv')               # the soft-deleted SN-ZAPPED is left out
+        self.assertEqual((sn['serial_unit_id'], sn['serial'], sn['sku'], sn['product_name'], sn['condition'],
+                          sn['status'], sn['branch'], sn['purchase_id'], sn['purchase_number'],
+                          sn['sale_invoice_id'], sn['sale_invoice_number'], sn['warranty_months'],
+                          sn['warranty_ends_on']),
+                         (str(self.serial.id), 'SN-ACME-1', 'A-1', 'Laptop X', 'NEW', 'SOLD', self.branch.name,
+                          str(self.purchase.id), 'P-77', str(self.sale.id), '1001', '12',
+                          timezone.localdate().isoformat()))
+        self.assertRegex(sn['sold_at'], r'^\d{4}-\d{2}-\d{2}T')
+        [job] = self._dicts(zf, 'service_jobs.csv')         # the soft-deleted 'Zapped Job' is left out
+        self.assertEqual((job['job_id'], job['job_number'], job['status'], job['customer_id'],
+                          job['customer_name'], job['customer_phone'], job['device'], job['device_serial'],
+                          job['problem'], job['technician'], job['under_warranty'], job['detection_fee'],
+                          job['repair_charge'], job['labour_total'], job['parts_total'], job['invoice_id'],
+                          job['invoice_number'], job['invoice_total'], job['refund_id']),
+                         (str(self.job.id), self.job.serial_number, 'OPEN', str(self.arabic.id), 'محمد أحمد',
+                          '+20 100 123 4567', 'Dell 5420', 'DL-77', 'No power', 'a_own', 'true', '10.00',
+                          '40.00', '50.00', '31.00', str(self.sale.id), '1001', '100.00', ''))
+        [part] = self._dicts(zf, 'service_parts.csv')       # the deleted part + the deleted job's part are left out
+        self.assertEqual((part['job_id'], part['job_number'], part['sku'], part['product_name'], part['quantity'],
+                          part['unit_price'], part['line_total']),
+                         (str(self.job.id), self.job.serial_number, 'A-1', 'Laptop X', '2.000', '15.50', '31.00'))
+        everything = b''.join(zf.read(n) for n in zf.namelist()).decode('utf-8-sig', errors='replace')
+        for gone in ('ZAPPED-SPEC', 'SN-ZAPPED', 'Zapped Job', '99.99', '7.77'):
+            self.assertNotIn(gone, everything)
 
     def test_staff_has_no_secrets(self):
         _r, zf = self._download(self.owner)

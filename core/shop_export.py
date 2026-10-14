@@ -2,8 +2,8 @@
 
 GET /api/core/shop-export/  →  ONE zip of CSV files holding this shop's own data:
 products, customers, suppliers, staff (username / name / role only), sales + sales lines, sales payments,
-customer receipts, purchases + purchase lines, supplier payments, refunds + refund lines, expenses — plus a
-README.txt that lists every file and its columns.
+customer receipts, purchases + purchase lines, supplier payments, refunds + refund lines, expenses, and (s168)
+spec values, serial units, service jobs + service parts — plus a README.txt that lists every file and its columns.
 
 Rules this module keeps:
 - OWNER only (`role_map`), the platform admin is refused by RoleScopedPermission (§PRIVACY-SUDO).
@@ -225,6 +225,92 @@ def _refund_lines(store):
                it.unit_factor, it.quantity, it.refund_amount, it.restock_inventory]
 
 
+def _own(obj, store):
+    """`obj` if it belongs to this shop, else None — a link that somehow points at another shop's row
+    (bad data) prints as empty, never as that shop's name or number."""
+    return obj if obj is not None and obj.store_id == store.id else None
+
+
+def _live_doc(doc, store):
+    """A linked invoice / purchase / refund, or None when it is another shop's or soft-deleted (the deleted
+    one is not in the export, so its number would point nowhere)."""
+    doc = _own(doc, store)
+    return None if doc is None or doc.is_deleted else doc
+
+
+def _spec_values(store):
+    from inventory.models import Product, ProductAttribute
+    qs = (ProductAttribute.objects
+          .filter(variant__store=store, variant__is_deleted=False,
+                  variant__product__store=store, variant__product__is_deleted=False,
+                  variant__product__source=Product.Source.STORE,      # same products as products.csv
+                  definition__store=store, definition__is_deleted=False)
+          .select_related('variant__product__category', 'definition')
+          .order_by('variant__product__name', 'variant__sku', 'definition__name', 'id'))
+    for a in qs.iterator(chunk_size=CHUNK):
+        p, d = a.variant.product, a.definition
+        yield [a.variant.sku, p.name, p.category.name if p.category_id else '', d.name, d.key, a.value,
+               d.unit]
+
+
+def _serials(store):
+    from inventory.models import SerialUnit
+    qs = (SerialUnit.objects.filter(store=store, variant__store=store)
+          .select_related('variant__product', 'branch', 'purchase_item__invoice', 'sale_item__invoice')
+          .order_by('created_at', 'id'))
+    for u in qs.iterator(chunk_size=CHUNK):
+        product = u.variant.product
+        branch = _own(u.branch, store)
+        buy = _live_doc(u.purchase_item.invoice, store) if u.purchase_item_id else None
+        sale = _live_doc(u.sale_item.invoice, store) if u.sale_item_id else None
+        # The condition frozen on the sale line when the unit was sold; the product's own before that.
+        condition = (u.sale_item.condition if u.sale_item_id else '') or product.condition
+        yield [u.id, u.serial, _sku(u.variant), product.name, condition, u.status,
+               branch.name if branch else '',
+               buy.id if buy else '', buy.purchase_number if buy else '',
+               sale.id if sale else '', sale.invoice_number if sale else '',
+               u.sold_at or (sale.date if sale else None), u.warranty_months, u.warranty_ends_on, u.created_at]
+
+
+def _service_jobs(store):
+    from django.db.models import DecimalField, F, OuterRef, Subquery, Sum
+    from services.models import Service, ServicePart
+    parts_total = Subquery(
+        ServicePart.all_objects.filter(service=OuterRef('pk'), is_deleted=False)
+        .values('service').annotate(t=Sum(F('quantity') * F('unit_price'))).values('t'),
+        output_field=DecimalField(max_digits=14, decimal_places=2))
+    qs = (Service.objects.filter(store=store)
+          .select_related('client', 'technician', 'invoice', 'refund', 'created_by')
+          .annotate(parts_total=parts_total)
+          .order_by('receive_date', 'created_at'))
+    for s in qs.iterator(chunk_size=CHUNK):
+        client = _own(s.client, store)
+        tech = _own(s.technician, store)
+        inv = _live_doc(s.invoice, store)
+        ref = _live_doc(s.refund, store)
+        yield [s.id, s.serial_number, s.receive_date, s.eta_datetime, s.created_at, s.status,
+               client.id if client else '',
+               client.name if client else s.client_name,
+               (client.phone_number or '') if client else s.client_phone,
+               s.service_type, s.device, s.device_serial, s.damage, s.diagnosis, s.keeping, s.info,
+               tech.username if tech else '', (tech.get_full_name() or tech.username).strip() if tech else '',
+               s.is_warranty, s.warranty_days, s.detection_fee, s.cost, s.labour_total,
+               (s.parts_total or Decimal('0')).quantize(Decimal('0.01')),
+               inv.id if inv else '', inv.invoice_number if inv else '', inv.grand_total if inv else None,
+               ref.id if ref else '', ref.refund_number if ref else '', _username(s.created_by)]
+
+
+def _service_parts(store):
+    from services.models import ServicePart
+    qs = (ServicePart.objects
+          .filter(store=store, service__store=store, service__is_deleted=False, variant__store=store)
+          .select_related('service', 'variant__product')
+          .order_by('service__receive_date', 'service__created_at', 'created_at', 'id'))
+    for p in qs.iterator(chunk_size=CHUNK):
+        yield [p.id, p.service_id, p.service.serial_number, _sku(p.variant), _product_name(p.variant),
+               p.quantity, p.unit_price, p.line_total.quantize(Decimal('0.01'))]
+
+
 def _expenses(store):
     from finance.models import Expense
     qs = Expense.objects.filter(store=store).select_related('branch', 'category').order_by('date', 'created_at')
@@ -234,6 +320,11 @@ def _expenses(store):
 
 
 TABLES = [
+    ('spec_values.csv', "Your products' specs (one row per product x spec), e.g. CPU = i7, RAM = 16 GB.", [
+        ('sku', 'Joins to products.csv'), ('product_name', ''), ('category', ''),
+        ('spec', 'The spec / attribute name'), ('spec_key', 'Its code name (in products.csv it is the <CODE>_DD / _FT / _NO column)'),
+        ('value', ''), ('unit', 'Printed after the value, e.g. GB'),
+    ], _spec_values),
     ('customers.csv', 'Your customers.', [
         ('customer_id', 'Unique id (join key for sales, refunds, receipts)'),
         ('name', ''), ('phone', ''), ('whatsapp', ''), ('email', ''), ('gender', ''), ('country', ''),
@@ -310,6 +401,42 @@ TABLES = [
         ('product_name', ''), ('unit_factor', ''), ('quantity', ''), ('refund_amount', ''),
         ('back_to_stock', 'true = the item went back into stock'),
     ], _refund_lines),
+    ('serials.csv', 'Serial / IMEI numbers of products that track serials (one row per physical unit).', [
+        ('serial_unit_id', ''), ('serial', 'Serial / IMEI / service tag (stored upper-case)'), ('sku', ''),
+        ('product_name', ''),
+        ('condition', 'NEW / IMPORTED_INSPECTED / USED, empty = not stated (a sold unit shows the condition '
+                      'printed on its sale)'),
+        ('status', 'IN_STOCK / SOLD / RETURNED (came back, not put on sale) / WRITTEN_OFF'),
+        ('branch', 'Where the unit is, or was last'),
+        ('purchase_id', 'The purchase it came in on (joins to purchases.csv), empty if registered on old stock'),
+        ('purchase_number', ''),
+        ('sale_invoice_id', 'The sale it went out on (joins to sales.csv)'), ('sale_invoice_number', ''),
+        ('sold_at', ''), ('warranty_months', '0 = no warranty'), ('warranty_ends_on', ''),
+        ('created_at', 'When the serial was entered'),
+    ], _serials),
+    ('service_jobs.csv', 'Service / repair jobs (one row per job).', [
+        ('job_id', 'Unique id (join key for service_parts)'), ('job_number', 'e.g. SRV-012'),
+        ('receive_date', ''), ('due_at', 'Promised ready time, empty = no ETA'), ('created_at', ''),
+        ('status', 'OPEN / DONE / CANCELLED / ARCHIVED / RETURNED'),
+        ('customer_id', 'Joins to customers.csv, empty when the name was typed in'),
+        ('customer_name', ''), ('customer_phone', ''), ('service_type', ''),
+        ('device', ''), ('device_serial', ''), ('problem', 'The problem the customer reported'),
+        ('diagnosis', ''), ('items_kept', 'What the customer left with the device'), ('notes', ''),
+        ('technician', 'Username'), ('technician_name', ''),
+        ('under_warranty', 'true = repaired free under warranty'),
+        ('repair_warranty_days', 'Warranty you give on this repair, 0 = none'),
+        ('detection_fee', 'Check-up charge'), ('repair_charge', ''),
+        ('labour_total', 'detection_fee + repair_charge'),
+        ('parts_total', 'Parts on the job at their price (see service_parts.csv)'),
+        ('invoice_id', 'The sale this job was billed on when Done (joins to sales.csv)'), ('invoice_number', ''),
+        ('invoice_total', 'What the customer was billed'),
+        ('refund_id', 'The return that gave the money back when the job was Returned (joins to refunds.csv)'),
+        ('refund_number', ''), ('recorded_by', 'Username'),
+    ], _service_jobs),
+    ('service_parts.csv', 'Parts used on each service job.', [
+        ('part_id', ''), ('job_id', 'Joins to service_jobs.csv'), ('job_number', ''), ('sku', ''),
+        ('product_name', ''), ('quantity', 'In base units'), ('unit_price', 'Before tax'), ('line_total', ''),
+    ], _service_parts),
     ('expenses.csv', 'Shop expenses.', [
         ('expense_id', ''), ('date', ''), ('branch', ''), ('category', ''), ('amount', ''),
         ('description', ''),
