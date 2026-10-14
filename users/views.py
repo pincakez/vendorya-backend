@@ -280,6 +280,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         'partial_update': 'CASHIER',
         'destroy':        'MANAGER',
         'invoices':       'CASHIER',
+        'statement':      'MANAGER',   # same as the supplier statement + the customer receipts list (s167)
     }
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'phone_number']
@@ -344,6 +345,175 @@ class CustomerViewSet(viewsets.ModelViewSet):
         pager.page_size = 20
         page = pager.paginate_queryset(qs, request)
         return pager.get_paginated_response(InvoiceSummarySerializer(page, many=True).data)
+
+    @action(detail=True, methods=['get'])
+    def statement(self, request, pk=None):
+        """GET /api/auth/customers/<id>/statement/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+        The customer's account statement (كشف حساب, s167 — PROLINE-PARITY Upgrade 3, customer half):
+        every movement on what they owe, oldest first, with a running balance. Same shape as the supplier
+        statement (inventory SupplierViewSet.statement), so the shared AccountStatement screen draws both.
+
+        Shop's point of view (a receivable): DEBIT = they owe more (a sale, a restocking fee, money handed
+        back on a return), CREDIT = they owe less (a payment, a lump-sum receipt, returned goods).
+        balance = debit − credit, so a positive balance = money the customer still owes the shop (same
+        sign as the Customers list). With no date_to the closing balance equals customer_outstanding()
+        to the cent — the lines come from the very same sources (customer_account_entries)."""
+        from django.utils.dateparse import parse_date
+        from finance.models import customer_outstanding
+        customer = self.get_object()   # store-scoped via get_queryset → another shop's customer = 404
+
+        dates = {}
+        for key in ('date_from', 'date_to'):
+            raw = (request.query_params.get(key) or '').strip()
+            try:
+                dates[key] = parse_date(raw) if raw else None
+            except ValueError:   # well-formed but impossible, e.g. 2026-02-31
+                dates[key] = None
+            if raw and dates[key] is None:
+                return Response({key: 'Use a date like 2026-01-31.'}, status=status.HTTP_400_BAD_REQUEST)
+        df, dt = dates['date_from'], dates['date_to']
+        if df and dt and df > dt:
+            return Response({'date_to': 'The end date is before the start date.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        from decimal import Decimal
+        from django.utils import timezone
+        ZERO = Decimal('0.00')
+
+        def money(v):
+            return str(Decimal(v).quantize(Decimal('0.01')))
+
+        opening = running = tot_debit = tot_credit = ZERO
+        lines = []
+        for e in customer_account_entries(request.user.store, customer):
+            day = timezone.localtime(e['date']).date()
+            effect = e['debit'] - e['credit']
+            if df and day < df:
+                opening += effect
+                running = opening
+                continue
+            if dt and day > dt:
+                break   # sorted by date — nothing after this can be in range
+            running += effect
+            tot_debit += e['debit']
+            tot_credit += e['credit']
+            line = {k: v for k, v in e.items() if k not in ('created_at', 'order')}
+            line.update(debit=money(e['debit']), credit=money(e['credit']), running_balance=money(running))
+            lines.append(line)
+
+        return Response({
+            'customer': {'id': str(customer.id), 'name': customer.name,
+                         'phone_number': customer.phone_number},
+            'date_from': df, 'date_to': dt,
+            'opening_balance': money(opening),
+            'lines': lines,
+            'totals': {'debit': money(tot_debit), 'credit': money(tot_credit)},
+            'closing_balance': money(running),
+            # The live balance the Customers list shows (as of now — ignores the dates); a cross-check.
+            'current_balance': money(customer_outstanding(customer)),
+        })
+
+
+def customer_account_entries(store, customer):
+    """Every movement on a customer's running account, sorted by (date, created time) — the lines of the
+    customer statement (s167). Built from EXACTLY the sources of finance.models.customer_outstanding(),
+    so Σ(debit − credit) over all entries == customer_outstanding(customer) to the cent:
+
+      outstanding = opening seed
+                  + Σ over POSTED live sales of (grand_total − paid_amount − refunded + fee + paid_back)
+                  − Σ over live receipts of unallocated
+
+      • opening  — the seed (Customer.balance), dated when the customer was created; minus = credit.
+      • sale     — debit grand_total.
+      • payment  — credit, one per live Payment on those sales that is NOT part of a live lump-sum receipt.
+      • receipt  — ONE credit per live CustomerReceipt = its live per-sale Payments (on counted sales) +
+                   its unallocated part. Normally == receipt.amount; its per-sale Payments are NOT listed
+                   again (no double count). If one of its sales was cancelled since, that share no longer
+                   counts — exactly as in customer_outstanding — and the line says so (`receipt_amount`).
+      • return / return_fee / paid_back — per live return on those sales: credit total_refunded; debit the
+                   restocking fee; debit the money really handed back (cash / card / wallet).
+      • paid_other — only if a sale's paid_amount ever drifted from its live Payment rows (legacy data):
+                   the difference, so the statement still lands on the real balance."""
+    from decimal import Decimal
+    from finance.models import CustomerReceipt, Payment, RefundInvoice, SalesInvoice
+    ZERO = Decimal('0.00')
+    entries = []
+
+    seed = customer.balance or ZERO
+    if seed:
+        entries.append({
+            'date': customer.created_at, 'created_at': customer.created_at, 'order': 0, 'kind': 'opening',
+            'ref': '', 'note': '', 'debit': max(seed, ZERO), 'credit': max(-seed, ZERO), 'link_id': None,
+        })
+
+    sales = list(SalesInvoice.all_objects.filter(
+        store=store, customer=customer, status=SalesInvoice.Status.POSTED, is_deleted=False).order_by())
+    sale_by_id = {s.id: s for s in sales}
+    receipts = list(CustomerReceipt.all_objects.filter(store=store, customer=customer, is_deleted=False)
+                    .select_related('method').order_by())
+    live_receipt_ids = {r.id for r in receipts}
+
+    for s in sales:
+        entries.append({
+            'date': s.date, 'created_at': s.created_at, 'order': 1, 'kind': 'sale',
+            'ref': str(s.invoice_number or ''), 'note': '',
+            'debit': s.grand_total or ZERO, 'credit': ZERO, 'link_id': str(s.id),
+        })
+
+    payments = (Payment.all_objects.filter(invoice_id__in=sale_by_id.keys(), is_deleted=False)
+                .select_related('method').order_by())
+    paid_on_sale, via_receipt = {}, {}
+    for p in payments:
+        paid_on_sale[p.invoice_id] = paid_on_sale.get(p.invoice_id, ZERO) + (p.amount or ZERO)
+        if p.receipt_id in live_receipt_ids:
+            via_receipt[p.receipt_id] = via_receipt.get(p.receipt_id, ZERO) + (p.amount or ZERO)
+            continue
+        inv = sale_by_id[p.invoice_id]
+        entries.append({
+            'date': p.created_at, 'created_at': p.created_at, 'order': 2, 'kind': 'payment',
+            'ref': str(inv.invoice_number or ''), 'note': '',
+            'method': p.method.name if p.method_id else '',
+            'debit': ZERO, 'credit': p.amount or ZERO, 'link_id': str(inv.id),
+        })
+
+    for s in sales:   # legacy guard: paid_amount is normally rebuilt from the live Payment rows
+        drift = (s.paid_amount or ZERO) - paid_on_sale.get(s.id, ZERO)
+        if drift:
+            entries.append({
+                'date': s.date, 'created_at': s.created_at, 'order': 3, 'kind': 'paid_other',
+                'ref': str(s.invoice_number or ''), 'note': '',
+                'debit': max(-drift, ZERO), 'credit': max(drift, ZERO), 'link_id': str(s.id),
+            })
+
+    for r in receipts:
+        counted = via_receipt.get(r.id, ZERO) + (r.unallocated or ZERO)
+        entries.append({
+            'date': r.date, 'created_at': r.created_at, 'order': 2, 'kind': 'receipt',
+            'ref': '', 'note': r.note or '', 'method': r.method.name if r.method_id else '',
+            'receipt_amount': r.amount or ZERO,
+            'debit': max(-counted, ZERO), 'credit': max(counted, ZERO), 'link_id': str(r.id),
+        })
+
+    refunds = (RefundInvoice.all_objects.filter(store=store, original_invoice_id__in=sale_by_id.keys(),
+                                                is_deleted=False).order_by())
+    for rf in refunds:
+        inv = sale_by_id[rf.original_invoice_id]
+        base = {'date': rf.date, 'created_at': rf.created_at, 'ref': str(rf.refund_number or ''),
+                'note': '', 'invoice_number': inv.invoice_number, 'link_id': str(inv.id)}
+        entries.append({**base, 'order': 4, 'kind': 'return',
+                        'debit': ZERO, 'credit': rf.total_refunded or ZERO})
+        if (rf.restocking_fee or ZERO) > 0:
+            entries.append({**base, 'order': 5, 'kind': 'return_fee',
+                            'debit': rf.restocking_fee, 'credit': ZERO})
+        if (rf.paid_back or ZERO) > 0:
+            entries.append({**base, 'order': 6, 'kind': 'paid_back', 'refund_method': rf.refund_method,
+                            'debit': rf.paid_back, 'credit': ZERO})
+
+    entries.sort(key=lambda e: (e['date'], e['created_at'], e['order']))
+    for e in entries:   # JSON-friendly; the view quantizes debit/credit itself
+        if 'receipt_amount' in e:
+            e['receipt_amount'] = str(Decimal(e['receipt_amount']).quantize(Decimal('0.01')))
+    return entries
 
 
 class StaffViewSet(viewsets.ModelViewSet):
