@@ -490,9 +490,10 @@ class ProductWriteSerializer(serializers.ModelSerializer):
 
     def _check_spec_values(self, data):
         """Upgrade 9 (s168): a NUMBER attribute takes a number, and the category's REQUIRED specs
-        (inherited ones included) must have a value. On edit, a spec not sent keeps its stored value;
-        one sent blank is being cleared. Only runs when the request carries `attributes` (the product
-        forms), so bulk edits / ghosting never trip over a product made before the spec set existed."""
+        (inherited ones included) must have a value — on create, or when an edit changes the category.
+        On such an edit a spec not sent keeps its stored value; one sent blank is being cleared. Only
+        runs when the request carries `attributes` (the product forms), so bulk edits / ghosting never
+        trip over a product made before the spec set existed."""
         from .spec_sets import effective_spec_set, _parse_uuid
         store = self.context['request'].user.store
         sent = {}
@@ -514,7 +515,13 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({
                         'attributes': _('"%(name)s" must be a number.') % {'name': d.name},
                         'not_a_number': d.name})
-        category = data['category'] if 'category' in data else getattr(self.instance, 'category', None)
+        # Required specs are enforced only on CREATE and on an edit that MOVES the product to another
+        # category (Yakot's rule via Sam, s168): a plain edit (price, name…) of an older product that
+        # predates the spec set must never be locked out. The form still shows the * as a hint.
+        if self.instance is not None and (
+                'category' not in data or data['category'] == self.instance.category):
+            return
+        category = data['category'] if 'category' in data else None
         required = [s for s in effective_spec_set(category) if s['required']] if category else []
         if not required:
             return

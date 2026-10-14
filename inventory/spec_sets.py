@@ -91,6 +91,30 @@ def own_spec_rows(category):
                 .order_by('sort_order', 'created_at'))
 
 
+def spec_set_payload(category):
+    """What the category screen + product form read.
+    - `effective`: the merged list (each attribute once, required if any level requires it);
+    - `own`: ALWAYS every own row of this category, in its order — even one a parent also carries
+      (flagged `also_inherited`), so saving the own list can never silently drop a row (review fix);
+    - `inherited`: the parents' lines (an attribute the category also owns appears in both)."""
+    effective = effective_spec_set(category)
+    own_rows = own_spec_rows(category)
+    parent_ids = set()
+    if category.parent_id:
+        parent_ids = {s['definition'] for s in effective_spec_set(category.parent)}
+    own = []
+    for r in own_rows:
+        d = _spec_dict(r, None)
+        d['also_inherited'] = str(r.definition_id) in parent_ids
+        own.append(d)
+    return {
+        'category': str(category.id),
+        'effective': effective,
+        'own': own,
+        'inherited': [s for s in effective if s['inherited_from'] is not None],
+    }
+
+
 def _parse_uuid(value):
     try:
         return uuid.UUID(str(value))

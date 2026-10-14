@@ -68,7 +68,8 @@ class SpecSetTests(TestCase):
         self.assertTrue(ram['required'])                       # Gaming makes it required
         self.assertEqual(ram['inherited_from']['name'], 'Laptops')
         self.assertIsNone(eff[3]['inherited_from'])            # GPU is Gaming's own
-        self.assertEqual([s['key'] for s in data['own']], ['gpu'])
+        # own = ALL of Gaming's own rows; RAM is flagged as also carried by a parent
+        self.assertEqual([(s['key'], s['also_inherited']) for s in data['own']], [('gpu', False), ('ram', True)])
         self.assertEqual(eff[2]['unit'], '"')
         # the parent does NOT see the child's lines
         self.assertEqual([s['key'] for s in effective_spec_set(self.laptops)], ['cpu', 'ram', 'display'])
@@ -89,6 +90,38 @@ class SpecSetTests(TestCase):
         self.assertEqual(CategorySpec.all_objects.filter(category=self.laptops).count(), 2)
         row.refresh_from_db()
         self.assertFalse(row.is_deleted)
+
+    def test_parent_gaining_a_childs_attribute_never_hides_or_drops_the_childs_row(self):
+        # review fix: Laptop preset on Laptops, LATER Monitor preset on its parent Computers (shares
+        # Brand + Screen size). Laptops' own Brand/Screen rows must stay in its own list, and an
+        # unrelated save of that own list must not soft-delete them (nor lose their required flag).
+        lap_url = f'{CATS}{self.laptops.id}/'
+        self.api.post(f'{lap_url}apply-preset/', {'preset': 'laptop'}, format='json')
+        screen = CategorySpec.objects.get(category=self.laptops, definition__key='display')
+        screen.required = True
+        screen.save()
+        self.api.post(f'{CATS}{self.computers.id}/apply-preset/', {'preset': 'monitor'}, format='json')
+
+        data = self.api.get(f'{lap_url}specs/').json()
+        own = {s['key']: s for s in data['own']}
+        self.assertIn('brand', own)
+        self.assertIn('display', own)
+        self.assertTrue(own['display']['also_inherited'])
+        self.assertTrue(own['display']['required'])
+        self.assertFalse(own['cpu']['also_inherited'])
+        # the merged list still shows each attribute once
+        keys = [s['key'] for s in data['effective']]
+        self.assertEqual(len(keys), len(set(keys)))
+
+        # the modal saves its own list (here: just un-require RAM) — nothing else may disappear
+        items = [{'definition': s['definition'], 'required': s['required'] and s['key'] != 'ram'}
+                 for s in data['own']]
+        r = self._put(self.laptops, items)
+        self.assertEqual(r.status_code, 200, r.content)
+        after = {s['key']: s for s in r.json()['own']}
+        self.assertEqual(set(after), set(own))
+        self.assertTrue(after['display']['required'])
+        self.assertFalse(CategorySpec.all_objects.filter(category=self.laptops, is_deleted=True).exists())
 
     def test_same_attribute_twice_is_refused(self):
         r = self._put(self.laptops, [{'definition': str(self.cpu.id)}, {'definition': str(self.cpu.id)}])
@@ -216,16 +249,37 @@ class ProductSpecValueTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()['not_a_number'], ['RAM'])
 
-    def test_edit_keeps_unsent_required_value_but_refuses_clearing_it(self):
-        r = self._create(self.laptops, [self._a(self.cpu, 'i5')])
-        pid = r.json()['id']
-        url = f'/api/inventory/products/{pid}/'
-        ok = self.api.patch(url, {'name': 'ThinkPad X1', 'attributes': [self._a(self.ram, '8')]}, format='json')
-        self.assertEqual(ok.status_code, 200, ok.content)            # CPU not sent → stored value counts
-        bad = self.api.patch(url, {'attributes': [self._a(self.cpu, '')]}, format='json')
-        self.assertEqual(bad.status_code, 400)
-        # a PATCH without attributes (bulk edit, ghosting…) is never blocked by the spec set
+    def test_plain_edit_is_never_locked_out_by_required_specs(self):
+        # an older product in Laptops with NO CPU (made before the spec set): a price/name edit from the
+        # product form (which sends `attributes`) saves fine — required is a hint here, not a lock
+        p = Product.objects.create(store=self.store, name='Old', supplier=self.sup, category=self.laptops)
+        ProductVariant.objects.create(product=p, sku='902', sell_price=Decimal('1'))
+        url = f'/api/inventory/products/{p.id}/'
+        r = self.api.patch(url, {'name': 'Old laptop', 'sell_price': '900', 'category': str(self.laptops.id),
+                                 'attributes': [self._a(self.ram, '8'), self._a(self.cpu, '')]}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        # clearing a required value on a plain edit is allowed too
+        r2 = self._create(self.laptops, [self._a(self.cpu, 'i5')])
+        url2 = f"/api/inventory/products/{r2.json()['id']}/"
+        self.assertEqual(self.api.patch(url2, {'attributes': [self._a(self.cpu, '')]}, format='json').status_code, 200)
+        # a PATCH without attributes (bulk edit, ghosting…) is never blocked either
         self.assertEqual(self.api.patch(url, {'name': 'X1'}, format='json').status_code, 200)
+
+    def test_edit_that_changes_category_must_fill_the_new_required_specs(self):
+        phones = Category.objects.create(store=self.store, name='Phones')
+        r = self._create(phones, [self._a(self.color, 'Black')])
+        self.assertEqual(r.status_code, 201, r.content)
+        url = f"/api/inventory/products/{r.json()['id']}/"
+        bad = self.api.patch(url, {'category': str(self.gaming.id), 'attributes': []}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(bad.json()['missing_specs'], ['CPU'])
+        ok = self.api.patch(url, {'category': str(self.gaming.id), 'attributes': [self._a(self.cpu, 'i7')]},
+                            format='json')
+        self.assertEqual(ok.status_code, 200, ok.content)
+        # moving back and forth: the stored CPU now counts, nothing to re-type
+        self.api.patch(url, {'category': str(phones.id), 'attributes': []}, format='json')
+        again = self.api.patch(url, {'category': str(self.laptops.id), 'attributes': []}, format='json')
+        self.assertEqual(again.status_code, 200, again.content)
 
     def test_product_made_before_the_spec_set_can_still_be_bulk_edited(self):
         p = Product.objects.create(store=self.store, name='Old', supplier=self.sup, category=self.laptops)

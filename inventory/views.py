@@ -881,14 +881,8 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
     # ── Spec sets (PROLINE-PARITY Upgrade 9, s168) — logic in inventory/spec_sets.py ──
     def _specs_payload(self, category):
-        from .spec_sets import effective_spec_set
-        effective = effective_spec_set(category)
-        return {
-            'category': str(category.id),
-            'effective': effective,                                   # what the product form asks for
-            'own': [s for s in effective if s['inherited_from'] is None],
-            'inherited': [s for s in effective if s['inherited_from'] is not None],
-        }
+        from .spec_sets import spec_set_payload
+        return spec_set_payload(category)   # effective (product form) + own (ALL own rows) + inherited
 
     @action(detail=True, methods=['get'])
     def specs(self, request, pk=None):
