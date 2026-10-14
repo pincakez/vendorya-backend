@@ -349,7 +349,9 @@ def _cat_path(category):
 def export_catalog(store):
     """Dump the store's catalog to a CSV string in the same import schema.
     One row per variant. SKU is included as a read-only reference (the importer
-    ignores it)."""
+    ignores it). P_NAME carries the product name (s165, §SKU2): without it the
+    importer could only rebuild a name from BRAND_DD + MODEL_FT, so an exported
+    file failed to import back for any product without those attributes."""
     products = (Product.objects.filter(store=store)
                 .select_related('category', 'category__parent',
                                 'category__parent__parent',
@@ -373,6 +375,7 @@ def export_catalog(store):
             rows.append({
                 'M_BRANCH': branch,
                 'A_SUPP': p.supplier.name if p.supplier else '',
+                'P_NAME': p.name,
                 '_path': path,
                 '_attrs': avals,
                 'Q_QTY': qty,
@@ -385,14 +388,14 @@ def export_catalog(store):
     cat_headers = CAT_COLUMNS[:max_depth]
     # SKU2 column once the shop has ever had SKU2 (ON, or DISABLED with history kept).
     with_sku2 = store.settings.sku2_state != 'OFF'
-    header = (['M_BRANCH', 'A_SUPP'] + cat_headers + attr_headers + ['Q_QTY', 'W_PRICE', 'R_PRICE', 'SKU']
+    header = (['M_BRANCH', 'A_SUPP', 'P_NAME'] + cat_headers + attr_headers + ['Q_QTY', 'W_PRICE', 'R_PRICE', 'SKU']
               + (['SKU2'] if with_sku2 else []))
 
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(header)
     for r in rows:
-        line = [r['M_BRANCH'], r['A_SUPP']]
+        line = [r['M_BRANCH'], r['A_SUPP'], r['P_NAME']]
         for idx in range(len(cat_headers)):
             line.append(r['_path'][idx] if idx < len(r['_path']) else '')
         for h in attr_headers:
