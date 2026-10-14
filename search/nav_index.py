@@ -186,6 +186,11 @@ NAV_ITEMS = [
      'kw': 'subscription plan payment invoice billing upgrade',
      'kw_ar': 'فواتير اشتراك خطة دفع ترقية'},
 
+    {'id': 'set_export', 'path': '/settings/export',
+     'label': 'Export My Data', 'label_ar': 'تصدير بياناتي', 'group': 'settings',
+     'kw': 'export download backup zip csv excel my shop data',
+     'kw_ar': 'تصدير تنزيل نسخة احتياطية بيانات المتجر إكسل'},
+
     {'id': 'set_changelog', 'path': '/settings/changelog',
      'label': "What's New", 'label_ar': 'الجديد', 'group': 'settings',
      'kw': 'updates version release new features changelog whats new',

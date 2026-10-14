@@ -7,6 +7,7 @@ from .views import (
     LockscreenLogoView, LockscreenPinView, LockscreenFactsView,
     NavSearchView,
 )
+from .shop_export import ShopExportViewSet
 
 router = DefaultRouter()
 router.register(r'branches',      BranchViewSet,      basename='branch')
@@ -27,5 +28,6 @@ urlpatterns = [
     path('lockscreen/pin/',      LockscreenPinView.as_view(),   name='lockscreen-pin'),
     path('lockscreen/facts/',    LockscreenFactsView.as_view(), name='lockscreen-facts'),
     path('nav-search/',          NavSearchView.as_view(),       name='nav-search'),
+    path('shop-export/',         ShopExportViewSet.as_view({'get': 'list'}), name='shop-export'),   # OWNER only (s167)
     path('', include(router.urls)),
 ]
