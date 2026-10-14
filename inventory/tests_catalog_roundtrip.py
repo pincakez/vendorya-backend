@@ -27,7 +27,7 @@ class _RoundTripBase(TestCase):
 
     @staticmethod
     def _for_another_shop(csv_text):
-        """An export with its SKU column emptied — how a catalog is copied into ANOTHER shop since s168
+        """An export with its SKU column emptied — how a catalog is copied into ANOTHER shop since s167
         (a SKU in the file means "update this shop's product", and shop B has none of shop A's SKUs)."""
         headers, rows = parse_csv(csv_text.encode())
         out = io.StringIO()
@@ -97,7 +97,7 @@ class CatalogExportImportRoundTripTests(_RoundTripBase):
                                                         product__name='USB-C Cable, 1m').sku2, '12345')
 
     def test_reimport_into_the_same_shop_changes_nothing(self):
-        """s168: the export carries each variant's SKU, so importing it straight back into the source shop
+        """s167: the export carries each variant's SKU, so importing it straight back into the source shop
         matches every row to its product — nothing is created and nothing changes."""
         before = Product.objects.filter(store=self.a).count()
         catalog = self._catalog(self.a)
@@ -175,7 +175,7 @@ class CatalogRoundTripEdgeTests(_RoundTripBase):
 
 
 class CatalogReimportUpdateTests(_RoundTripBase):
-    """s168 (Yakot 2026-10-14, "prices + name, never stock"): a row whose SKU is one of THIS shop's
+    """s167 (Yakot 2026-10-14, "prices + name, never stock"): a row whose SKU is one of THIS shop's
     products UPDATES its cost, sell price and name — nothing else. An empty SKU is a new product; a SKU
     the shop doesn't have is an error row (never a silent duplicate)."""
 

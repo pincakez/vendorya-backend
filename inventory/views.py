@@ -1243,7 +1243,7 @@ class CatalogImportCommitView(_CatalogImportBase):
         if not result['ok']:
             return Response(result, status=status.HTTP_400_BAD_REQUEST)
         s = result['summary']
-        # ONE entry per import (s168): the counts + the row-by-row price/name changes (old → new) in details
+        # ONE entry per import (s167): the counts + the row-by-row price/name changes (old → new) in details
         log_activity(
             request=request,
             action=(f"Catalog CSV import: {s.get('created', 0)} new products, {s.get('updated', 0)} updated "

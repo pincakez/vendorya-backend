@@ -8,7 +8,7 @@ Header convention (agreed with the product owner):
 
 Rules:
   * CSV only. A NEW product's SKU is auto-generated from the supplier prefix (leave SKU empty).
-  * Re-import UPDATES (s168, Yakot 2026-10-14 "prices + name, never stock"): a row whose SKU is a live
+  * Re-import UPDATES (s167, Yakot 2026-10-14 "prices + name, never stock"): a row whose SKU is a live
     product of THIS shop updates that variant's W_PRICE / R_PRICE and the product's P_NAME (an empty
     P_NAME keeps the name) — nothing else: stock (Q_QTY), supplier, branch, categories, attributes and
     SKU2 stay as they are (a stock difference is reported as a warning). A SKU this shop does not have
@@ -42,7 +42,7 @@ CAT_COLUMNS = ['M_CAT', 'S1_CAT', 'S2_CAT', 'S3_CAT']          # tiers 1..4
 MANDATORY_COLUMNS = set(CAT_COLUMNS) | {
     'M_BRANCH', 'A_SUPP', 'Q_QTY', 'W_PRICE', 'R_PRICE', 'P_NAME',
     # SKU: the variant's SKU (in every export). On import a row WITH a SKU updates that product of this
-    # shop (s168); an empty SKU = a new product. SKU2: the product's second code (shop's SKU2 must be ON).
+    # shop (s167); an empty SKU = a new product. SKU2: the product's second code (shop's SKU2 must be ON).
     'SKU', 'SKU2',
     'P_REF',   # s166: groups rows into one multi-variant product
 }
@@ -142,7 +142,7 @@ class CatalogImporter:
     def _attr_values(attr_headers, row):
         return tuple((row.get(h) or '').strip() for h in attr_headers)
 
-    # ---- SKU matching (s168: a re-import UPDATES) -------------------------
+    # ---- SKU matching (s167: a re-import UPDATES) -------------------------
     def _live_variants_by_sku(self, lock=False):
         """This shop's live STORE variants, by exact SKU and by SKU with the dashes taken out (someone
         may type 1234400100 for 1234-400-100 — the dash-less form counts only when it is unambiguous).
@@ -462,7 +462,7 @@ class CatalogImporter:
             from search.indexing import sync_products_on_commit
             sync_products_on_commit(touched)
 
-        # 2. new products (rows with an empty SKU) — exactly as before s168
+        # 2. new products (rows with an empty SKU) — exactly as before s167
         new_rows = [(i, row) for i, row in enumerate(rows, start=2) if not (row.get('SKU') or '').strip()]
         suppliers = {s.name.lower(): s for s in Supplier.objects.filter(store=self.store)}
         branches = {b.name.lower(): b for b in Branch.objects.filter(store=self.store)}
@@ -556,10 +556,10 @@ def _cat_path(category):
 def export_catalog(store):
     """Dump the store's catalog to a CSV string in the same import schema.
     One row per variant. SKU is included so the file can be edited and imported
-    back as an UPDATE of prices + names (s168). P_NAME carries the product name (s165, §SKU2): without it the
+    back as an UPDATE of prices + names (s167). P_NAME carries the product name (s165, §SKU2): without it the
     importer could only rebuild a name from BRAND_DD + MODEL_FT, so an exported
     file failed to import back for any product without those attributes."""
-    # STORE products only (s168): a Memory Base entry has no SKU and no supplier, so its row could never
+    # STORE products only (s167): a Memory Base entry has no SKU and no supplier, so its row could never
     # import back — it would block the whole re-import.
     products = (Product.objects.filter(store=store, source=Product.Source.STORE)
                 .select_related('category', 'category__parent',
