@@ -3,7 +3,8 @@
 > ⚠️ **REWRITTEN AT THE TOP 2026-10-05 — the old list (kept unchanged at the bottom as history) was the very first
 > Phase-1 list and badly out of date:** it showed 15 routes, an admin-panel POS at `/admin/core/store/…/pos/` that no
 > longer exists, and Django's admin at `/admin/` (it is `/django-admin/` now). The real API has **217 distinct `/api/`
-> routes**. The list below was generated from `manage.py show_urls` on the dev box (workshop, `vendorya_db_dev`,
+> routes** (219 after the s165 refresh, 2026-10-14: + `admin/stores/{id}/sku/`, `admin/stores/{id}/sku2/disable/`,
+> `finance/shifts/drawer/`; − the removed `admin/stores/{id}/export/` — checked against the live URL conf). The list below was generated from `manage.py show_urls` on the dev box (workshop, `vendorya_db_dev`,
 > 2026-10-05); format-suffix variants (`.json`) are left out and `<pk>` is written `{id}`. Root URL conf:
 > `vendorya_project/urls.py`, which `include()`s each app's `urls.py`. — Adam (Gcademy's Claude) for Yakot, 2026-10-05
 
@@ -163,6 +164,7 @@
 /api/finance/refunds/
 /api/finance/refunds/{id}/
 /api/finance/shifts/
+/api/finance/shifts/drawer/
 /api/finance/shifts/{id}/
 /api/finance/shifts/{id}/close/
 /api/finance/shifts/{id}/summary/
@@ -289,8 +291,9 @@
 /api/admin/stores/
 /api/admin/stores/check-code/
 /api/admin/stores/{id}/
-/api/admin/stores/{id}/export/
 /api/admin/stores/{id}/force-logout/
+/api/admin/stores/{id}/sku/
+/api/admin/stores/{id}/sku2/disable/
 /api/admin/stores/{id}/usage/
 /api/admin/trash/
 /api/admin/trash/restore/
