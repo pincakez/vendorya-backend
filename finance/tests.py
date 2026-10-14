@@ -645,17 +645,19 @@ class InvoiceListFilterTests(_TillBase):
     DRAFT carts as "original invoices", the Sales Invoices status filter did nothing); customer_name was missing."""
 
     def test_status_search_and_customer_name(self):
+        def _rows(r):
+            return r.data['results'] if isinstance(r.data, dict) else r.data
         posted = self._draft()
         self.assertEqual(self._checkout(posted, self.cash).status_code, 200)
         posted.refresh_from_db()
         self._draft()                                         # a DRAFT cart
         r = self.client.get('/api/finance/invoices/', {'status': 'POSTED', 'page_size': 50})
-        rows = r.data.get('results', r.data)
+        rows = _rows(r)
         self.assertEqual([x['id'] for x in rows], [str(posted.id)])
         self.assertEqual(rows[0]['customer_name'], 'Buyer')
         r = self.client.get('/api/finance/invoices/', {'search': f'#{posted.invoice_number}'})
-        self.assertEqual(len(r.data.get('results', r.data)), 1)
+        self.assertEqual(len(_rows(r)), 1)
         r = self.client.get('/api/finance/invoices/', {'search': 'buy', 'status': 'DRAFT'})
-        self.assertEqual(len(r.data.get('results', r.data)), 1)
+        self.assertEqual(len(_rows(r)), 1)
         r = self.client.get('/api/finance/invoices/', {'search': '9' * 30})
         self.assertEqual(r.status_code, 200)
