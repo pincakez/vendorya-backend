@@ -121,16 +121,20 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         return invoice
 
     @staticmethod
-    def _line_tax_rate(invoice, variant):
-        """The tax rate (%) that applies to a line: the product's own tax, else the
+    def _line_tax(invoice, variant):
+        """(rate %, tax name) that applies to a line: the product's own tax, else the
         store default, else 0 — and always 0 when tax is disabled for the store."""
         settings = getattr(invoice.store, 'settings', None)
         if settings is not None and not getattr(settings, 'tax_enabled', True):
-            return Decimal('0')
+            return Decimal('0'), ''
         tax = getattr(getattr(variant, 'product', None), 'tax', None)
         if tax is None and settings is not None:
             tax = settings.default_tax
-        return tax.rate if tax is not None else Decimal('0')
+        return (tax.rate, tax.name) if tax is not None else (Decimal('0'), '')
+
+    @staticmethod
+    def _line_tax_rate(invoice, variant):
+        return SalesInvoiceSerializer._line_tax(invoice, variant)[0]
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)
@@ -174,11 +178,14 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         for item, line_net in zip(items, line_nets):
             share = (invoice_discount * line_net / discounted_subtotal) if discounted_subtotal > 0 else Decimal('0')
             taxable = line_net - share
-            rate = SalesInvoiceSerializer._line_tax_rate(invoice, item.variant)
+            rate, tax_name = SalesInvoiceSerializer._line_tax(invoice, item.variant)
             tax = (taxable * rate / Decimal('100')).quantize(Decimal('0.01'))
-            if Decimal(str(item.tax_amount or '0')) != tax:
-                item.tax_amount = tax
-                item.save(update_fields=['tax_amount', 'total'])  # save() recomputes total
+            taxable = taxable.quantize(Decimal('0.01'))
+            # s165 (§AUDIT A12): freeze the rate/name/base on the line for the tax report.
+            if (Decimal(str(item.tax_amount or '0')) != tax or item.tax_rate != rate
+                    or item.tax_name != tax_name or item.taxable_amount != taxable):
+                item.tax_amount, item.tax_rate, item.tax_name, item.taxable_amount = tax, rate, tax_name, taxable
+                item.save(update_fields=['tax_amount', 'total', 'tax_rate', 'tax_name', 'taxable_amount'])  # save() recomputes total
             tax_total += tax
 
         invoice.subtotal = discounted_subtotal

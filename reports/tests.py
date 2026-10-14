@@ -12,10 +12,8 @@ from finance.models import SalesInvoice, SalesInvoiceItem
 from finance.serializers import RefundInvoiceSerializer
 
 
-class ProfitLossReturnsTests(TestCase):
-    """§WALK-S163 B2 (s165): returns in the P&L follow standard accounting — counted without tax (revenue
-    is ex-tax), the restocking fee the shop keeps is income, and the cost of restocked goods comes back
-    out of COGS. Before: returns were taken WITH tax, before the fee, and their cost never came back."""
+class _ReportBase(TestCase):
+    """One shop + owner + a 100-priced laptop, for the report tests."""
 
     def setUp(self):
         from django.conf import settings as dj_settings
@@ -61,6 +59,12 @@ class ProfitLossReturnsTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         return {k: (Decimal(v) if k != 'reconciles' else v) for k, v in r.data['totals'].items()}
 
+
+class ProfitLossReturnsTests(_ReportBase):
+    """§WALK-S163 B2 (s165): returns in the P&L follow standard accounting — counted without tax (revenue
+    is ex-tax), the restocking fee the shop keeps is income, and the cost of restocked goods comes back
+    out of COGS. Before: returns were taken WITH tax, before the fee, and their cost never came back."""
+
     def test_sale_alone(self):
         self._sale()
         t = self._pnl()
@@ -88,3 +92,31 @@ class ProfitLossReturnsTests(TestCase):
         self.assertEqual(t['cogs'], Decimal('60'))
         self.assertEqual(t['returns'], Decimal('100'))
         self.assertEqual(t['net'], Decimal('-60'))               # the shop lost the item's cost
+
+
+class TaxReportSnapshotTests(_ReportBase):
+    """§AUDIT A12 (s165): the tax report groups by the rate frozen on each sale line, so changing a
+    product's tax later no longer rewrites old reports."""
+
+    def test_changing_a_products_tax_keeps_old_reports(self):
+        from inventory.models import Tax
+        from finance.serializers import SalesInvoiceSerializer
+        vat = Tax.objects.create(store=self.store, name='VAT 14', rate=Decimal('14'))
+        self.variant.product.tax = vat
+        self.variant.product.save()
+        inv = SalesInvoice.objects.create(store=self.store, branch=self.branch, customer=self.customer,
+                                          status=SalesInvoice.Status.POSTED, date=timezone.now())
+        SalesInvoiceItem.objects.create(invoice=inv, variant=self.variant, quantity=Decimal('2'),
+                                        unit_price=Decimal('100'), discount_amount=Decimal('20'))
+        SalesInvoiceSerializer._recalculate(inv)          # taxable 180 → tax 25.20
+        low = Tax.objects.create(store=self.store, name='VAT 5', rate=Decimal('5'))
+        self.variant.product.tax = low                    # the owner changes the product's tax AFTER the sale
+        self.variant.product.save()
+        r = self.client.get('/api/reports/tax/')
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.data['by_rate']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(Decimal(rows[0]['rate']), Decimal('14'))
+        self.assertEqual(rows[0]['name'], 'VAT 14')
+        self.assertEqual(Decimal(rows[0]['taxable']), Decimal('180'))   # was 200 (discount ignored)
+        self.assertEqual(Decimal(rows[0]['collected']), Decimal('25.20'))

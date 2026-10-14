@@ -762,16 +762,27 @@ class TaxReportView(_StoreMixin, APIView):
             tax_amount__gt=0,
         )
 
+        # s165 (§AUDIT A12): group by the rate FROZEN on each line when it was sold — changing a product's
+        # tax later no longer rewrites old reports. Lines from before the snapshot fall back to today's tax.
+        from django.db.models import CharField
+        from django.db.models.functions import NullIf
         by_rate = (
-            base.values('variant__product__tax__rate', 'variant__product__tax__name')
+            base.annotate(
+                r_rate=Coalesce('tax_rate', 'variant__product__tax__rate'),
+                r_name=Coalesce(NullIf('tax_name', Value('')), 'variant__product__tax__name',
+                                output_field=CharField()))
+            .values('r_rate', 'r_name')
             .annotate(
-                taxable=Coalesce(Sum(F('quantity') * F('unit_price')), Value(ZERO), output_field=DEC),
+                taxable=Coalesce(Sum(Coalesce('taxable_amount',
+                                              F('quantity') * F('unit_price') - F('discount_amount'),
+                                              output_field=DEC)),
+                                 Value(ZERO), output_field=DEC),
                 collected=Coalesce(Sum('tax_amount'), Value(ZERO), output_field=DEC))
             .order_by('-collected')
         )
         rate_rows = [{
-            'rate': str(r['variant__product__tax__rate']) if r['variant__product__tax__rate'] is not None else None,
-            'name': r['variant__product__tax__name'] or '(No tax record)',
+            'rate': str(r['r_rate']) if r['r_rate'] is not None else None,
+            'name': r['r_name'] or '(No tax record)',
             'taxable': _q(r['taxable']),
             'collected': _q(r['collected']),
         } for r in by_rate]

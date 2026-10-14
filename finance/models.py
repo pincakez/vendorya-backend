@@ -128,6 +128,11 @@ class SalesInvoiceItem(models.Model):
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     total = models.DecimalField(max_digits=12, decimal_places=2)
+    # Tax snapshot (s165, §AUDIT A12): the rate/name/base used when the line was priced, so changing a
+    # product's tax later never rewrites an old tax report. Null on lines older than the snapshot.
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    tax_name = models.CharField(max_length=50, blank=True, default='')
+    taxable_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
     # COGS snapshot — captured from the weighted-average received purchase cost at the
     # moment the invoice is POSTED. Reports use THIS, never ProductVariant.cost_price.
