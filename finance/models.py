@@ -488,7 +488,13 @@ class SupplierPayment(TimestampedModel, SoftDeleteModel):
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='payments')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     date = models.DateTimeField(default=timezone.now)
+    # The OLD fixed code (CASH / BANK / CARD / OTHER) — kept for history. Since PROLINE-PARITY Upgrade 6 the
+    # real answer is `payment_method`; this column is filled from it (see supplier_payment_methods.py) and is
+    # only shown for an old payment the migration could not map (payment_method = NULL).
     method = models.CharField(max_length=10, choices=Method.choices, default=Method.CASH)
+    # How the shop paid: one of the shop's OWN payment methods (the till's list), never Ajel / store credit.
+    payment_method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, null=True, blank=True,
+                                       related_name='supplier_payments')
     note = models.TextField(blank=True, default='')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
                                    null=True, blank=True, related_name='supplier_payments')
