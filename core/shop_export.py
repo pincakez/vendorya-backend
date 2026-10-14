@@ -192,9 +192,11 @@ def _purchase_lines(store):
 def _supplier_payments(store):
     from finance.models import SupplierPayment
     qs = (SupplierPayment.objects.filter(store=store)
-          .select_related('supplier', 'created_by').order_by('date'))
+          .select_related('supplier', 'payment_method', 'created_by').order_by('date'))
     for p in qs.iterator(chunk_size=CHUNK):
-        yield [p.id, p.date, p.supplier_id, p.supplier.name if p.supplier_id else '', p.method, p.amount,
+        # The shop's own payment method (PROLINE-PARITY Upgrade 6); the old fixed code only when none was mapped.
+        method = p.payment_method.name if p.payment_method_id else p.method
+        yield [p.id, p.date, p.supplier_id, p.supplier.name if p.supplier_id else '', method, p.amount,
                p.note, _username(p.created_by)]
 
 
@@ -289,7 +291,8 @@ TABLES = [
         ('line_total', ''), ('expiry_date', ''), ('batch_number', ''),
     ], _purchase_lines),
     ('supplier_payments.csv', 'Money you paid your suppliers.', [
-        ('payment_id', ''), ('date', ''), ('supplier_id', ''), ('supplier_name', ''), ('method', ''),
+        ('payment_id', ''), ('date', ''), ('supplier_id', ''), ('supplier_name', ''),
+        ('method', 'Payment method name (older payments may show CASH / BANK / CARD / OTHER)'),
         ('amount', ''), ('note', ''), ('recorded_by', 'Username'),
     ], _supplier_payments),
     ('refunds.csv', 'Returns / refunds (one row per refund).', [

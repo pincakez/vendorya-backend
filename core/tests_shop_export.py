@@ -71,6 +71,10 @@ class ShopExportTests(TestCase):
         cat = ExpenseCategory.objects.create(store=self.store, name='Rent')
         Expense.objects.create(store=self.store, branch=self.branch, category=cat, amount=Decimal('1200.50'),
                                description='October rent', date=timezone.localdate())
+        from finance.models import SupplierPayment
+        bank = PaymentMethod.objects.create(store=self.store, name='Bank Misr')
+        SupplierPayment.objects.create(store=self.store, supplier=self.supplier, amount=Decimal('75.25'),
+                                       method='BANK', payment_method=bank)
 
         # Another shop with its own customer + sale — must never appear.
         self.other, _o_owner, o_branch = _shop('Other', 'OTH', 'b')
@@ -125,6 +129,9 @@ class ShopExportTests(TestCase):
         _raw, exp = self._rows(zf, 'expenses.csv')
         self.assertEqual(exp[1][exp[0].index('amount')], '1200.50')
         self.assertRegex(exp[1][exp[0].index('date')], r'^\d{4}-\d{2}-\d{2}$')
+        _raw, sp = self._rows(zf, 'supplier_payments.csv')
+        self.assertEqual(sp[1][sp[0].index('method')], 'Bank Misr')
+        self.assertEqual(sp[1][sp[0].index('amount')], '75.25')
         self.assertRegex(row[head.index('date')], r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$')
 
     def test_arabic_survives_and_deleted_excluded(self):
