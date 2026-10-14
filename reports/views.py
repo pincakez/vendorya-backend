@@ -25,6 +25,7 @@ from finance.models import (
     SalesInvoice, SalesInvoiceItem, Payment,
     PurchaseInvoice, PurchaseItem,
     Expense, RefundInvoice, RefundItem, WorkShift,
+    with_refund_totals, invoice_outstanding,
 )
 from inventory.models import (
     StockAdjustment, ProductVariant, StockLevel,
@@ -269,19 +270,16 @@ class ARAgingView(_StoreMixin, APIView):
             return _no_store()
         today = timezone.localdate()
 
-        invoices = (
+        invoices = with_refund_totals(
             SalesInvoice.objects.filter(
                 store=store, status=SalesInvoice.Status.POSTED, is_deleted=False)
-            .annotate(refunded=Coalesce(
-                Sum('refunds__total_refunded', filter=Q(refunds__is_deleted=False)),
-                Value(ZERO), output_field=DEC))
             .select_related('customer')
         )
 
         cust = defaultdict(lambda: {'name': '', 'b0_30': ZERO, 'b31_60': ZERO,
                                     'b61_90': ZERO, 'b90_plus': ZERO, 'total': ZERO})
         for inv in invoices:
-            outstanding = (inv.grand_total or ZERO) - (inv.paid_amount or ZERO) - (inv.refunded or ZERO)
+            outstanding = invoice_outstanding(inv)   # same rule as the customer balance (s165)
             if outstanding <= 0:
                 continue
             age = (today - timezone.localtime(inv.date).date()).days

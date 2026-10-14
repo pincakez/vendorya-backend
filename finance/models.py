@@ -266,6 +266,10 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
     shift = models.ForeignKey('WorkShift', on_delete=models.SET_NULL, null=True, blank=True,
                               related_name='cash_refunds')
     drawer_cash = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    # Money really handed back to the customer (cash + card + wallet) — s165, §WALK-S163 B1. Never more than
+    # was paid on the original sale (less earlier returns' paid_back); the unpaid part of the net refund only
+    # cancels debt. Without an original sale = the whole net refund. Feeds invoice_outstanding().
+    paid_back = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
@@ -455,9 +459,37 @@ def weighted_avg_cost(variant, store):
     return variant.cost_price or Decimal('0')
 
 
+def with_refund_totals(qs):
+    """Annotate a SalesInvoice queryset with the three refund sums invoice_outstanding() needs."""
+    from django.db.models import Q, Value, DecimalField
+    from django.db.models.functions import Coalesce
+    DEC = DecimalField(max_digits=14, decimal_places=2)
+    live = Q(refunds__is_deleted=False)
+    return qs.annotate(
+        refunded=Coalesce(Sum('refunds__total_refunded', filter=live), Value(Decimal('0')), output_field=DEC),
+        refund_fees=Coalesce(Sum('refunds__restocking_fee', filter=live), Value(Decimal('0')), output_field=DEC),
+        refund_paid_back=Coalesce(Sum('refunds__paid_back', filter=live), Value(Decimal('0')), output_field=DEC),
+    )
+
+
+def invoice_outstanding(inv):
+    """What the customer still owes on ONE sale (s165, §WALK-S163 B1) =
+    grand_total − paid − returned goods + restocking fees + money handed back.
+    A paid 100 sale fully refunded in cash → 100 − 100 − 100 + 0 + 100 = 0 (it used to be −100).
+    Needs the with_refund_totals() annotations; falls back to a query when they are missing."""
+    ZERO = Decimal('0')
+    if not hasattr(inv, 'refund_paid_back'):
+        agg = inv.refunds.filter(is_deleted=False).aggregate(
+            r=Sum('total_refunded'), f=Sum('restocking_fee'), p=Sum('paid_back'))
+        refunded, fees, paid_back = agg['r'] or ZERO, agg['f'] or ZERO, agg['p'] or ZERO
+    else:
+        refunded, fees, paid_back = inv.refunded or ZERO, inv.refund_fees or ZERO, inv.refund_paid_back or ZERO
+    return (inv.grand_total or ZERO) - (inv.paid_amount or ZERO) - refunded + fees + paid_back
+
+
 def customer_outstanding(customer, exclude_invoice_id=None):
     """A customer's REAL balance = opening-balance seed + Σ over their POSTED,
-    non-deleted invoices of (grand_total − paid_amount − refunded).
+    non-deleted invoices of invoice_outstanding() (s165: returns now count right).
 
     This is the single source of truth — for credit-limit enforcement, the
     Customers list/detail display, and V-Pilot. The stored `Customer.balance`
@@ -467,21 +499,14 @@ def customer_outstanding(customer, exclude_invoice_id=None):
     computed here (Option A, s31; opening seed folded in s61). Mirrors the
     AR-aging report. Positive = they owe us; negative = we owe them.
     """
-    from django.db.models import Q, Value, DecimalField
-    from django.db.models.functions import Coalesce
-    DEC = DecimalField(max_digits=14, decimal_places=2)
-    ZERO = Decimal('0')
     qs = SalesInvoice.all_objects.filter(
         customer=customer, status=SalesInvoice.Status.POSTED, is_deleted=False,
     )
     if exclude_invoice_id:
         qs = qs.exclude(id=exclude_invoice_id)
-    qs = qs.annotate(refunded=Coalesce(
-        Sum('refunds__total_refunded', filter=Q(refunds__is_deleted=False)),
-        Value(ZERO), output_field=DEC))
-    total = customer.balance or ZERO   # opening-balance seed
-    for inv in qs:
-        total += (inv.grand_total or ZERO) - (inv.paid_amount or ZERO) - (inv.refunded or ZERO)
+    total = customer.balance or Decimal('0')   # opening-balance seed
+    for inv in with_refund_totals(qs):
+        total += invoice_outstanding(inv)
     return total
 
 
