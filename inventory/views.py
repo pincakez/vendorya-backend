@@ -2,7 +2,8 @@ import re
 from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.utils import timezone
-from django.db.models import Q, Sum, F, Min, Value, OuterRef, Subquery, ExpressionWrapper, DecimalField
+from django.db.models import (Q, Sum, F, Min, Value, OuterRef, Subquery, ExpressionWrapper, DecimalField,
+                              Case, When, IntegerField)
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets, filters, status
 from rest_framework.pagination import PageNumberPagination
@@ -44,6 +45,15 @@ class VisibilityOrderingFilter(filters.OrderingFilter):
             return valid
         blocked = {k for k, f in _ORDER_TO_FIELD.items() if f in hidden}
         return [t for t in valid if t.lstrip('-') not in blocked]
+
+    def filter_queryset(self, request, queryset, view):
+        qs = super().filter_queryset(request, queryset, view)
+        # A search that EXACTLY matches a code (ProductSearchFilter's `_code_exact`) stays on top,
+        # whatever column the list is sorted by — the sort applies below it.
+        if '_code_exact' in qs.query.annotations:
+            current = list(qs.query.order_by) or list(qs.model._meta.ordering)
+            qs = qs.order_by('_code_exact', *current)
+        return qs
 
 
 class AttributeDefinitionViewSet(viewsets.ModelViewSet):
@@ -94,20 +104,24 @@ class MemoryBasePagination(PageNumberPagination):
 
 
 class ProductSearchFilter(filters.SearchFilter):
-    """Name search as before, OR any code (SKU / SKU2 / barcode) containing the text — dashes
-    ignored, SKU2 only while the shop's SKU2 is ON (s159)."""
+    """Name search as before, OR any code (SKU / SKU2 / barcode / pack barcode) containing the
+    text — dashes ignored, SKU2 only while the shop's SKU2 is ON (s159). An EXACT code match is
+    flagged `_code_exact=0` so VisibilityOrderingFilter can list it first (like the POS scan)."""
 
     def filter_queryset(self, request, queryset, view):
         terms = self.get_search_terms(request)
         if not terms:
             return queryset
-        from inventory.code_search import code_contains
+        from inventory.code_search import code_contains, exact_code
         from inventory.sku import sku2_active
         by_name = super().filter_queryset(request, queryset, view)
         text = ' '.join(terms)
         store = getattr(request.user, 'store', None)
+        with_sku2 = bool(store) and sku2_active(store)
         return queryset.filter(Q(pk__in=by_name.values('pk')) |
-                               Q(code_contains(text, bool(store) and sku2_active(store))))
+                               Q(code_contains(text, with_sku2))).annotate(
+            _code_exact=Case(When(exact_code(text, with_sku2), then=Value(0)),
+                             default=Value(1), output_field=IntegerField()))
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -629,19 +643,30 @@ class ProductViewSet(viewsets.ModelViewSet):
         # fuzzy name hit), then fall back to the name/ingredient matches.
         # s159: an EXACT code (SKU / SKU2 / barcode, dashes ignored) comes before one that merely
         # contains the typed digits — `12077` must land on 12077, not on 1207740010.
+        # A pack/box barcode counts as a code too (only while the shop sells in packs) — the
+        # matching pack is named in `scan_unit` so the POS adds 1 pack, not 1 piece.
+        exact_ids = set()
         if pos_mode:
             from inventory.code_search import exact_code, code_contains
+            from inventory.models import is_multi_unit_enabled
             from inventory.sku import sku2_active
             with_sku2 = sku2_active(store)
-            exact_hits = list(base.filter(exact_code(q, with_sku2))[:20])
-            seen = {p.id for p in exact_hits}
-            sku_hits = exact_hits + [p for p in base.filter(code_contains(q, with_sku2))[:20] if p.id not in seen]
+            packs = is_multi_unit_enabled(store.id)
+            exact_hits = list(base.filter(exact_code(q, with_sku2, packs))[:20])
+            exact_ids = {p.id for p in exact_hits}
+            seen = set(exact_ids)
+            sku_hits = exact_hits + [p for p in base.filter(code_contains(q, with_sku2, packs))[:20]
+                                     if p.id not in seen]
             seen = {p.id for p in sku_hits}
             results = (sku_hits + [p for p in results if p.id not in seen])[:20]
 
         no_history = (store_history and len(results) == 0)
-        serializer = ProductListSerializer(results, many=True, context={'request': request})
-        return Response({'results': serializer.data, 'no_history': no_history})
+        data = ProductListSerializer(results, many=True, context={'request': request}).data
+        if pos_mode:
+            from inventory.code_search import scan_unit_id
+            for p, row in zip(results, data):
+                row['scan_unit'] = scan_unit_id(row.get('selling_units'), q) if p.id in exact_ids else None
+        return Response({'results': data, 'no_history': no_history})
 
     # strength tokens to drop when matching on ingredient NAME ("Acetazolamide 250 mg"
     # → "Acetazolamide"). Only number+unit pairs are removed, so bare names are untouched.
