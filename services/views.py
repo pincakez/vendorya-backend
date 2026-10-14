@@ -14,7 +14,7 @@ from core.models import ActivityLog
 from users.permissions import RoleScopedPermission
 from .desk import add_job_lines, labour_variant, quote, refund_lines
 from .models import Service
-from .serializers import ServiceSerializer, ServiceNoteSerializer
+from .serializers import ServiceSerializer, ServiceNoteSerializer, device_unit_info
 
 
 class _Refuse(Exception):
@@ -53,6 +53,8 @@ class ServiceViewSet(viewsets.ModelViewSet):
         'return_service':     'MANAGER',
         'notes':              'CASHIER',
         'technicians':        'CASHIER',
+        # The job form looks the device serial up while it is typed — whoever may book a job in may look.
+        'device_lookup':      'CASHIER',
         'quote':              'CASHIER',
         'labour':             'MANAGER',
         'run_notifications':  'MANAGER',
@@ -360,6 +362,16 @@ class ServiceViewSet(viewsets.ModelViewSet):
         from users.models import User
         users = User.objects.filter(store=request.user.store, is_active=True).order_by('first_name', 'username')
         return Response([{'id': u.id, 'name': (u.get_full_name() or u.username).strip()} for u in users])
+
+    @action(detail=False, methods=['get'], url_path='device-lookup')
+    def device_lookup(self, request):
+        """GET ?serial= → {'unit': the caller's shop's unit with that exact serial (product, sale, warranty) or
+        null}. Exact match (spaces + case ignored), never another shop's unit; an unknown serial is not an error
+        — the job keeps it as free text. (The inventory serial search is a fuzzy list with purchase details —
+        not what a form field typed letter by letter needs.)"""
+        from inventory.serials import find_serial
+        unit = find_serial(request.user.store, request.query_params.get('serial', ''))
+        return Response({'unit': device_unit_info(unit)})
 
     @action(detail=True, methods=['post'])
     def notes(self, request, pk=None):

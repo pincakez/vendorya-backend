@@ -464,3 +464,104 @@ class ServiceDeskTests(TestCase):
         total = sum(x.total_refunded for x in RefundInvoice.objects.filter(original_invoice=inv))
         self.assertEqual(total, Decimal('1254'))
         self.assertEqual(self._stock(), Decimal('10'))
+
+
+class ServiceDeviceSerialTests(TestCase):
+    """s169 — a job's device serial looks up the shop's OWN serial unit: product, the sale it left on, its
+    warranty. Never another shop's unit; an unknown serial stays plain text (nulls, no error)."""
+
+    setUp = ServiceDeskTests.setUp     # same two shops, users and stock
+    _api = ServiceDeskTests._api
+
+    def _unit(self, store, serial, sold_days_ago=0, warranty_ends_on=None, status='SOLD'):
+        from datetime import timedelta
+        from django.utils import timezone
+        from core.models import Branch, Address
+        from finance.models import SalesInvoice, SalesInvoiceItem
+        from inventory.models import Product, ProductVariant, SerialUnit, Supplier
+        from users.models import Customer
+        sup = Supplier.objects.filter(store=store).first()
+        product = Product.objects.create(store=store, name=f'Laptop {serial}', track_serials=True, supplier=sup)
+        variant = ProductVariant.objects.create(product=product, sell_price=Decimal('20000'))
+        branch = Branch.objects.filter(store=store).first() or Branch.objects.create(
+            store=store, name='B', address=Address.objects.create(store=store, street_1='2', city='Giza'))
+        item = None
+        if status == 'SOLD':
+            cust = Customer.objects.create(store=store, name='Buyer', phone_number='0109')
+            inv = SalesInvoice.objects.create(store=store, branch=branch, customer=cust, invoice_number=7001,
+                                              date=timezone.now() - timedelta(days=sold_days_ago))
+            item = SalesInvoiceItem.objects.create(invoice=inv, variant=variant, quantity=1,
+                                                   unit_price=Decimal('20000'), total=Decimal('20000'))
+        return SerialUnit.all_objects.create(store=store, variant=variant, branch=branch, serial=serial,
+                                             status=status, sale_item=item, warranty_ends_on=warranty_ends_on,
+                                             warranty_months=12 if warranty_ends_on else 0)
+
+    def _job(self, serial):
+        r = self._api(self.cashier).post('/api/services/', {
+            'client_name': 'Ali', 'receive_date': str(date.today()), 'service_type': 'Repair',
+            'device_serial': serial}, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        return r.json()
+
+    def _list_row(self, job_id):
+        data = self._api(self.cashier).get('/api/services/').json()
+        return next(r for r in (data['results'] if isinstance(data, dict) else data) if r['id'] == job_id)
+
+    def _lookup(self, serial):
+        r = self._api(self.cashier).get('/api/services/device-lookup/', {'serial': serial})
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        return r.json()['unit']
+
+    def test_match_in_same_shop_fills_product_sale_and_running_warranty(self):
+        from datetime import timedelta
+        unit = self._unit(self.store, 'ABC123', sold_days_ago=30, warranty_ends_on=date.today() + timedelta(days=300))
+        job = self._job(' abc 123 ')          # typed with spaces + lower case → the same unit
+        du = job['device_unit']
+        self.assertEqual(du['id'], str(unit.id))
+        self.assertEqual(du['product_id'], str(unit.variant.product_id))
+        self.assertEqual(du['product_name'], 'Laptop ABC123')
+        self.assertEqual(du['sale']['id'], str(unit.sale_item.invoice_id))
+        self.assertEqual(du['sale']['invoice_number'], 7001)
+        self.assertTrue(du['sale']['date'])
+        self.assertEqual(du['warranty_ends_on'], str(unit.warranty_ends_on))
+        self.assertTrue(du['warranty_active'])
+        # the list (one batched lookup), the job page and the form's lookup-while-typing all say the same
+        self.assertEqual(self._list_row(job['id'])['device_unit'], du)
+        self.assertEqual(self._api(self.cashier).get(f"/api/services/{job['id']}/").json()['device_unit'], du)
+        self.assertEqual(self._lookup('abc123'), du)
+
+    def test_warranty_ended(self):
+        from datetime import timedelta
+        self._unit(self.store, 'OLD1', sold_days_ago=500, warranty_ends_on=date.today() - timedelta(days=1))
+        du = self._job('OLD1')['device_unit']
+        self.assertEqual(du['warranty_ends_on'], str(date.today() - timedelta(days=1)))
+        self.assertFalse(du['warranty_active'])
+        self.assertIsNotNone(du['sale'])
+
+    def test_warranty_ending_today_still_runs_and_a_unit_on_the_shelf_has_no_sale(self):
+        self._unit(self.store, 'TODAY1', warranty_ends_on=date.today())
+        self.assertTrue(self._job('TODAY1')['device_unit']['warranty_active'])
+        self._unit(self.store, 'SHELF1', status='IN_STOCK')
+        du = self._job('SHELF1')['device_unit']
+        self.assertEqual((du['status'], du['sale'], du['warranty_ends_on'], du['warranty_active']),
+                         ('IN_STOCK', None, None, False))
+
+    def test_other_shops_unit_is_never_shown(self):
+        from datetime import timedelta
+        self._unit(self.store2, 'THEIRS9', warranty_ends_on=date.today() + timedelta(days=100))
+        job = self._job('THEIRS9')
+        self.assertIsNone(job['device_unit'])
+        self.assertIsNone(self._list_row(job['id'])['device_unit'])
+        self.assertIsNone(self._lookup('THEIRS9'))
+
+    def test_unknown_or_removed_serial_is_null_not_an_error(self):
+        job = self._job('NOPE-42')
+        self.assertEqual(job['device_serial'], 'NOPE-42')      # free text kept as typed
+        self.assertIsNone(job['device_unit'])
+        self.assertIsNone(self._list_row(job['id'])['device_unit'])
+        self.assertIsNone(self._job('')['device_unit'])
+        unit = self._unit(self.store, 'GONE1', status='IN_STOCK')
+        unit.delete()                                          # soft-removed (a wrongly typed serial)
+        self.assertIsNone(self._job('GONE1')['device_unit'])
+        for q in ('NOPE-42', '', '   '):
+            self.assertIsNone(self._lookup(q))
