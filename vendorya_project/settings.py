@@ -40,6 +40,10 @@ def _env_required(key):
 # Core security knobs — must be supplied via env (no in-repo fallback).
 SECRET_KEY = _env_required('DJANGO_SECRET_KEY')
 DEBUG = _env_bool('DJANGO_DEBUG', default=False)
+# Key for core.encryption.EncryptedCharField (secrets stored encrypted at rest). Kept separate from
+# SECRET_KEY so rotating SECRET_KEY never makes stored secrets unreadable. Optional while no field uses
+# it; once one does, a missing key is an error outside DEBUG (see core/encryption.py, §C9.8).
+FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '').strip()
 ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '.trycloudflare.com', 'vendorya.gates-tech.com', 'vdev.gates-tech.com', 'vendorya.gatesinnov.com', 'vendoryas-staging.gatesinnov.com'])
 CSRF_TRUSTED_ORIGINS = _env_list('CSRF_TRUSTED_ORIGINS', default=['https://vendorya.gates-tech.com', 'https://vdev.gates-tech.com', 'https://vendorya.gatesinnov.com', 'https://vendoryas-staging.gatesinnov.com', 'https://*.trycloudflare.com'])
 

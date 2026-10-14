@@ -6,25 +6,48 @@ dump would expose the key. `EncryptedCharField` keeps the Python value in
 plaintext (every existing `.gemini_api_key` read/write is unchanged) while the
 database stores ciphertext.
 
-Key material: a dedicated `FIELD_ENCRYPTION_KEY` setting if present, otherwise
-derived from `SECRET_KEY`. The default means prod works with no new env var —
-but if you rotate SECRET_KEY without setting FIELD_ENCRYPTION_KEY first, stored
-secrets become undecryptable (handled gracefully: the raw value is returned and
-the secret must be re-entered). For long-term safety set FIELD_ENCRYPTION_KEY
-in `.env` to a stable, independent value.
+Key material: the `FIELD_ENCRYPTION_KEY` setting (env var of the same name,
+loaded in settings.py). It must stay stable and independent of SECRET_KEY —
+rotating SECRET_KEY must never make stored secrets unreadable.
+
+§C9.8 (s165): settings used to never load the key, so this silently fell back to
+SECRET_KEY everywhere. Now:
+  * key set            → used.
+  * key missing, DEBUG → falls back to SECRET_KEY (dev/test convenience only).
+  * key missing, prod  → ImproperlyConfigured the first time something encrypts
+                         or decrypts — never a silent SECRET_KEY-derived key.
+The check is lazy (on first use), so a box without the key still boots while no
+model uses EncryptedCharField (true as of s165 — the Gemini key field was removed
+in s152).
+
+Unreadable ciphertext (wrong key) is handled gracefully: the raw value is
+returned and the secret must be re-entered.
 """
 import base64
 import hashlib
 from functools import lru_cache
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import models
 from cryptography.fernet import Fernet, InvalidToken
 
 
+def _key_material():
+    raw = (getattr(settings, 'FIELD_ENCRYPTION_KEY', '') or '').strip()
+    if raw:
+        return raw
+    if settings.DEBUG:
+        return settings.SECRET_KEY   # dev/test only — see the module docstring
+    raise ImproperlyConfigured(
+        'FIELD_ENCRYPTION_KEY is not set. Set it in the environment (.env) to a long random '
+        'string, independent of DJANGO_SECRET_KEY, before storing encrypted fields.'
+    )
+
+
 @lru_cache(maxsize=1)
 def _fernet():
-    raw = getattr(settings, 'FIELD_ENCRYPTION_KEY', None) or settings.SECRET_KEY
+    raw = _key_material()
     # Fernet needs 32 url-safe base64 bytes; derive deterministically from the key material.
     digest = hashlib.sha256(raw.encode()).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
