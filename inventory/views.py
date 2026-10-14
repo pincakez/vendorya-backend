@@ -162,6 +162,9 @@ class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
         'autocomplete': 'CASHIER',
         'alternatives': 'CASHIER',   # POS /sameing + /sametrade finder (was owner-only by omission — s156)
         'media_specs':  'MANAGER',   # upload-limits note on the product page (s156),
+        # s167: price stickers from the product list. Cashiers print labels (s157 §AUDIT B7 opened the
+        # presets to them); a sticker only shows what the till already shows (name, codes, sell price).
+        'label_data':   'CASHIER',
     }
     filter_backends = [ProductSearchFilter, VisibilityOrderingFilter]
     fv_table_id = 'inventory_products'
@@ -460,6 +463,62 @@ class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
         log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
                      action=f"{'Ghosted' if product.hide_from_pos else 'Un-ghosted'} product '{product.name}'")
         return Response({'id': str(product.id), 'hide_from_pos': product.hide_from_pos})
+
+    # ── Price stickers from the product list (s167, PROLINE-PARITY Upgrade 14) ──
+    LABEL_MAX_PRODUCTS = 2000
+
+    @action(detail=False, methods=['post'], url_path='label-data')
+    def label_data(self, request):
+        """Sticker payload for chosen products — the same item shape as a purchase's label-data
+        (`PurchaseInvoiceViewSet.label_data`), so the one label print page serves both.
+        Body: {ids: [product ids]}. One item per live variant, with its shop-wide stock.
+        `quantity` = 1 label per variant; `stock_labels` = one per unit in stock (min 1), except a
+        product sold by weight, which always gets 1 (kg are not countable stickers)."""
+        ids = request.data.get('ids')
+        if not isinstance(ids, list) or not ids:
+            return Response({'error': 'ids must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(ids) > self.LABEL_MAX_PRODUCTS:
+            return Response({'error': f'At most {self.LABEL_MAX_PRODUCTS} products at a time.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        store = request.user.store
+        from django.db.models import Prefetch
+        from inventory.sku import sku2_active
+        from core.models import StoreSettings
+        st, _ = StoreSettings.objects.get_or_create(store_id=store.pk)   # fresh: sudo may have just changed SKU2
+        with_sku2 = sku2_active(store) and st.sku2_print_label
+        variants_qs = (ProductVariant.objects.filter(store=store)
+                       .annotate(_stock=Coalesce(Sum('stock_levels__quantity'), Value(Decimal('0')),
+                                                 output_field=DecimalField(max_digits=14, decimal_places=3)))
+                       .prefetch_related('attributes')
+                       .order_by('created_at'))
+        products = (Product.objects.filter(store=store, id__in=ids, source=Product.Source.STORE)
+                    .prefetch_related(Prefetch('variants', queryset=variants_qs))
+                    .order_by('name'))
+        items = []
+        for p in products:
+            variants = list(p.variants.all())
+            by_weight = p.selling_mode == Product.SellingMode.WEIGHT
+            for v in variants:
+                name = p.name
+                if len(variants) > 1:   # say WHICH variant on the sticker
+                    vals = [a.value for a in v.attributes.all() if a.value]
+                    if vals:
+                        name = f"{p.name} · {' / '.join(vals)}"
+                stock = v._stock or Decimal('0')
+                items.append({
+                    'variant_id':   str(v.id),
+                    'product_id':   str(p.id),
+                    'product_name': name,
+                    'sku':          v.sku,
+                    'sku2':         (v.sku2 or '') if with_sku2 else '',
+                    'barcode':      v.barcode or v.sku,
+                    'sell_price':   str(v.sell_price),
+                    'stock':        str(stock),
+                    'by_weight':    by_weight,
+                    'quantity':     1,
+                    'stock_labels': 1 if by_weight else max(1, int(stock)),
+                })
+        return Response({'store_name': store.name, 'items': items})
 
     @action(detail=False, methods=['post'])
     def bulk_ghost(self, request):
