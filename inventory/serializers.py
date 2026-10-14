@@ -122,6 +122,10 @@ class ProductAttributeSerializer(serializers.ModelSerializer):
         model = ProductAttribute
         fields = ['id', 'definition', 'definition_name', 'definition_key', 'value']
 
+def _barcode_taken(code, owner):
+    return _('Barcode %(code)s is already used by "%(name)s" in this shop.') % {'code': code, 'name': owner}
+
+
 class ProductUnitSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductUnit
@@ -147,6 +151,23 @@ class ProductVariantSerializer(serializers.ModelSerializer):
         fields = ['id', 'product', 'product_name', 'sku', 'sku2', 'barcode',
                   'cost_price', 'sell_price', 'reorder_level',
                   'attributes', 'stock_levels', 'total_stock', 'storage_qty']
+
+    def validate(self, attrs):
+        from inventory.code_search import barcode_owner
+        request = self.context.get('request')
+        store = getattr(getattr(request, 'user', None), 'store', None)
+        product = attrs.get('product') or (self.instance.product if self.instance else None)
+        # A variant may only hang off a product of the caller's own shop.
+        if product is not None and store is not None and product.store_id != store.id:
+            raise serializers.ValidationError({'product': _('Product not found.')})
+        # Barcode unique per shop, across variants AND packs (live STORE products only).
+        if attrs.get('barcode') and product is not None and product.source == Product.Source.STORE:
+            owner = barcode_owner(product.store, attrs['barcode'],
+                                  skip_variant_ids=[self.instance.id] if self.instance else [])
+            if owner is not None:
+                raise serializers.ValidationError({'barcode': _barcode_taken(attrs['barcode'], owner),
+                                                   'barcode_code': attrs['barcode'], 'barcode_owner': owner})
+        return attrs
 
     def get_total_stock(self, obj):
         return sum(s.quantity for s in obj.stock_levels.all())
@@ -437,7 +458,37 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                         {'selling_units': _('A weight product is sold per kg only — '
                                             'it cannot also have pack/strip units.')})
                 data['unit'] = 'kg'
+        if data.get('selling_units'):
+            self._check_unit_barcodes(data['selling_units'])
         return data
+
+    def _check_unit_barcodes(self, units):
+        """A pack barcode is unique per shop, across variants AND packs (live STORE products only).
+        This product's own current packs don't count — the save rewrites or drops all of them —
+        but its variant's own barcode does (a scan must mean one thing)."""
+        from inventory.code_search import barcode_owner
+        store = self.context['request'].user.store
+        if self.instance is not None and self.instance.source != Product.Source.STORE:
+            return
+        variant = self.instance.variants.first() if self.instance is not None else None
+        skip_units = list(variant.selling_units.values_list('id', flat=True)) if variant else []
+        seen = set()
+        for u in units:
+            if not (u.get('name') or '').strip() or u.get('factor') in (None, '', 0, '0'):
+                continue   # _sync_selling_units skips these rows too
+            code = (u.get('barcode') or '').strip()
+            if not code:
+                continue
+            # barcode_code / barcode_owner let the screen word the error in the user's language.
+            if code in seen:
+                raise serializers.ValidationError({
+                    'selling_units': _('Barcode %(code)s is used by two packs of this product.') % {'code': code},
+                    'barcode_code': code})
+            seen.add(code)
+            owner = barcode_owner(store, code, skip_unit_ids=skip_units)
+            if owner is not None:
+                raise serializers.ValidationError({'selling_units': _barcode_taken(code, owner),
+                                                   'barcode_code': code, 'barcode_owner': owner})
 
     def _sync_selling_units(self, variant, units_data):
         """Reconcile a variant's opt-in alternate units against the desired list.

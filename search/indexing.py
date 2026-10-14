@@ -61,6 +61,38 @@ def delete_product(product_id):
         logger.warning("Typesense delete failed for product %s: %s", product_id, exc)
 
 
+def sync_products(product_ids):
+    """Bring the index in line with the DB for exactly these products (B8).
+
+    For bulk writes that use `QuerySet.update()` — those skip the post_save signal, so
+    without this a deleted product stays findable. Live products are upserted, deleted
+    or missing ones are dropped. Two Typesense calls at most, whatever the batch size
+    (a hung server costs ~2 timeouts, not one per product). Best-effort — never raises.
+    """
+    ids = sorted({str(pk) for pk in product_ids if pk})
+    if not ids or not ts.is_configured():
+        return
+    try:
+        live = list(Product.all_objects.filter(id__in=ids, is_deleted=False)
+                    .prefetch_related('variants', 'variants__attributes',
+                                      'variants__attributes__definition'))
+        docs = ts.get_client().collections[ts.COLLECTION].documents
+        if live:
+            docs.import_([build_document(p) for p in live], {'action': 'upsert'})
+        gone = sorted(set(ids) - {str(p.id) for p in live})
+        if gone:
+            docs.delete({'filter_by': f"id:[{','.join(gone)}]"})
+    except Exception as exc:           # noqa: BLE001 — indexing must never break a write
+        logger.warning("Typesense bulk sync failed for %d product(s): %s", len(ids), exc)
+
+
+def sync_products_on_commit(product_ids):
+    """`sync_products` once the surrounding transaction commits (now, if there is none)."""
+    from django.db import transaction
+    ids = [str(pk) for pk in product_ids]
+    transaction.on_commit(lambda: sync_products(ids))
+
+
 def reindex_all(stdout=None, batch_size=2000):
     """Drop + rebuild the whole collection from the DB. Idempotent.
 
