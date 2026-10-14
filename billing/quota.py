@@ -59,8 +59,10 @@ def _usage_for(store, resource):
     if resource == 'invoices':
         from finance.models import SalesInvoice
         now = timezone.localtime()
+        # Only COMPLETED sales count (s165): a DRAFT is an open cart (the till makes one per basket,
+        # many are abandoned) — counting them let a shop hit its monthly limit without selling anything.
         return SalesInvoice.objects.filter(
-            store=store, is_deleted=False,
+            store=store, is_deleted=False, status=SalesInvoice.Status.POSTED,
             created_at__year=now.year, created_at__month=now.month,
         ).count()
     return 0
