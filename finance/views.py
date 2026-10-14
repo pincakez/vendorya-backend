@@ -311,10 +311,17 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'position': store.currency.position,
             }
 
+        # §WT: a weight line (per-kg product, master switch on, base unit) is flagged so
+        # the receipt shows "250 g" / "0.25 kg" in the store's default weight unit.
+        # quantity stays the stored kg — the unit is display only.
+        from inventory.models import is_weight_selling_enabled
+        weight_on = is_weight_selling_enabled(store.id)
         items = [{
             'name': item.variant.product.name,
             'sku': item.variant.sku,
             'quantity': str(item.quantity),
+            'is_weight': bool(weight_on and not item.unit_id
+                              and item.variant.product.selling_mode == 'WEIGHT'),
             'unit_name': item.unit.name if item.unit_id else None,  # base unit → None (plain products unchanged)
             'unit_price': str(item.unit_price),
             'tax_amount': str(item.tax_amount),
@@ -357,6 +364,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'receipt_footer': settings_obj.receipt_footer if settings_obj else '',
             },
             'currency': currency,
+            'weight_unit': settings_obj.default_weight_unit if settings_obj else 'KG',
             'items': items,
             'payments': payments,
         })
