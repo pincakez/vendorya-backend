@@ -151,3 +151,32 @@ class TestRunNeverTouchesLiveSearchTests(TestCase):
         with mock.patch.object(ts, 'get_client') as gc:
             Product.objects.create(store=store, name='Nothing to index')
         gc.assert_not_called()
+
+
+class LaptopImportWipeResyncsSearchTests(TestCase):
+    """s166: `import_laptop_list --wipe` soft-deleted with .update() → the wiped products stayed findable."""
+
+    def test_wipe_drops_the_products_from_search(self):
+        import json
+        import tempfile
+        from io import StringIO
+        from django.core.management import call_command
+        from core.models import Address, Branch
+        from inventory.models import Supplier
+        owner = User.objects.create_user(username='own4', password='pw', role='OWNER')
+        store = Store.objects.create(name='Wipe Shop', store_code='104', owner=owner)
+        StoreSettings.objects.get_or_create(store=store)
+        addr = Address.objects.create(store=store, street_1='1', city='Cairo')
+        Branch.objects.create(store=store, name='Main', address=addr)
+        Supplier.objects.create(store=store, name='Sup', code_prefix='404', prefix_locked=True)
+        old = [Product.objects.create(store=store, name=f'Old {i}') for i in range(2)]
+        fake, docs = _fake_ts()
+        with tempfile.TemporaryDirectory() as d:
+            with open(f'{d}/laptops.json', 'w') as f:
+                json.dump([], f)
+            with mock.patch.object(indexing, 'ts', fake), self.captureOnCommitCallbacks(execute=True):
+                call_command('import_laptop_list', store='Wipe Shop', data=d, wipe=True, stdout=StringIO())
+        deleted = set()
+        for call in docs.delete.call_args_list:
+            deleted |= set(call.args[0]['filter_by'][len('id:['):-1].split(','))
+        self.assertEqual(deleted, {str(p.id) for p in old})

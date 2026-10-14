@@ -67,8 +67,12 @@ class Command(BaseCommand):
 
         if o['wipe']:
             now = timezone.now()
-            n = Product.objects.filter(store=store).update(is_deleted=True, deleted_at=now)
+            wiped_ids = list(Product.objects.filter(store=store).values_list('id', flat=True))
+            n = Product.objects.filter(id__in=wiped_ids).update(is_deleted=True, deleted_at=now)
             ProductVariant.objects.filter(store=store).update(is_deleted=True, deleted_at=now)
+            # .update() skips the post_save signal → drop them from search by hand (s166, same as B8)
+            from search.indexing import sync_products_on_commit
+            sync_products_on_commit(wiped_ids)
             self.stdout.write(f'  wiped {n} products (soft-deleted, in the trash)')
 
         laptop_root = Category.objects.filter(store=store, name='Laptop', parent__isnull=True).first()
