@@ -6,14 +6,17 @@ from decimal import Decimal
 
 from django.conf import settings as dj_settings
 from django.core.cache import cache
-from django.test import TestCase
+from unittest import mock
+
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from core.models import ActivityLog, Address, Branch, Store
 from core.shop_export import PRODUCTS_FILE, TABLES, _cell
-from finance.models import Expense, ExpenseCategory, PaymentMethod, Payment, SalesInvoice, SalesInvoiceItem
+from finance.models import (CustomerReceipt, Expense, ExpenseCategory, PaymentMethod, Payment, PurchaseInvoice,
+                            PurchaseItem, RefundInvoice, RefundItem, SalesInvoice, SalesInvoiceItem, SupplierPayment)
 from inventory.models import Product, ProductVariant, Supplier
 from users.models import Customer, User
 
@@ -71,10 +74,23 @@ class ShopExportTests(TestCase):
         cat = ExpenseCategory.objects.create(store=self.store, name='Rent')
         Expense.objects.create(store=self.store, branch=self.branch, category=cat, amount=Decimal('1200.50'),
                                description='October rent', date=timezone.localdate())
-        from finance.models import SupplierPayment
         bank = PaymentMethod.objects.create(store=self.store, name='Bank Misr')
         SupplierPayment.objects.create(store=self.store, supplier=self.supplier, amount=Decimal('75.25'),
                                        method='BANK', payment_method=bank)
+        # A purchase with one line, a refund with one line and a customer receipt — every CSV gets a row.
+        self.purchase = PurchaseInvoice.objects.create(
+            store=self.store, branch=self.branch, supplier=self.supplier, purchase_number='P-77',
+            vendor_reference='NS-9', date=timezone.now(), status=PurchaseInvoice.Status.RECEIVED, total_amount=Decimal('90.00'))
+        PurchaseItem.objects.create(invoice=self.purchase, variant=self.variant, quantity=Decimal('3'),
+                                    unit_cost=Decimal('30.00'), total_cost=Decimal('90.00'), batch_number='B1')
+        self.refund = RefundInvoice.objects.create(
+            store=self.store, branch=self.branch, original_invoice=self.sale, customer=self.arabic,
+            refund_number=501, date=timezone.now(), total_refunded=Decimal('50.00'), paid_back=Decimal('50.00'), reason='Broken')
+        RefundItem.objects.create(refund=self.refund, variant=self.variant, quantity=Decimal('1'),
+                                  refund_amount=Decimal('50.00'), restock_inventory=False)   # True would move stock in save()
+        self.receipt = CustomerReceipt.objects.create(
+            store=self.store, customer=self.arabic, amount=Decimal('20.00'), method=bank,
+            unallocated=Decimal('20.00'), note='Deposit', created_by=self.owner)
 
         # Another shop with its own customer + sale — must never appear.
         self.other, _o_owner, o_branch = _shop('Other', 'OTH', 'b')
@@ -133,6 +149,44 @@ class ShopExportTests(TestCase):
         self.assertEqual(sp[1][sp[0].index('method')], 'Bank Misr')
         self.assertEqual(sp[1][sp[0].index('amount')], '75.25')
         self.assertRegex(row[head.index('date')], r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$')
+        # the 50 refunded + 50 paid back leaves the paid sale at 0 owed (invoice_outstanding)
+        self.assertEqual(row[head.index('returned')], '50.00')
+
+    def _dicts(self, zf, name):
+        _raw, rows = self._rows(zf, name)
+        return [dict(zip(rows[0], r)) for r in rows[1:]]
+
+    def test_purchase_refund_receipt_rows(self):
+        _r, zf = self._download(self.owner)
+        [p] = self._dicts(zf, 'purchases.csv')
+        self.assertEqual((p['purchase_id'], p['purchase_number'], p['supplier_reference'], p['status'],
+                          p['supplier_id'], p['supplier_name'], p['total_amount'], p['branch']),
+                         (str(self.purchase.id), 'P-77', 'NS-9', 'RECEIVED', str(self.supplier.id),
+                          'Nile Supply', '90.00', self.branch.name))
+        [pl] = self._dicts(zf, 'purchase_lines.csv')
+        self.assertEqual((pl['purchase_id'], pl['purchase_number'], pl['sku'], pl['product_name'], pl['quantity'],
+                          pl['unit_cost'], pl['line_total'], pl['batch_number'], pl['unit'], pl['expiry_date']),
+                         (str(self.purchase.id), 'P-77', 'A-1', 'Laptop X', '3.000', '30.00', '90.00', 'B1', '', ''))
+        [rf] = self._dicts(zf, 'refunds.csv')
+        self.assertEqual((rf['refund_id'], rf['refund_number'], rf['original_invoice_id'],
+                          rf['original_invoice_number'], rf['customer_name'], rf['total_refunded'],
+                          rf['paid_back'], rf['refund_method'], rf['reason']),
+                         (str(self.refund.id), '501', str(self.sale.id), '1001', 'محمد أحمد', '50.00', '50.00',
+                          'CASH', 'Broken'))
+        [rl] = self._dicts(zf, 'refund_lines.csv')
+        self.assertEqual((rl['refund_id'], rl['refund_number'], rl['sku'], rl['quantity'], rl['refund_amount'],
+                          rl['back_to_stock'], rl['unit_factor']),
+                         (str(self.refund.id), '501', 'A-1', '1.000', '50.00', 'false', '1.000'))
+        [rc] = self._dicts(zf, 'customer_receipts.csv')
+        self.assertEqual((rc['receipt_id'], rc['customer_id'], rc['method'], rc['amount'], rc['unallocated'],
+                          rc['advance'], rc['note'], rc['recorded_by']),
+                         (str(self.receipt.id), str(self.arabic.id), 'Bank Misr', '20.00', '20.00', '0.00',
+                          'Deposit', 'a_own'))
+        [sp] = self._dicts(zf, 'supplier_payments.csv')
+        self.assertEqual(sp['supplier_id'], str(self.supplier.id))
+        # the customer's balance = with_live_balance (0 owed on the sale − 20 unallocated receipt)
+        cust = {c['name']: c for c in self._dicts(zf, 'customers.csv')}
+        self.assertEqual(cust['محمد أحمد']['balance'], '-20.00')
 
     def test_arabic_survives_and_deleted_excluded(self):
         _r, zf = self._download(self.owner)
@@ -190,3 +244,45 @@ class ShopExportTests(TestCase):
         self.assertEqual(_cell('+20 100', tz), '+20 100')
         self.assertEqual(_cell('-1+cmd', tz), "'-1+cmd")
         self.assertEqual(_cell(Decimal('-5.00'), tz), '-5.00')
+
+
+class ShopExportSnapshotTests(TransactionTestCase):
+    """The whole export runs in ONE REPEATABLE READ, READ ONLY transaction (s167 review), so every CSV is
+    the same picture of the shop. TransactionTestCase = no outer test transaction, like a real request."""
+
+    def setUp(self):
+        dj_settings.ALLOWED_HOSTS = ['*']
+        cache.clear()
+        self.store, self.owner, self.branch = _shop('Snap', 'SNP', 's')
+        prod = Product.objects.create(store=self.store, name='Mouse')
+        variant = ProductVariant.objects.create(product=prod, store=self.store, sku='S-1',
+                                                cost_price=Decimal('1'), sell_price=Decimal('2'))
+        cust = Customer.objects.create(store=self.store, name='Nour')
+        _sale(self.store, self.branch, cust, 1, variant)
+
+    def test_export_runs_in_one_read_only_repeatable_read_snapshot(self):
+        from django.db import connection
+        from core import shop_export
+        seen = {}
+
+        def probe(store):
+            with connection.cursor() as cur:
+                cur.execute('SHOW transaction_isolation')
+                seen['isolation'] = cur.fetchone()[0]
+                cur.execute('SHOW transaction_read_only')
+                seen['read_only'] = cur.fetchone()[0]
+            seen['atomic'] = connection.in_atomic_block
+            return iter(())
+
+        tables = shop_export.TABLES + [('probe.csv', '', [('x', '')], probe)]
+        with mock.patch.object(shop_export, 'TABLES', tables):
+            r = _client(self.owner).get(URL)
+            self.assertEqual(r.status_code, 200)
+            zf = zipfile.ZipFile(io.BytesIO(b''.join(r.streaming_content)))
+        self.assertEqual(seen, {'isolation': 'repeatable read', 'read_only': 'on', 'atomic': True})
+        # the .iterator() tables ran inside that snapshot and still produced their rows
+        self.assertIn('Nour', zf.read('customers.csv').decode('utf-8-sig'))
+        self.assertEqual(len(zf.read('sales_lines.csv').decode('utf-8-sig').strip().splitlines()), 2)
+        # the ActivityLog row is written AFTER the read-only snapshot closed (a write inside it would fail)
+        self.assertTrue(ActivityLog.all_objects.filter(store=self.store, action__startswith='Exported').exists())
+        self.assertFalse(connection.in_atomic_block)

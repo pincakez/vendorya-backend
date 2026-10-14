@@ -24,11 +24,13 @@ import io
 import re
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from django.db import connection, transaction
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import viewsets
@@ -333,6 +335,9 @@ def _readme(store, tz, counts):
         '  so it can be edited and imported back. Columns: M_BRANCH, A_SUPP (supplier), P_NAME,',
         '  P_REF (groups variants of one product, only when needed), CAT_* (category levels),',
         '  <ATTRIBUTE>_DD/_FT/_NO (your attributes), Q_QTY (stock), W_PRICE (cost), R_PRICE (price), SKU, SKU2.',
+        '  Because it is the re-importable catalog, its cells are written exactly as stored. Every OTHER file',
+        "  puts an apostrophe (') before text that starts with = + - @ so Excel can never run it as a formula;",
+        '  products.csv does not (the importer would keep the apostrophe in your product names).',
         '',
     ]
     for name, desc, cols, _rows in TABLES:
@@ -363,26 +368,59 @@ def _store_tz(store):
         return ZoneInfo('UTC')
 
 
+SNAPSHOT_SQL = 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY'
+
+
+@contextmanager
+def consistent_snapshot():
+    """Run every export query against ONE frozen picture of the database (s167 review).
+
+    Under PostgreSQL's default READ COMMITTED each of the ~14 queries sees the data as of its own start, so a
+    sale checked out mid-export could land in sales_lines.csv but not in sales.csv. REPEATABLE READ fixes the
+    picture at the first query for the whole transaction; READ ONLY refuses any write. SET TRANSACTION must be
+    the transaction's FIRST statement — so the snapshot is opened here, before any export query (the auth
+    queries ran earlier in autocommit, each in its own finished transaction), and the ActivityLog row is
+    written by the view AFTER this block closes. `.iterator()` server-side cursors work inside a transaction.
+
+    If the caller is already inside a transaction (Django's TestCase, or ATOMIC_REQUESTS if it is ever turned
+    on) the level can no longer be changed, so the export runs in that outer transaction as it is."""
+    if connection.in_atomic_block:
+        yield
+        return
+    with transaction.atomic():
+        with connection.cursor() as cur:
+            cur.execute(SNAPSHOT_SQL)
+        yield
+
+
 def build_shop_export(store):
     """Write the whole export zip into a temp file. Returns (file positioned at 0, {file name: row count})."""
-    from inventory.import_export import export_catalog
-    tz = _store_tz(store)
-    counts = {}
     tmp = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES)
     try:
-        with zipfile.ZipFile(tmp, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-            catalog = export_catalog(store)
-            zf.writestr(PRODUCTS_FILE, '﻿' + catalog)
-            counts[PRODUCTS_FILE] = max(0, sum(1 for _ in csv.reader(io.StringIO(catalog))) - 1)
-            del catalog
-            for name, _desc, cols, rows in TABLES:
-                counts[name] = _write_csv(zf, name, [c for c, _ in cols], rows(store), tz)
-            zf.writestr('README.txt', _readme(store, tz, counts))
+        with consistent_snapshot():
+            counts = _write_zip(tmp, store)
     except Exception:
         tmp.close()
         raise
     tmp.seek(0)
     return tmp, counts
+
+
+def _write_zip(tmp, store):
+    from inventory.import_export import export_catalog
+    tz = _store_tz(store)
+    counts = {}
+    with zipfile.ZipFile(tmp, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        # products.csv = the Import/Export catalog file, byte for byte (re-importable) — NOT formula-guarded:
+        # the importer keeps a leading apostrophe, so guarding would change product names on a re-import.
+        catalog = export_catalog(store)
+        zf.writestr(PRODUCTS_FILE, '\ufeff' + catalog)
+        counts[PRODUCTS_FILE] = max(0, sum(1 for _ in csv.reader(io.StringIO(catalog))) - 1)
+        del catalog
+        for name, _desc, cols, rows in TABLES:
+            counts[name] = _write_csv(zf, name, [c for c, _ in cols], rows(store), tz)
+        zf.writestr('README.txt', _readme(store, tz, counts))
+    return counts
 
 
 def export_filename(store, today=None):
