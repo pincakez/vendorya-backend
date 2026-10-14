@@ -8,10 +8,8 @@ from inventory.models import Category, Product, ProductVariant, StockLevel, Supp
 from users.models import User
 
 
-class CatalogExportImportRoundTripTests(TestCase):
-    """§SKU2 (s165): a catalog exported from one shop imports into another with no errors and the
-    names intact. Before, the export had no P_NAME column, so any product without BRAND_DD + MODEL_FT
-    came back as "cannot determine a product name" and the whole file was rejected."""
+class _RoundTripBase(TestCase):
+    """Two shops (A with 3 products, B empty), same supplier name + branch."""
 
     def _shop(self, tag, code, prefix):
         owner = User.objects.create_user(username=f'rt_{tag}', password='x')
@@ -48,6 +46,12 @@ class CatalogExportImportRoundTripTests(TestCase):
             'Main,Proline,باراسيتامول 500 مجم,Pharmacy,,,12,10.50,15.75',
         ]))
         self.assertTrue(res['ok'], res)
+
+
+class CatalogExportImportRoundTripTests(_RoundTripBase):
+    """§SKU2 (s165): a catalog exported from one shop imports into another with no errors and the
+    names intact. Before, the export had no P_NAME column, so any product without BRAND_DD + MODEL_FT
+    came back as "cannot determine a product name" and the whole file was rejected."""
 
     def test_export_has_p_name(self):
         headers, rows = parse_csv(export_catalog(self.a).encode())
@@ -86,3 +90,57 @@ class CatalogExportImportRoundTripTests(TestCase):
         self.assertFalse(res['ok'])
         self.assertTrue(all('already exists' in e for e in res['errors']), res['errors'])
         self.assertEqual(Product.objects.filter(store=self.a).count(), before)
+
+
+class CatalogRoundTripEdgeTests(_RoundTripBase):
+    """s166: the two shapes that still broke the round trip — a product with NO category, and a product
+    with several variants (one row per variant, same name → "duplicated in the file")."""
+
+    def _variant_rows(self, store, name):
+        return sorted((v.sell_price, v.cost_price) for v in
+                      ProductVariant.all_objects.filter(product__store=store, product__name=name))
+
+    def test_product_without_category_round_trips(self):
+        loose = Product.objects.create(store=self.a, name='Loose Item', category=None,
+                                       supplier=Supplier.objects.get(store=self.a))
+        ProductVariant.objects.create(product=loose, cost_price=Decimal('5'), sell_price=Decimal('9'))
+        res = self._import(self.b, self.b_owner, export_catalog(self.a))
+        self.assertTrue(res['ok'], res)
+        self.assertIsNone(Product.objects.get(store=self.b, name='Loose Item').category)
+
+    def test_multi_variant_product_comes_back_as_one_product(self):
+        mouse = Product.objects.get(store=self.a, name='Mouse "Pro" Edition')
+        ProductVariant.objects.create(product=mouse, cost_price=Decimal('160'), sell_price=Decimal('270'))
+        ProductVariant.objects.create(product=mouse, cost_price=Decimal('170'), sell_price=Decimal('290'))
+        csv_text = export_catalog(self.a)
+        headers, rows = parse_csv(csv_text.encode())
+        self.assertIn('P_REF', headers)
+        res = self._import(self.b, self.b_owner, csv_text)
+        self.assertTrue(res['ok'], res)
+        self.assertEqual((res['summary']['products'], res['summary']['variants']), (3, 5))
+        self.assertEqual(Product.objects.filter(store=self.b, name='Mouse "Pro" Edition').count(), 1)
+        self.assertEqual(self._variant_rows(self.b, 'Mouse "Pro" Edition'),
+                         self._variant_rows(self.a, 'Mouse "Pro" Edition'))
+
+    def test_export_without_multi_variants_has_no_p_ref_column(self):
+        headers, _ = parse_csv(export_catalog(self.a).encode())
+        self.assertNotIn('P_REF', headers)
+
+    def test_p_ref_rows_must_agree_on_name_and_supplier(self):
+        res = self._import(self.b, self.b_owner, '\n'.join([
+            'A_SUPP,P_NAME,P_REF,M_CAT,W_PRICE,R_PRICE',
+            'Proline,Keyboard,7,Accessories,10,20',
+            'Proline,Keyboard X,7,Accessories,10,20',
+        ]))
+        self.assertFalse(res['ok'])
+        self.assertTrue(any('P_REF "7"' in e for e in res['errors']), res['errors'])
+        self.assertFalse(Product.objects.filter(store=self.b).exists())
+
+    def test_same_name_without_p_ref_is_still_a_duplicate(self):
+        res = self._import(self.b, self.b_owner, '\n'.join([
+            'A_SUPP,P_NAME,M_CAT,W_PRICE,R_PRICE',
+            'Proline,Keyboard,,10,20',
+            'Proline,Keyboard,,10,20',
+        ]))
+        self.assertFalse(res['ok'])
+        self.assertTrue(any('duplicated in the file' in e for e in res['errors']), res['errors'])

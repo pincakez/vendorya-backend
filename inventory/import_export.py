@@ -2,7 +2,7 @@
 
 Header convention (agreed with the product owner):
   * PREFIX-first  = a fixed Vendorya concept (mandatory structure)
-      M_BRANCH, A_SUPP, M_CAT, S1_CAT, S2_CAT, S3_CAT, Q_QTY, W_PRICE, R_PRICE, P_NAME
+      M_BRANCH, A_SUPP, M_CAT, S1_CAT, S2_CAT, S3_CAT, Q_QTY, W_PRICE, R_PRICE, P_NAME, P_REF
   * SUFFIX-last   = a user-defined attribute, suffix = input type
       <NAME>_DD (dropdown/SELECT), <NAME>_FT (free text/TEXT), <NAME>_NO (number)
 
@@ -13,6 +13,10 @@ Rules:
   * Validation is all-or-nothing: any error rejects the whole file.
   * Product name = P_NAME, else composed from BRAND + MODEL.
   * Duplicate (same name under the same supplier) is rejected.
+  * M_CAT must be a column, but its value may be empty = a product with no category (s166).
+  * P_REF (optional): rows with the same P_REF are the VARIANTS of one product — they must share
+    A_SUPP, P_NAME and the category path; each row keeps its own prices, stock, attributes, SKU2 (s166).
+    Without P_REF every row is its own product (and a repeated name is still rejected).
 """
 import csv
 import io
@@ -34,6 +38,7 @@ MANDATORY_COLUMNS = set(CAT_COLUMNS) | {
     # SKU: read-only reference in the export — accepted and IGNORED on import (s159: before this an
     # exported file could not be imported back). SKU2: the product's second code (shop's SKU2 must be ON).
     'SKU', 'SKU2',
+    'P_REF',   # s166: groups rows into one multi-variant product
 }
 REQUIRED_COLUMNS = ['A_SUPP', 'M_CAT', 'W_PRICE', 'R_PRICE']
 
@@ -111,6 +116,12 @@ class CatalogImporter:
                     f'Column "{CAT_COLUMNS[i]}" needs "{CAT_COLUMNS[i - 1]}" to exist first.')
         return errors
 
+    @staticmethod
+    def _group_key(row, i):
+        """Rows sharing a non-empty P_REF become one product; any other row is its own product."""
+        ref = (row.get('P_REF') or '').strip()
+        return ('ref', ref.lower()) if ref else ('row', i)
+
     def _row_name(self, headers, row):
         if 'P_NAME' in headers and (row.get('P_NAME') or '').strip():
             return (row['P_NAME']).strip()
@@ -118,6 +129,10 @@ class CatalogImporter:
         model = (row.get('MODEL_FT') or '').strip()
         composed = ' '.join(p for p in (brand, model) if p).strip()
         return composed
+
+    @staticmethod
+    def _attr_values(attr_headers, row):
+        return tuple((row.get(h) or '').strip() for h in attr_headers)
 
     # ---- full validation (no writes) ------------------------------------
     def validate(self, headers, rows):
@@ -144,6 +159,7 @@ class CatalogImporter:
         sku2_in_file = set()
 
         seen_in_file = set()
+        groups = {}                        # group key -> first row's {row, name, supp, path, attrs}
         new_cat_paths, new_attr_options = set(), {}
 
         for i, row in enumerate(rows, start=2):   # row 1 = header
@@ -165,9 +181,7 @@ class CatalogImporter:
             if br_name.lower() not in branches:
                 err(f'branch "{br_name}" does not exist.')
 
-            # category chain
-            if not (row.get('M_CAT') or '').strip():
-                err('M_CAT is empty.')
+            # category chain (an empty M_CAT = no category, s166)
             path = []
             broken = False
             for col in CAT_COLUMNS:
@@ -184,11 +198,23 @@ class CatalogImporter:
             if path:
                 new_cat_paths.add(tuple(path))
 
-            # name + duplicate
+            # name + duplicate (checked once per product — the first row of a P_REF group)
             name = self._row_name(headers, row)
+            gkey = self._group_key(row, i)
+            first = groups.get(gkey)
+            if first is not None:
+                ref = row['P_REF'].strip()
+                if (first['name'].lower(), first['supp'].lower(), first['path']) != (name.lower(), supp_name.lower(), path):
+                    err(f'P_REF "{ref}" must keep the same A_SUPP, P_NAME and categories as row {first["row"]}.')
+                if first['attrs'] == self._attr_values(attr_headers, row) and attr_headers:
+                    warnings.append(f'Row {i}: same attributes as row {first["row"]} (P_REF "{ref}") — '
+                                    f'two variants that look identical.')
+            else:
+                groups[gkey] = {'row': i, 'name': name, 'supp': supp_name, 'path': path,
+                                'attrs': self._attr_values(attr_headers, row)}
             if not name:
                 err('cannot determine a product name (add P_NAME or BRAND/MODEL).')
-            elif supplier is not None:
+            elif supplier is not None and first is None:
                 key = (name.lower(), supplier.id)
                 if key in existing:
                     err(f'"{name}" already exists for supplier "{supp_name}".')
@@ -247,7 +273,8 @@ class CatalogImporter:
             return {'ok': False, 'errors': errors, 'warnings': warnings, 'summary': {}}
 
         summary = {
-            'products': len(rows),
+            'products': len(groups),
+            'variants': len(rows),
             'category_paths': len(new_cat_paths),
             'attributes': len(attr_headers),
             'attribute_columns': attr_headers,
@@ -277,7 +304,8 @@ class CatalogImporter:
             attr_defs[h] = defn
 
         created = 0
-        for row in rows:
+        products = {}       # group key -> Product (P_REF rows share one)
+        for i, row in enumerate(rows, start=2):
             supplier = suppliers[(row['A_SUPP']).strip().lower()]
             branch = branches[((row.get('M_BRANCH') or '').strip() or 'Main').lower()]
 
@@ -293,10 +321,14 @@ class CatalogImporter:
                     store=self.store, name=val, parent=parent)
             category = parent
 
-            product = Product.objects.create(
-                store=self.store, name=self._row_name(headers, row),
-                category=category, supplier=supplier,
-            )
+            gkey = self._group_key(row, i)
+            product = products.get(gkey)
+            if product is None:
+                product = products[gkey] = Product.objects.create(
+                    store=self.store, name=self._row_name(headers, row),
+                    category=category, supplier=supplier,
+                )
+                created += 1
             variant = ProductVariant(
                 product=product,
                 cost_price=_parse_decimal(row.get('W_PRICE')) or Decimal('0'),
@@ -322,7 +354,6 @@ class CatalogImporter:
                     quantity_change=qty, reason=StockAdjustment.Reason.OPENING,
                     notes='Imported opening stock', adjusted_by=self.user,
                 )
-            created += 1
 
         result['summary']['created'] = created
         return result
@@ -363,11 +394,13 @@ def export_catalog(store):
     attr_headers = [f'{d.key.upper()}_{_SUFFIX_FOR_TYPE[d.input_type]}' for d in defs]
     def_by_id = {d.id: f'{d.key.upper()}_{_SUFFIX_FOR_TYPE[d.input_type]}' for d in defs}
 
-    rows, max_depth = [], 1
-    for p in products:
+    rows, max_depth, multi = [], 1, False
+    for ref, p in enumerate(products, start=1):
         path = _cat_path(p.category) if p.category else []
         max_depth = max(max_depth, len(path))
-        for v in p.variants.all():
+        variants = list(p.variants.all())
+        multi = multi or len(variants) > 1
+        for v in variants:
             avals = {def_by_id.get(a.definition_id): a.value for a in v.attributes.all()}
             levels = v.stock_levels.all()
             qty = sum((sl.quantity for sl in levels), Decimal('0'))
@@ -376,6 +409,7 @@ def export_catalog(store):
                 'M_BRANCH': branch,
                 'A_SUPP': p.supplier.name if p.supplier else '',
                 'P_NAME': p.name,
+                'P_REF': ref,
                 '_path': path,
                 '_attrs': avals,
                 'Q_QTY': qty,
@@ -388,14 +422,16 @@ def export_catalog(store):
     cat_headers = CAT_COLUMNS[:max_depth]
     # SKU2 column once the shop has ever had SKU2 (ON, or DISABLED with history kept).
     with_sku2 = store.settings.sku2_state != 'OFF'
-    header = (['M_BRANCH', 'A_SUPP', 'P_NAME'] + cat_headers + attr_headers + ['Q_QTY', 'W_PRICE', 'R_PRICE', 'SKU']
+    # P_REF only when some product has 2+ variants — it is what lets those rows import back as ONE product (s166).
+    ref_cols = ['P_REF'] if multi else []
+    header = (['M_BRANCH', 'A_SUPP', 'P_NAME'] + ref_cols + cat_headers + attr_headers + ['Q_QTY', 'W_PRICE', 'R_PRICE', 'SKU']
               + (['SKU2'] if with_sku2 else []))
 
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(header)
     for r in rows:
-        line = [r['M_BRANCH'], r['A_SUPP'], r['P_NAME']]
+        line = [r['M_BRANCH'], r['A_SUPP'], r['P_NAME']] + ([r['P_REF']] if multi else [])
         for idx in range(len(cat_headers)):
             line.append(r['_path'][idx] if idx < len(r['_path']) else '')
         for h in attr_headers:
