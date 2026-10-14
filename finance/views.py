@@ -88,7 +88,11 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             raise PermissionDenied('Complete the sale with checkout, not by editing it.')
 
     def perform_update(self, serializer):
-        self._guard_posted(serializer.instance, serializer.validated_data.get('status'))
+        new_status = serializer.validated_data.get('status')
+        self._guard_posted(serializer.instance, new_status)
+        if new_status == SalesInvoice.Status.POSTED and serializer.instance.status != SalesInvoice.Status.POSTED:
+            from billing.quota import enforce_quota
+            enforce_quota(self.request.user.store, 'invoices')   # a manager posting by edit uses the quota too (s166)
         serializer.save()
 
     def perform_create(self, serializer):
@@ -195,6 +199,11 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         # customer's REAL outstanding balance. BLOCK raises → stays DRAFT.
         from .serializers import enforce_credit_policy
         enforce_credit_policy(invoice, paid_amount=paid_after)
+
+        # Policy 4 — plan quota (s166). Only POSTED sales count, so this is the step that uses one up;
+        # the check on draft-create alone let a shop open many carts at limit-1 and post them all.
+        from billing.quota import enforce_quota
+        enforce_quota(invoice.store, 'invoices')
 
         allow_negative = getattr(settings_obj, 'allow_negative_stock', False)
 

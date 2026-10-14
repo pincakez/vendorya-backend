@@ -371,6 +371,46 @@ class CheckoutIdempotencyTests(_TillBase):
         self.assertEqual(self._checkout(inv, self.cash).status_code, 400)
 
 
+class CheckoutQuotaTests(_TillBase):
+    """s166: the monthly invoice quota is checked at CHECKOUT too. Only POSTED sales count, and the check
+    used to run on draft-create only → open many carts at limit − 1, then post them all."""
+
+    def setUp(self):
+        super().setUp()
+        from billing.models import BillingSettings, Subscription, SubscriptionPlan
+        plan = SubscriptionPlan.objects.create(name='Till Quota Plan', max_invoices_per_month=1)
+        Subscription.all_objects.update_or_create(store=self.store, defaults={'plan': plan})
+        bs = BillingSettings.load()
+        bs.quota_mode = BillingSettings.QuotaMode.BLOCK
+        bs.save()
+
+    def test_second_draft_cannot_be_posted_over_the_limit(self):
+        first, second = self._draft(), self._draft()     # both opened while 0 sales were posted
+        self.assertEqual(self._checkout(first, self.cash).status_code, 200)
+        r = self._checkout(second, self.cash)
+        self.assertEqual(r.status_code, 400, r.content)
+        second.refresh_from_db()
+        self.assertEqual(second.status, SalesInvoice.Status.DRAFT)
+        self.assertEqual(StockLevel.objects.get(variant=self.variant, branch=self.branch).quantity, Decimal('9'))
+
+    def test_replay_of_a_finished_sale_still_works_at_the_limit(self):
+        inv = self._draft()
+        r1 = self.client.post(self.URL.format(inv.id), {'method': str(self.cash.id)}, format='json',
+                              HTTP_IDEMPOTENCY_KEY='q-1')
+        r2 = self.client.post(self.URL.format(inv.id), {'method': str(self.cash.id)}, format='json',
+                              HTTP_IDEMPOTENCY_KEY='q-1')
+        self.assertEqual((r1.status_code, r2.status_code), (200, 200), r2.content)
+
+    def test_warn_mode_never_blocks(self):
+        from billing.models import BillingSettings
+        bs = BillingSettings.load()
+        bs.quota_mode = BillingSettings.QuotaMode.WARN
+        bs.save()
+        first, second = self._draft(), self._draft()
+        self.assertEqual(self._checkout(first, self.cash).status_code, 200)
+        self.assertEqual(self._checkout(second, self.cash).status_code, 200)
+
+
 class RefundCustomerBalanceTests(_TillBase):
     """§WALK-S163 B1 (s165): a return must leave the customer's balance right. Each return records
     `paid_back` = money really handed back (cash / card / wallet) — never more than was paid on the
