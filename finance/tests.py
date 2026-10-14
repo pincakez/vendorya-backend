@@ -37,6 +37,9 @@ class ReturnsPolicyTests(TestCase):
             invoice=inv, variant=self.variant, quantity=Decimal('2'),
             unit_price=Decimal('100'),
         )
+        # totals are normally computed by the serializer (s165: refunds are capped at the sale's total)
+        SalesInvoice.objects.filter(pk=inv.pk).update(subtotal=Decimal('200'), grand_total=Decimal('200'))
+        inv.refresh_from_db()
         if when is not None:
             SalesInvoice.objects.filter(pk=inv.pk).update(date=when)
             inv.refresh_from_db()
@@ -310,11 +313,14 @@ class ShiftCashRefundTests(_TillBase):
         self.assertEqual(self._refund(self._sale(self.cash), '50').drawer_cash, Decimal('45'))
 
     def test_cash_paid_out_never_exceeds_cash_taken_on_that_sale(self):
-        inv = self._draft()                     # 2 × 50 = 100, paid in cash
-        inv.items.update(quantity=Decimal('2'), unit_price=Decimal('50'))
-        self.assertEqual(self._checkout(inv, self.cash).status_code, 200)
-        self.assertEqual(self._refund(inv, '70').drawer_cash, Decimal('70'))
-        self.assertEqual(self._refund(inv, '50').drawer_cash, Decimal('30'))
+        inv = self._draft()                     # 2 × 50 = 100: 30 in cash + 70 by card
+        inv.items.update(quantity=Decimal('2'), unit_price=Decimal('50'), total=Decimal('100'))
+        self.assertEqual(self._checkout(inv, self.agel).status_code, 200)
+        for m, a in ((self.cash, '30'), (self.card, '70')):
+            self.assertEqual(self.client.post('/api/finance/payments/', {'invoice': str(inv.id), 'method': str(m.id),
+                                              'amount': a}, format='json').status_code, 201)
+        self.assertEqual(self._refund(inv, '50').drawer_cash, Decimal('30'))   # only 30 cash was taken
+        self.assertEqual(self._refund(inv, '50').drawer_cash, Decimal('0'))
 
     def test_drawer_endpoint_shows_cash_in_out_and_expected(self):
         self._refund(self._sale(self.cash), '40')
@@ -464,13 +470,13 @@ class RefundCustomerBalanceTests(_TillBase):
 
     def test_two_refunds_never_pay_back_more_than_paid(self):
         inv = self._draft()                              # 2 × 50 = 100, on Ajel
-        inv.items.update(quantity=Decimal('2'), unit_price=Decimal('50'))
+        inv.items.update(quantity=Decimal('2'), unit_price=Decimal('50'), total=Decimal('100'))
         self.assertEqual(self._checkout(inv, self.agel).status_code, 200)
         self.client.post('/api/finance/payments/', {'invoice': str(inv.id), 'method': str(self.cash.id),
                                                     'amount': '50'}, format='json')   # paid 50 of 100
         self.assertEqual(self._refund(inv, '40').paid_back, Decimal('40'))
-        self.assertEqual(self._refund(inv, '60').paid_back, Decimal('10'))   # only 10 of the 50 paid is left
-        self.assertEqual(self._balance(), Decimal('0'))
+        self.assertEqual(self._refund(inv, '50').paid_back, Decimal('10'))   # only 10 of the 50 paid is left
+        self.assertEqual(self._balance(), Decimal('10'))     # 10 of goods kept, never paid for
 
     def test_ar_aging_matches_the_customer_balance(self):
         self._refund(self._sale(self.cash), '100')       # settled → not listed
@@ -479,3 +485,27 @@ class RefundCustomerBalanceTests(_TillBase):
         self.assertEqual(r.status_code, 200, r.content)
         self.assertEqual(Decimal(r.data['totals']['total']), Decimal('60'))
         self.assertEqual(self._balance(), Decimal('60'))
+
+
+class RefundAmountCapTests(RefundCustomerBalanceTests):
+    """s165 (found while fixing B1): a refund line can't return more money than the units were sold for."""
+
+    def _post(self, inv, qty, amount):
+        return self.mgr.post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(inv.customer_id),
+            'refund_method': 'CASH',
+            'items': [{'variant': str(self.variant.id), 'quantity': qty, 'refund_amount': amount}],
+        }, format='json')
+
+    def test_more_than_the_sale_price_is_refused(self):
+        inv = self._sale(self.cash)                      # 1 × 100
+        self.assertEqual(self._post(inv, '1', '100.01').status_code, 400)
+        self.assertEqual(self._post(inv, '1', '100').status_code, 201)
+
+    def test_per_unit_and_already_refunded(self):
+        inv = self._draft()                              # 2 × 50 = 100
+        inv.items.update(quantity=Decimal('2'), unit_price=Decimal('50'), total=Decimal('100'))
+        self.assertEqual(self._checkout(inv, self.cash).status_code, 200)
+        self.assertEqual(self._post(inv, '1', '70').status_code, 400)   # one unit was sold for 50
+        self.assertEqual(self._post(inv, '1', '50').status_code, 201)
+        self.assertEqual(self._post(inv, '1', '50.01').status_code, 400)

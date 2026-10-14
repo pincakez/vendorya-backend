@@ -640,18 +640,25 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
     def _validate_against_original(original, items_data):
         """Cap each refund line at (sold − already-refunded) for that variant on
         the original invoice, and reject variants that were never sold on it.
+        s165: the MONEY is capped too — a line may return at most what those units were sold for
+        (line total incl. tax, after its discount, per unit), never more than is left unrefunded on
+        that product, and the whole refund never more than the sale's grand total left unrefunded.
         Only enforced when the refund references an original invoice."""
-        sold = {}
+        TOL = Decimal('0.01')
+        sold, sold_value = {}, {}
         for it in original.items.all():
             sold[it.variant_id] = sold.get(it.variant_id, Decimal('0')) + it.quantity
-        already = {}
+            sold_value[it.variant_id] = sold_value.get(it.variant_id, Decimal('0')) + (it.total or Decimal('0'))
+        already, already_value = {}, {}
         for ri in RefundItem.objects.filter(
                 refund__original_invoice=original, refund__is_deleted=False):
             already[ri.variant_id] = already.get(ri.variant_id, Decimal('0')) + ri.quantity
-        requested = {}
+            already_value[ri.variant_id] = already_value.get(ri.variant_id, Decimal('0')) + (ri.refund_amount or 0)
+        requested, requested_value = {}, {}
         for item in items_data:
             v = item['variant']
             requested[v.id] = requested.get(v.id, Decimal('0')) + item['quantity']
+            requested_value[v.id] = requested_value.get(v.id, Decimal('0')) + (item.get('refund_amount') or 0)
 
         errors = []
         for vid, req in requested.items():
@@ -665,5 +672,20 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                     f"Cannot refund {req} of variant {vid} — only {refundable} "
                     f"refundable (sold {sold_q}, already refunded {already.get(vid, Decimal('0'))})."
                 )
+                continue
+            per_unit = sold_value.get(vid, Decimal('0')) / sold_q
+            max_money = min(per_unit * req, sold_value.get(vid, Decimal('0')) - already_value.get(vid, Decimal('0')))
+            if requested_value.get(vid, Decimal('0')) > max_money + Decimal('0.005'):
+                errors.append(
+                    f"Cannot refund {requested_value[vid]} for {req} of variant {vid} — at most "
+                    f"{max_money.quantize(TOL)} (what they were sold for, less earlier refunds)."
+                )
+        if not errors:
+            earlier = (RefundInvoice.objects.filter(original_invoice=original, is_deleted=False)
+                       .aggregate(s=Sum('total_refunded'))['s'] or Decimal('0'))
+            left = (original.grand_total or Decimal('0')) - earlier
+            total_req = sum(requested_value.values(), Decimal('0'))
+            if total_req > left + Decimal('0.005'):
+                errors.append(f"Cannot refund {total_req} — only {left} of this sale is left to refund.")
         if errors:
             raise serializers.ValidationError({'items': errors})
