@@ -124,7 +124,20 @@ class ProductSearchFilter(filters.SearchFilter):
                              default=Value(1), output_field=IntegerField()))
 
 
-class ProductViewSet(viewsets.ModelViewSet):
+class _AtomicWritesMixin:
+    """create / update run in ONE transaction, so the per-shop barcode lock taken while validating
+    (`lock_shop_barcodes`) is held until the row is saved and committed (s166)."""
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        return super().create(request, *args, **kwargs)
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):   # partial_update goes through here too
+        return super().update(request, *args, **kwargs)
+
+
+class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, RoleScopedPermission]
     role_map = {
         'list':           'CASHIER',
@@ -746,7 +759,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         return Response({'results': serializer.data, 'ingredient': ingredient})
 
 
-class ProductVariantViewSet(viewsets.ModelViewSet):
+class ProductVariantViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
     serializer_class = ProductVariantSerializer
     permission_classes = [IsAuthenticated, RoleScopedPermission]
     role_map = {

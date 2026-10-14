@@ -74,6 +74,24 @@ def scan_unit_id(selling_units, q):
     return None
 
 
+_BARCODE_LOCK_NS = 7311   # advisory-lock namespace for "barcode writes of one shop"
+
+
+def lock_shop_barcodes(store):
+    """Serialise barcode checks + saves for ONE shop until the current transaction ends (s166).
+
+    `barcode_owner` is a read-then-write check, so two saves at the same instant could both see
+    "free" and both write the same code. A DB unique index can't express the rule (variants AND
+    packs, live STORE products only, soft deletes), so the second writer waits here instead, and
+    its check then sees the first one's committed barcode. Only works inside a transaction —
+    the product + variant write views run atomically for that reason. No-op elsewhere."""
+    from django.db import connection
+    if store is None or connection.vendor != 'postgresql' or not connection.in_atomic_block:
+        return
+    with connection.cursor() as cur:
+        cur.execute('SELECT pg_advisory_xact_lock(%s, hashtext(%s))', [_BARCODE_LOCK_NS, str(store.pk)])
+
+
 def barcode_owner(store, barcode, skip_variant_ids=(), skip_unit_ids=()):
     """Name of the live STORE product in `store` that already uses `barcode` — as its own barcode
     or a pack's — else None. A barcode is unique per shop (variants AND packs together), so a scan

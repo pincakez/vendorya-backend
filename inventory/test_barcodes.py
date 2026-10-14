@@ -3,7 +3,7 @@
 - a pack barcode finds its product and the POS is told which pack was scanned;
 - a barcode is unique per shop across variants AND packs (server-side, soft-deleted ignored).
 """
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
 from core.models import Store, StoreSettings
@@ -169,3 +169,46 @@ class BarcodeUniquePerShopTests(_Shop, TestCase):
         r = self.api.post('/api/inventory/variants/', {'product': str(theirs.id)}, format='json')
         self.assertEqual(r.status_code, 400)
         self.assertFalse(ProductVariant.objects.filter(product=theirs).count() > 1)
+
+
+class BarcodeSameInstantRaceTests(_Shop, TransactionTestCase):
+    """s166: the barcode check is read-then-write, so two saves at the same instant could both pass.
+    Now each shop's barcode writes take a lock until commit → the second save sees the first one.
+    Real threads + real commits (TransactionTestCase); the check is slowed down to force the overlap."""
+
+    def test_two_same_instant_saves_cannot_both_take_a_barcode(self):
+        import threading
+        import time
+        from unittest import mock
+        from django.db import connection
+        from inventory import code_search
+        store, _, sup, api = self.make_shop('100')
+        p1, _ = self.product(store, sup, 'First')
+        p2, _ = self.product(store, sup, 'Second')
+        real_owner = code_search.barcode_owner
+
+        def slow_owner(*a, **kw):
+            hit = real_owner(*a, **kw)
+            time.sleep(0.6)            # both requests are "between check and save" at once
+            return hit
+
+        results = {}
+
+        def post(product):
+            try:
+                client = APIClient()
+                client.force_authenticate(store.owner)
+                r = client.post('/api/inventory/variants/',
+                                {'product': str(product.id), 'barcode': '7777'}, format='json')
+                results[product.name] = r.status_code
+            finally:
+                connection.close()
+
+        with mock.patch.object(code_search, 'barcode_owner', slow_owner):
+            threads = [threading.Thread(target=post, args=(p,)) for p in (p1, p2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+        self.assertCountEqual(results.values(), [201, 400], results)
+        self.assertEqual(ProductVariant.objects.filter(barcode='7777').count(), 1)

@@ -162,6 +162,8 @@ class ProductVariantSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'product': _('Product not found.')})
         # Barcode unique per shop, across variants AND packs (live STORE products only).
         if attrs.get('barcode') and product is not None and product.source == Product.Source.STORE:
+            from inventory.code_search import lock_shop_barcodes
+            lock_shop_barcodes(product.store)   # s166: a same-instant save waits, then sees this one
             owner = barcode_owner(product.store, attrs['barcode'],
                                   skip_variant_ids=[self.instance.id] if self.instance else [])
             if owner is not None:
@@ -472,6 +474,9 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             return
         variant = self.instance.variants.first() if self.instance is not None else None
         skip_units = list(variant.selling_units.values_list('id', flat=True)) if variant else []
+        if any((u.get('barcode') or '').strip() for u in units):
+            from inventory.code_search import lock_shop_barcodes
+            lock_shop_barcodes(store)   # s166: a same-instant save waits, then sees this one
         seen = set()
         for u in units:
             if not (u.get('name') or '').strip() or u.get('factor') in (None, '', 0, '0'):
