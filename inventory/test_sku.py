@@ -241,7 +241,7 @@ class Sku2CsvTests(_Shop, TestCase):
         out = export_catalog(Store.objects.get(pk=self.store.pk))
         self.assertIn('SKU2', out.splitlines()[0])
         self.assertIn('12015', out)
-        # the exported file imports back: its SKU matches the product (s168), so the row is an UPDATE —
+        # the exported file imports back: its SKU matches the product (s167), so the row is an UPDATE —
         # nothing changed, and the SKU2 of an existing product is left alone (not "already belongs")
         again = self._import(out)
         self.assertTrue(again['ok'], again)

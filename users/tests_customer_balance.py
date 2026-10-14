@@ -71,7 +71,7 @@ class CustomerListBalanceTests(_TillBase):
         self._draft(c)                                                                # a draft → ignored
         dead = self._sale(c, self.agel)
         SalesInvoice.all_objects.filter(pk=dead.pk).update(is_deleted=True)           # deleted sale → ignored
-        # s168: lump-sum receipts — sales only / sales + part of the opening balance / beyond everything
+        # s167: lump-sum receipts — sales only / sales + part of the opening balance / beyond everything
         owed = customer_outstanding(c)
         kind = self.n % 3
         if kind == 1:
@@ -105,7 +105,7 @@ class CustomerListBalanceTests(_TillBase):
             expected = customer_outstanding(c)
             self.assertEqual(Decimal(balances[str(c.id)]), expected, c.name)
         self.assertNotEqual(len({balances[str(c.id)] for c in customers}), 1)   # really different numbers
-        # s168: the A/R aging row of every customer who owes = the same number; nobody else is listed
+        # s167: the A/R aging row of every customer who owes = the same number; nobody else is listed
         r = self.mgr.get('/api/reports/ar-aging/')
         self.assertEqual(r.status_code, 200, r.content)
         aging = {row['customer_id']: row for row in r.data['rows']}

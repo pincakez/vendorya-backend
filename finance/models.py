@@ -167,7 +167,7 @@ class Payment(TimestampedModel, SoftDeleteModel):
     
     # Added to track WHO took the money (for Shifts)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True)
-    # Set when this payment is one invoice's share of a lump-sum CustomerReceipt (s168, Proline "دفع عملاء").
+    # Set when this payment is one invoice's share of a lump-sum CustomerReceipt (s167, Proline "دفع عملاء").
     receipt = models.ForeignKey('CustomerReceipt', on_delete=models.PROTECT, null=True, blank=True,
                                 related_name='payments')
 
@@ -181,7 +181,7 @@ class Payment(TimestampedModel, SoftDeleteModel):
 
 class CustomerReceipt(TimestampedModel, SoftDeleteModel):
     """Money a customer brings in to pay down their debt — one lump sum, not tied to one sale
-    (s168, PROLINE-PARITY Upgrade 2, Proline "دفع عملاء").
+    (s167, PROLINE-PARITY Upgrade 2, Proline "دفع عملاء").
 
     On save (finance.receipts.receive_customer_payment) it is spread oldest-first over the customer's
     unpaid POSTED sales as normal Payment rows (Payment.receipt → this), so each sale's paid_amount and
@@ -243,7 +243,7 @@ class WorkShift(TimestampedModel):
 
     def cash_in(self):
         """Cash taken by this shift's cashier since it opened — sale payments, plus the part of a
-        customer's lump-sum receipt that paid no sale (opening balance / advance, s168; the sale part
+        customer's lump-sum receipt that paid no sale (opening balance / advance, s167; the sale part
         is already a Payment above)."""
         paid = Payment.objects.filter(
             invoice__store=self.store,
@@ -547,7 +547,7 @@ def customer_outstanding(customer, exclude_invoice_id=None):
     at onboarding, e.g. via V-Pilot `create_customer(opening_balance=…)`); live
     invoice activity is never written back to it, so the running total must be
     computed here (Option A, s31; opening seed folded in s61). Minus the part of
-    lump-sum CustomerReceipts that paid no sale (s168). Mirrors the AR-aging report
+    lump-sum CustomerReceipts that paid no sale (s167). Mirrors the AR-aging report
     and users.views.with_live_balance(). Positive = they owe us; negative = we owe them.
     """
     qs = SalesInvoice.all_objects.filter(
@@ -562,7 +562,7 @@ def customer_outstanding(customer, exclude_invoice_id=None):
 
 
 def receipts_unallocated(customer):
-    """Σ of the customer's live lump-sum receipts NOT spread onto a sale (s168): the part that paid the
+    """Σ of the customer's live lump-sum receipts NOT spread onto a sale (s167): the part that paid the
     opening balance or sits as an advance. Their invoice part is already inside each sale's paid_amount."""
     return (CustomerReceipt.all_objects.filter(customer=customer, is_deleted=False)
             .aggregate(s=Sum('unallocated'))['s'] or Decimal('0'))

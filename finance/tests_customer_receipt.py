@@ -21,7 +21,7 @@ def _client(user):
 
 
 class CustomerReceiptTests(_TillBase):
-    """s168, PROLINE-PARITY Upgrade 2 (Proline "دفع عملاء"): a customer pays their debt as ONE lump sum,
+    """s167, PROLINE-PARITY Upgrade 2 (Proline "دفع عملاء"): a customer pays their debt as ONE lump sum,
     spread oldest-first over their unpaid sales, then the opening balance. Before: only a per-sale payment
     existed (no screen used it) and an opening-balance debt could never be paid at all."""
 
@@ -165,7 +165,7 @@ class CustomerReceiptTests(_TillBase):
 
 
 class CustomerOpeningBalanceTests(_TillBase):
-    """s168, PROLINE-PARITY Upgrade 4: the opening balance (what a customer owed before Vendorya) is set on the
+    """s167, PROLINE-PARITY Upgrade 4: the opening balance (what a customer owed before Vendorya) is set on the
     customer form — by a manager, never a cashier (a cashier could otherwise wipe a debt)."""
     CURL = '/api/auth/customers/'
 

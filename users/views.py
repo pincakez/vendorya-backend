@@ -233,7 +233,7 @@ def with_live_balance(qs):
 
     balance = opening seed + Σ over POSTED, non-deleted sales of (grand_total − paid_amount)
                           + Σ over their live returns of (− total_refunded + restocking_fee + paid_back)
-                          − Σ over their live lump-sum receipts of the part that paid no sale (s168)
+                          − Σ over their live lump-sum receipts of the part that paid no sale (s167)
 
     The sums are SEPARATE correlated subqueries on purpose: joining sales to returns in one SUM
     would count a sale's total once per return (join multiplication)."""
@@ -309,7 +309,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
             self._log_opening(customer, before)
 
     def _log_opening(self, customer, before):
-        """An opening balance moves what the customer owes — keep a trail (s168)."""
+        """An opening balance moves what the customer owes — keep a trail (s167)."""
         from core.activity import log_activity
         from core.models import ActivityLog
         log_activity(

@@ -412,7 +412,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
 
 class CustomerReceiptViewSet(viewsets.ModelViewSet):
-    """Receive a customer's debt payment as one lump sum (s168, Proline "دفع عملاء"). Spread oldest-first over
+    """Receive a customer's debt payment as one lump sum (s167, Proline "دفع عملاء"). Spread oldest-first over
     their unpaid sales, then the opening balance (finance.receipts). Filter the list by ?customer=<uuid>.
     No edit: a wrong receipt is deleted (ADMIN, reverses its sale payments) and entered again.
     MANAGER, like supplier payments: lowering what a customer owes is a credit decision, not a till sale."""
@@ -826,7 +826,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
                   'refund_number': None, 'amount': str(p['amount'])} for p in pays]
         moves += [{'time': r['created_at'], 'kind': 'OUT', 'invoice_number': r['original_invoice__invoice_number'],
                    'refund_number': r['refund_number'], 'amount': str(r['drawer_cash'])} for r in refunds]
-        # s168: the part of a customer's lump-sum payment that paid no sale (its sale part is in `pays` above)
+        # s167: the part of a customer's lump-sum payment that paid no sale (its sale part is in `pays` above)
         received = (CustomerReceipt.objects.filter(store=shift.store, created_at__gte=shift.start_time,
                                                    method__is_cash=True, created_by=shift.user, unallocated__gt=0)
                     .values('created_at', 'unallocated', 'customer__name'))

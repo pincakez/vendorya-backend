@@ -57,7 +57,7 @@ class CustomerSerializer(serializers.ModelSerializer):
     # Live balance = opening-balance seed + Σ posted-invoice AR. Computed, never
     # stored (the `balance` column holds only the opening seed). Positive = owes us.
     balance = serializers.SerializerMethodField()
-    # Opening balance = what they owed before Vendorya (s168, PROLINE-PARITY Upgrade 4) — the `balance` seed
+    # Opening balance = what they owed before Vendorya (s167, PROLINE-PARITY Upgrade 4) — the `balance` seed
     # column. Negative = we owed them. MANAGER+ only: a cashier could otherwise wipe a debt.
     opening_balance = serializers.DecimalField(source='balance', max_digits=12, decimal_places=2, required=False)
 

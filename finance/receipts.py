@@ -1,4 +1,4 @@
-"""Receive a customer's debt payment as ONE lump sum (s168, PROLINE-PARITY Upgrade 2, Proline "دفع عملاء").
+"""Receive a customer's debt payment as ONE lump sum (s167, PROLINE-PARITY Upgrade 2, Proline "دفع عملاء").
 
 The money is spread oldest-first over the customer's unpaid POSTED sales as ordinary Payment rows (so each
 sale's paid_amount moves through Payment.save like any other payment); what is left pays the opening balance;

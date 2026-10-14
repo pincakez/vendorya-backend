@@ -265,7 +265,7 @@ def _bucket_label(days):
 
 class ARAgingView(_StoreMixin, APIView):
     """What each customer owes, by age. A customer's row total == finance.models.customer_outstanding()
-    (s168): opening balance (its own "opening" column — debt from before Vendorya, oldest of all) + each
+    (s167): opening balance (its own "opening" column — debt from before Vendorya, oldest of all) + each
     unpaid sale in its age bucket, then every credit (the part of a lump-sum receipt that paid no sale,
     a negative opening balance, a sale returned for more than was owed) pays the OLDEST debt first.
     Customers who owe nothing — or are owed — are left out."""

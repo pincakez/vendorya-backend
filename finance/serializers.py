@@ -221,7 +221,7 @@ class PaymentSerializer(serializers.ModelSerializer):
 
 
 class CustomerReceiptSerializer(serializers.ModelSerializer):
-    """A lump-sum debt payment from a customer (s168). Write: customer, amount, method, date?, note?,
+    """A lump-sum debt payment from a customer (s167). Write: customer, amount, method, date?, note?,
     allow_advance? — the spreading over sales is done by finance.receipts.receive_customer_payment."""
     allow_advance = serializers.BooleanField(write_only=True, required=False, default=False)
     customer_name = serializers.CharField(source='customer.name', read_only=True)
