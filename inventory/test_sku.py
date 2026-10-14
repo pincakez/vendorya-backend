@@ -241,7 +241,14 @@ class Sku2CsvTests(_Shop, TestCase):
         out = export_catalog(Store.objects.get(pk=self.store.pk))
         self.assertIn('SKU2', out.splitlines()[0])
         self.assertIn('12015', out)
-        # the exported file's SKU column is no longer refused as "unknown", and its SKU2 is checked
+        # the exported file imports back: its SKU matches the product (s168), so the row is an UPDATE —
+        # nothing changed, and the SKU2 of an existing product is left alone (not "already belongs")
         again = self._import(out)
-        self.assertFalse(any('Unknown column' in e for e in again['errors']), again)
-        self.assertTrue(any('already belongs' in e for e in again['errors']), again)
+        self.assertTrue(again['ok'], again)
+        self.assertEqual((again['summary']['created'], again['summary']['unchanged']), (0, 1))
+        # without the SKU it is a NEW row again, and its SKU2 is checked
+        lines = out.splitlines()
+        sku_col = lines[0].split(',').index('SKU')
+        no_sku = '\n'.join(','.join(c for j, c in enumerate(ln.split(',')) if j != sku_col) for ln in lines)
+        third = self._import(no_sku)
+        self.assertTrue(any('already belongs' in e for e in third['errors']), third)

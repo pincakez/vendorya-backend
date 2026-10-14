@@ -1242,9 +1242,13 @@ class CatalogImportCommitView(_CatalogImportBase):
         result = CatalogImporter(request.user.store, request.user).commit(headers, rows)
         if not result['ok']:
             return Response(result, status=status.HTTP_400_BAD_REQUEST)
+        s = result['summary']
+        # ONE entry per import (s168): the counts + the row-by-row price/name changes (old → new) in details
         log_activity(
             request=request,
-            action=f"Imported {result['summary'].get('created', 0)} products from CSV",
+            action=(f"Catalog CSV import: {s.get('created', 0)} new products, {s.get('updated', 0)} updated "
+                    f"({s.get('price_changes', 0)} price, {s.get('name_changes', 0)} name changes), "
+                    f"{s.get('unchanged', 0)} unchanged"),
             op_type=ActivityLog.OperationType.OTHER,
             details=result['summary'],
         )
