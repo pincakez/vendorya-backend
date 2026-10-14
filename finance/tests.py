@@ -509,3 +509,19 @@ class RefundAmountCapTests(RefundCustomerBalanceTests):
         self.assertEqual(self._post(inv, '1', '70').status_code, 400)   # one unit was sold for 50
         self.assertEqual(self._post(inv, '1', '50').status_code, 201)
         self.assertEqual(self._post(inv, '1', '50.01').status_code, 400)
+
+
+class PrintDataTests(_TillBase):
+    """§AUDIT A19 (s165): the printed receipt gets each line's discount (InvoicePrint.vue shows "Disc: − X")."""
+
+    def test_line_discount_travels_to_the_receipt(self):
+        inv = self._draft()
+        line = inv.items.first()
+        line.discount_amount = Decimal('15')
+        line.save()                                       # total = 1 × 100 − 15 = 85
+        self.assertEqual(self._checkout(inv, self.cash).status_code, 200)
+        r = self.client.get(f'/api/finance/invoices/{inv.id}/print-data/')
+        self.assertEqual(r.status_code, 200, r.content)
+        it = r.data['items'][0]
+        self.assertEqual(Decimal(it['discount_amount']), Decimal('15'))
+        self.assertEqual(Decimal(it['total']), Decimal('85'))

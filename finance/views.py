@@ -317,6 +317,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             'quantity': str(item.quantity),
             'unit_name': item.unit.name if item.unit_id else None,  # base unit → None (plain products unchanged)
             'unit_price': str(item.unit_price),
+            'discount_amount': str(item.discount_amount),   # s165 (§AUDIT A19): the receipt shows "Disc: − X"
             'tax_amount': str(item.tax_amount),
             'total': str(item.total),
         } for item in invoice.items.select_related('variant__product', 'unit').all()]
