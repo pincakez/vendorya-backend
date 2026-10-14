@@ -258,7 +258,7 @@ class ShopExportTests(TestCase):
                           sn['status'], sn['branch'], sn['purchase_id'], sn['purchase_number'],
                           sn['sale_invoice_id'], sn['sale_invoice_number'], sn['warranty_months'],
                           sn['warranty_ends_on']),
-                         (str(self.serial.id), 'SN-ACME-1', 'A-1', 'Laptop X', 'NEW', 'SOLD', self.branch.name,
+                         (str(self.serial.id), 'SN-ACME-1', 'A-1', 'Laptop X', '', 'SOLD', self.branch.name,   # sold with no condition → stays ''
                           str(self.purchase.id), 'P-77', str(self.sale.id), '1001', '12',
                           timezone.localdate().isoformat()))
         self.assertRegex(sn['sold_at'], r'^\d{4}-\d{2}-\d{2}T')

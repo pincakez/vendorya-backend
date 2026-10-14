@@ -263,8 +263,8 @@ def _serials(store):
         branch = _own(u.branch, store)
         buy = _live_doc(u.purchase_item.invoice, store) if u.purchase_item_id else None
         sale = _live_doc(u.sale_item.invoice, store) if u.sale_item_id else None
-        # The condition frozen on the sale line when the unit was sold; the product's own before that.
-        condition = (u.sale_item.condition if u.sale_item_id else '') or product.condition
+        # The condition frozen on the sale line when the unit was sold (even "not stated"); the product's own before that.
+        condition = u.sale_item.condition if u.sale_item_id else product.condition
         yield [u.id, u.serial, _sku(u.variant), product.name, condition, u.status,
                branch.name if branch else '',
                buy.id if buy else '', buy.purchase_number if buy else '',
