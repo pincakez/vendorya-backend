@@ -561,6 +561,32 @@ def invoice_outstanding(inv):
     return (inv.grand_total or ZERO) - (inv.paid_amount or ZERO) - refunded + fees + paid_back
 
 
+def returned_so_far(invoice):
+    """Per variant on ONE sale: what was sold and what its live returns already took back — quantities in the
+    product's BASE unit (qty × the line's frozen unit_factor, s168), money as line totals / refund amounts.
+    The one count behind the return cap (RefundInvoiceSerializer._validate_against_original) and the service
+    desk's "return the rest of this job" (services.desk.refund_lines).
+    → {variant_id: {'sold', 'sold_value', 'returned', 'returned_value'}}"""
+    ZERO = Decimal('0')
+    rows = {}
+
+    def row(vid):
+        return rows.setdefault(vid, {'sold': ZERO, 'sold_value': ZERO, 'returned': ZERO, 'returned_value': ZERO})
+
+    def base(qty, factor):
+        return Decimal(str(qty)) * Decimal(str(factor or 1))
+
+    for it in invoice.items.all():
+        r = row(it.variant_id)
+        r['sold'] += base(it.quantity, it.unit_factor)
+        r['sold_value'] += it.total or ZERO
+    for ri in RefundItem.objects.filter(refund__original_invoice=invoice, refund__is_deleted=False):
+        r = row(ri.variant_id)
+        r['returned'] += base(ri.quantity, ri.unit_factor)
+        r['returned_value'] += ri.refund_amount or ZERO
+    return rows
+
+
 def customer_outstanding(customer, exclude_invoice_id=None):
     """A customer's REAL balance = opening-balance seed + Σ over their POSTED,
     non-deleted invoices of invoice_outstanding() (s165: returns now count right).

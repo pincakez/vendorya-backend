@@ -350,3 +350,86 @@ class ServiceDeskTests(TestCase):
         self.assertEqual(r.status_code, 201, r.content[:300])
         r = api.get(f'/api/services/{job.id}/')
         self.assertEqual([(n['body'], n['user_name']) for n in r.data['notes']], [('Ordered a new fan', 'tech_k')])
+
+    # ── review fixes (s168): taxed shop — quote = invoice = what the drawer takes ──
+    def test_taxed_shop_quote_equals_invoice_and_drawer_takes_the_taxed_total(self):
+        """Shop with 14% tax, repair 1000: the window must say 1140 and the drawer must expect 1140."""
+        job = self._job(parts=(), detection='0', cost='1000')
+        q = self._api(self.cashier).get(f'/api/services/{job.id}/quote/')
+        self.assertEqual(q.status_code, 200, q.content[:300])
+        self.assertEqual((Decimal(q.data['subtotal']), Decimal(q.data['tax_total']), Decimal(q.data['grand_total'])),
+                         (Decimal('1000'), Decimal('140'), Decimal('1140')))
+        self.assertEqual(Decimal(q.data['lines'][0]['tax_rate']), Decimal('14'))
+        api = self._api(self.cashier)
+        r = api.post('/api/finance/shifts/', {'branch': str(self.branch.id), 'starting_cash': '0'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        r = api.post(f'/api/services/{job.id}/done/', {'method': str(self.cash.id),
+                                                      'expected_total': q.data['grand_total']}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        job.refresh_from_db()
+        self.assertEqual((job.invoice.grand_total, job.invoice.paid_amount), (Decimal('1140'), Decimal('1140')))
+        d = api.get('/api/finance/shifts/drawer/').data
+        self.assertEqual(Decimal(d['cash_in']), Decimal('1140'))
+
+    def test_quote_with_parts_matches_the_invoice(self):
+        job = self._job()
+        q = self._api(self.cashier).get(f'/api/services/{job.id}/quote/').data
+        self._done(job, self.cash)
+        job.refresh_from_db()
+        inv = job.invoice
+        self.assertEqual((Decimal(q['subtotal']), Decimal(q['tax_total']), Decimal(q['grand_total'])),
+                         (inv.subtotal, inv.tax_total, inv.grand_total))
+
+    def test_done_refused_when_the_shown_total_is_stale(self):
+        from finance.models import SalesInvoice
+        job = self._job()
+        r = self._api(self.cashier).post(f'/api/services/{job.id}/done/',
+                                         {'method': str(self.cash.id), 'expected_total': '800'}, format='json')
+        self.assertEqual(r.status_code, 409, r.content[:300])
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.OPEN)
+        self.assertEqual(SalesInvoice.all_objects.filter(store=self.store).count(), 0)
+        self.assertEqual(self._stock(), Decimal('10'))
+
+    def test_owner_sets_the_labour_tax_and_can_edit_the_labour_product(self):
+        from inventory.models import Tax
+        zero = Tax.objects.create(store=self.store, name='Exempt', rate=Decimal('0'))
+        other_shop_tax = Tax.objects.create(store=self.store2, name='X', rate=Decimal('5'))
+        owner = self._api(self.owner)
+        self.assertEqual(owner.patch('/api/services/labour/', {'tax': str(other_shop_tax.id)}, format='json').status_code, 400)
+        self.assertEqual(self._api(self.cashier).patch('/api/services/labour/', {'tax': None}, format='json').status_code, 403)
+        r = owner.patch('/api/services/labour/', {'tax': str(zero.id), 'name': 'Labour'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        # Opening + saving the SKU-less, supplier-less system product in Products must not crash (no SKU needed).
+        r = owner.patch(f"/api/inventory/products/{r.data['product']}/", {'name': 'Labour & repair'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        job = self._job()                                   # labour 500 (exempt) + parts 300 (14% = 42)
+        self.assertEqual(Decimal(self._api(self.cashier).get(f'/api/services/{job.id}/quote/').data['grand_total']),
+                         Decimal('842'))
+        self.assertEqual(self._done(job, self.cash).status_code, 200)
+        job.refresh_from_db()
+        self.assertEqual((job.invoice.tax_total, job.invoice.grand_total), (Decimal('42'), Decimal('842')))
+
+    def test_return_after_an_earlier_return_in_a_pack_unit(self):
+        """A part sold in base units, 1 Pack (= 2) returned at the till first; the job's return takes the rest."""
+        from finance.models import RefundInvoice
+        from inventory.models import ProductUnit
+        pack = ProductUnit.objects.create(variant=self.part, name='Pack', factor=Decimal('2'), sell_price=Decimal('300'))
+        job = self._job(client=self.named, parts=((4, '150'),))     # labour 570 incl. tax + parts 684 = 1254
+        self._done(job, self.cash)
+        inv = Service.objects.get(pk=job.pk).invoice
+        self.assertEqual(inv.grand_total, Decimal('1254'))
+        r = self._api(self.manager).post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(self.named.id),
+            'items': [{'variant': str(self.part.id), 'unit': str(pack.id), 'quantity': '1', 'refund_amount': '342'}]},
+            format='json')
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        self.assertEqual(self._stock(), Decimal('8'))                  # 10 − 4 + 2
+        r = self._api(self.manager).post(f'/api/services/{job.id}/return/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        job.refresh_from_db()
+        part_line = job.refund.items.get(variant=self.part)
+        self.assertEqual((part_line.quantity * part_line.unit_factor, part_line.refund_amount), (Decimal('2'), Decimal('342')))
+        total = sum(x.total_refunded for x in RefundInvoice.objects.filter(original_invoice=inv))
+        self.assertEqual(total, Decimal('1254'))
+        self.assertEqual(self._stock(), Decimal('10'))

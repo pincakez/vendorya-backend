@@ -421,8 +421,12 @@ class ProductVariant(TimestampedModel, SoftDeleteModel):
         self.store_id = self.product.store_id
         if not self.sku2:
             self.sku2 = None   # blank → NULL so SKU2-less variants don't collide on '' (unique)
-        # Memory Base entries (superfix §2) are SKU-less: keep sku NULL, never generate.
-        if not self.sku and self.product.source != Product.Source.MEMORY_BASE:
+        # Memory Base entries (superfix §2) are SKU-less: keep sku NULL, never generate. So is a no-stock
+        # SERVICE product with no supplier (e.g. the service desk's system "Repair service", Upgrade 13): a SKU
+        # needs a supplier prefix, and nothing is ever scanned for it — editing it must not fail.
+        no_sku = (self.product.source == Product.Source.MEMORY_BASE
+                  or (self.product.product_type == Product.ProductType.SERVICE and not self.product.supplier_id))
+        if not self.sku and not no_sku:
             with transaction.atomic():
                 self.sku, self.sku_number, self.sku_prefix = sku_engine.next_sku(self.product)
                 if self._state.adding and self.sku2 is None:

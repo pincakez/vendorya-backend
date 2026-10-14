@@ -1,5 +1,6 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.management import call_command
 from django.db import transaction
 from django.utils import timezone
@@ -11,7 +12,7 @@ from rest_framework.response import Response
 from core.activity import log_activity
 from core.models import ActivityLog
 from users.permissions import RoleScopedPermission
-from .desk import add_job_lines, refund_lines
+from .desk import add_job_lines, labour_variant, quote, refund_lines
 from .models import Service
 from .serializers import ServiceSerializer, ServiceNoteSerializer
 
@@ -52,6 +53,8 @@ class ServiceViewSet(viewsets.ModelViewSet):
         'return_service':     'MANAGER',
         'notes':              'CASHIER',
         'technicians':        'CASHIER',
+        'quote':              'CASHIER',
+        'labour':             'MANAGER',
         'run_notifications':  'MANAGER',
     }
     filter_backends = [filters.OrderingFilter]
@@ -191,6 +194,17 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 # must say how. The till's checkout alone would post it unpaid.
                 if invoice.grand_total > 0 and not (request.data.get('method') or request.data.get('payments')):
                     raise _Refuse('Choose how the customer paid.')
+                # The Done window sends the total it showed (from /quote/). If the job changed since, stop —
+                # the cashier must not collect one amount while the invoice records another.
+                shown = request.data.get('expected_total')
+                if shown not in (None, ''):
+                    try:
+                        shown = Decimal(str(shown))
+                    except (InvalidOperation, ValueError):
+                        raise _Refuse('Unreadable total.')
+                    if shown != invoice.grand_total:
+                        raise _Refuse(f'The job total changed to {invoice.grand_total:.2f} — reopen it and check again.',
+                                      status.HTTP_409_CONFLICT)
 
                 result = _till_checkout(request, invoice)
                 if result.status_code >= 400:
@@ -297,6 +311,47 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
         service = self.get_queryset().get(pk=service.pk)
         return Response(ServiceSerializer(service, context={'request': request}).data)
+
+    @action(detail=True, methods=['get'])
+    def quote(self, request, pk=None):
+        """What "Done" will bill, to the cent: the lines, the tax and the grand total, computed with the normal
+        sale rule and saved nowhere. The Done window and the ticket show THIS total, so the cashier collects
+        exactly what the invoice will say (a single payment method pays the whole grand total)."""
+        return Response(quote(self.get_object()))
+
+    @action(detail=False, methods=['get', 'patch'])
+    def labour(self, request):
+        """The shop's system "Repair service" product that labour lines point at: its name + its own tax
+        (`tax`: a tax id of this shop, or null = the shop's default tax). PATCH renames / re-taxes it."""
+        from inventory.models import Tax
+        store = request.user.store
+        with transaction.atomic():
+            variant = labour_variant(store)
+            product = variant.product
+            if request.method == 'PATCH':
+                fields = []
+                if 'name' in request.data:
+                    name = (request.data.get('name') or '').strip()
+                    if not name:
+                        return Response({'detail': 'Give the repair line a name.'}, status=status.HTTP_400_BAD_REQUEST)
+                    product.name = name[:255]
+                    fields.append('name')
+                if 'tax' in request.data:
+                    tax_id = request.data.get('tax')
+                    tax = None
+                    if tax_id:
+                        try:
+                            tax = Tax.objects.filter(store=store, is_deleted=False, pk=tax_id).first()
+                        except (ValueError, DjangoValidationError):
+                            tax = None
+                        if tax is None:
+                            return Response({'detail': 'Unknown tax.'}, status=status.HTTP_400_BAD_REQUEST)
+                    product.tax = tax
+                    fields.append('tax')
+                if fields:
+                    product.save(update_fields=fields + ['updated_at'])
+        return Response({'product': str(product.id), 'variant': str(variant.id),
+                         'name': product.name, 'tax': str(product.tax_id) if product.tax_id else None})
 
     @action(detail=False, methods=['get'])
     def technicians(self, request):

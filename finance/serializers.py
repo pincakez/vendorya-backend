@@ -165,9 +165,30 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
           • VAT is computed on what remains.
         """
         items = list(invoice.items.all())
+        priced = SalesInvoiceSerializer.price_lines(
+            invoice, [(it.variant, it.quantity, it.unit_price, it.discount_amount) for it in items])
+        for item, line in zip(items, priced['lines']):
+            rate, tax_name, taxable, tax = line['tax_rate'], line['tax_name'], line['taxable_amount'], line['tax_amount']
+            # s165 (§AUDIT A12): freeze the rate/name/base on the line for the tax report.
+            if (Decimal(str(item.tax_amount or '0')) != tax or item.tax_rate != rate
+                    or item.tax_name != tax_name or item.taxable_amount != taxable):
+                item.tax_amount, item.tax_rate, item.tax_name, item.taxable_amount = tax, rate, tax_name, taxable
+                item.save(update_fields=['tax_amount', 'total', 'tax_rate', 'tax_name', 'taxable_amount'])  # save() recomputes total
+
+        invoice.subtotal = priced['subtotal']
+        invoice.tax_total = priced['tax_total']
+        invoice.grand_total = priced['grand_total']
+        invoice.save(update_fields=['subtotal', 'tax_total', 'grand_total'])
+
+    @staticmethod
+    def price_lines(invoice, lines):
+        """The sale pricing rule (_recalculate's docstring), WITHOUT saving anything — so a quote (e.g. a service
+        job before Done, Upgrade 13) shows exactly what the invoice will say. `invoice` only supplies the shop
+        (`.store`) and the whole-invoice `.discount`; `lines` = [(variant, quantity, unit_price, discount_amount)].
+        Returns {'lines': [{tax_rate, tax_name, taxable_amount, tax_amount, total}], subtotal, tax_total, grand_total}."""
         line_nets = [
-            (it.quantity * it.unit_price) - Decimal(str(it.discount_amount or '0'))
-            for it in items
+            (Decimal(str(qty)) * Decimal(str(price))) - Decimal(str(disc or '0'))
+            for _v, qty, price, disc in lines
         ]
         discounted_subtotal = sum(line_nets, Decimal('0'))
 
@@ -180,24 +201,18 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         elif invoice_discount > discounted_subtotal:
             invoice_discount = discounted_subtotal
 
-        tax_total = Decimal('0')
-        for item, line_net in zip(items, line_nets):
+        out, tax_total = [], Decimal('0')
+        for (variant, _q, _p, _d), line_net in zip(lines, line_nets):
             share = (invoice_discount * line_net / discounted_subtotal) if discounted_subtotal > 0 else Decimal('0')
             taxable = line_net - share
-            rate, tax_name = SalesInvoiceSerializer._line_tax(invoice, item.variant)
+            rate, tax_name = SalesInvoiceSerializer._line_tax(invoice, variant)
             tax = (taxable * rate / Decimal('100')).quantize(Decimal('0.01'))
-            taxable = taxable.quantize(Decimal('0.01'))
-            # s165 (§AUDIT A12): freeze the rate/name/base on the line for the tax report.
-            if (Decimal(str(item.tax_amount or '0')) != tax or item.tax_rate != rate
-                    or item.tax_name != tax_name or item.taxable_amount != taxable):
-                item.tax_amount, item.tax_rate, item.tax_name, item.taxable_amount = tax, rate, tax_name, taxable
-                item.save(update_fields=['tax_amount', 'total', 'tax_rate', 'tax_name', 'taxable_amount'])  # save() recomputes total
+            out.append({'tax_rate': rate, 'tax_name': tax_name, 'taxable_amount': taxable.quantize(Decimal('0.01')),
+                        'tax_amount': tax, 'total': line_net + tax})   # = SalesInvoiceItem.save()'s total
             tax_total += tax
 
-        invoice.subtotal = discounted_subtotal
-        invoice.tax_total = tax_total
-        invoice.grand_total = discounted_subtotal - invoice_discount + tax_total
-        invoice.save(update_fields=['subtotal', 'tax_total', 'grand_total'])
+        return {'lines': out, 'subtotal': discounted_subtotal, 'tax_total': tax_total,
+                'grand_total': discounted_subtotal - invoice_discount + tax_total}
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -790,15 +805,12 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         # can never take back 30 Packs because 30 "units" were sold.
         def base(qty, factor):
             return Decimal(str(qty)) * Decimal(str(factor or 1))
-        sold, sold_value = {}, {}
-        for it in original.items.all():
-            sold[it.variant_id] = sold.get(it.variant_id, Decimal('0')) + base(it.quantity, it.unit_factor)
-            sold_value[it.variant_id] = sold_value.get(it.variant_id, Decimal('0')) + (it.total or Decimal('0'))
-        already, already_value = {}, {}
-        for ri in RefundItem.objects.filter(
-                refund__original_invoice=original, refund__is_deleted=False):
-            already[ri.variant_id] = already.get(ri.variant_id, Decimal('0')) + base(ri.quantity, ri.unit_factor)
-            already_value[ri.variant_id] = already_value.get(ri.variant_id, Decimal('0')) + (ri.refund_amount or 0)
+        from .models import returned_so_far   # the one sold / already-returned count (shared with the service desk)
+        counts = returned_so_far(original)
+        sold = {v: r['sold'] for v, r in counts.items()}
+        sold_value = {v: r['sold_value'] for v, r in counts.items()}
+        already = {v: r['returned'] for v, r in counts.items()}
+        already_value = {v: r['returned_value'] for v, r in counts.items()}
         requested, requested_value = {}, {}
         for item in items_data:
             v = item['variant']
