@@ -10,11 +10,14 @@ class POSFavoriteItemSerializer(serializers.ModelSerializer):
     default_variant_id    = serializers.SerializerMethodField()
     default_variant_price = serializers.SerializerMethodField()
     default_variant_stock = serializers.SerializerMethodField()
+    # New 7: the till must open the serial picker for these, never add a unit without its serial.
+    track_serials         = serializers.BooleanField(source='product.track_serials', read_only=True)
 
     class Meta:
         model = POSFavoriteItem
         fields = ['id', 'product', 'product_name', 'product_sku', 'product_price',
-                  'default_variant_id', 'default_variant_price', 'default_variant_stock', 'order']
+                  'default_variant_id', 'default_variant_price', 'default_variant_stock', 'order',
+                  'track_serials']
         read_only_fields = ['id']
 
     def _variant(self, obj):

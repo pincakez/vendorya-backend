@@ -449,6 +449,30 @@ class LookupAndScanTests(_SerialBase):
         self.assertFalse(any(row.get('scan_serial') for row in r.data['results']))
 
 
+class TillAddPathTests(_SerialBase):
+    """Every way the till adds a product tells it the product is serial-tracked (→ the serial picker)."""
+
+    def test_favourite_and_top_selling_carry_track_serials(self):
+        from pos.models import POSFavoriteItem
+        POSFavoriteItem.objects.create(store=self.store, product=self.product)
+        r = self.till.get('/api/pos/favorites/')
+        self.assertEqual(r.status_code, 200, r.content)
+        favs = r.data.get('results', r.data) if isinstance(r.data, dict) else r.data
+        self.assertTrue(favs[0]['track_serials'])
+        self._stock_in(['F-1'])
+        self._sell(['F-1'])
+        r = self.till.get('/api/pos/top-selling/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.data[0]['track_serials'])
+
+    def test_line_without_serials_never_posts(self):
+        self._stock_in(['F-2'])
+        r = self._checkout(self._cart([], qty=1))
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.data['serial_code'], 'serial_count')
+        self.assertEqual(self._stock(), Decimal('1'))
+
+
 class HelperTests(TestCase):
 
     def test_add_months_clamps_month_end(self):
