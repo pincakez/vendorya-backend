@@ -160,6 +160,24 @@ class ServiceDeskTests(TestCase):
         self.stock.refresh_from_db()
         return self.stock.quantity
 
+    # ── s168: Done obeys "Require an open shift to sell" (it goes through the till's checkout) ──
+    def test_done_needs_an_open_shift_when_the_shop_requires_one(self):
+        from core.models import StoreSettings
+        from finance.models import WorkShift
+        st, _ = StoreSettings.objects.get_or_create(store=self.store)
+        st.require_shift_to_sell = True
+        st.save(update_fields=['require_shift_to_sell'])
+        job = self._job()
+        r = self._done(job, self.cash)
+        self.assertEqual(r.status_code, 400, r.content[:400])
+        self.assertEqual(r.data.get('code'), 'shift_required')
+        job.refresh_from_db()
+        self.assertEqual((job.status, job.invoice_id), (Service.Status.OPEN, None))   # nothing kept
+        self.assertEqual(self._stock(), Decimal('10'))
+        WorkShift.objects.create(store=self.store, user=self.cashier, branch=self.branch,
+                                 starting_cash=Decimal('0'), status=WorkShift.Status.OPEN)
+        self.assertEqual(self._done(job, self.cash).status_code, 200)
+
     # ── Done = a real invoice ──
     def test_done_bills_labour_parts_and_tax_and_moves_parts_stock(self):
         from finance.models import SalesInvoice

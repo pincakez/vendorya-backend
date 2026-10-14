@@ -661,3 +661,31 @@ class InvoiceListFilterTests(_TillBase):
         self.assertEqual(len(_rows(r)), 1)
         r = self.client.get('/api/finance/invoices/', {'search': '9' * 30})
         self.assertEqual(r.status_code, 200)
+
+
+class VoidWithReturnsTests(RefundCustomerBalanceTests):
+    """s168 (surgeon-reviewer): voiding a sale that already has a return put the FULL quantity back on the shelf
+    (the return had restocked part of it already) → stock counted twice. Now refused, by the button and by an edit."""
+
+    def _stock(self):
+        return StockLevel.objects.get(variant=self.variant, branch=self.branch).quantity
+
+    def test_void_refused_when_the_sale_has_a_return(self):
+        inv = self._sale(self.cash)
+        self._refund(inv, '100')                                  # restocked: 9 → 10
+        before = self._stock()
+        r = self.mgr.post(f'/api/finance/invoices/{inv.id}/void/')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.data['code'], 'void_has_returns')
+        r = self.mgr.patch(f'/api/finance/invoices/{inv.id}/', {'status': 'VOID'}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, SalesInvoice.Status.POSTED)
+        self.assertEqual(self._stock(), before)
+
+    def test_void_without_return_still_puts_stock_back(self):
+        inv = self._sale(self.cash)
+        self.assertEqual(self._stock(), Decimal('9'))
+        r = self.mgr.post(f'/api/finance/invoices/{inv.id}/void/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self._stock(), Decimal('10'))

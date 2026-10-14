@@ -43,6 +43,17 @@ def require_open_shift(store, user, branch):
                            'code': 'shift_required'})
 
 
+def refuse_void_with_returns(invoice):
+    """s168 (surgeon-reviewer): a POSTED sale that already has a live return can't be voided — the void would put
+    the FULL quantity back on the shelf although the return already restocked part of it (stock counted twice),
+    and the return's money would hang off a cancelled sale. Fix the return, or return the rest instead."""
+    from .models import RefundInvoice
+    if invoice.status == SalesInvoice.Status.POSTED and RefundInvoice.objects.filter(
+            original_invoice=invoice, is_deleted=False).exists():
+        raise ValidationError({'detail': 'This sale already has a return — it can\'t be voided. Return the rest instead.',
+                               'code': 'void_has_returns'})
+
+
 class PaymentMethodViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentMethodSerializer
     permission_classes = [IsAuthenticated, RoleScopedPermission]
@@ -118,6 +129,8 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         new_status = serializer.validated_data.get('status')
         self._guard_posted(serializer.instance, new_status)
+        if new_status == SalesInvoice.Status.VOID:
+            refuse_void_with_returns(serializer.instance)
         if new_status == SalesInvoice.Status.POSTED and serializer.instance.status != SalesInvoice.Status.POSTED:
             # A manager posting a draft by edit is a sale too — same shift rule as the till (2026-10-14).
             branch = serializer.validated_data.get('branch') or serializer.instance.branch
@@ -149,6 +162,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         if invoice.status == SalesInvoice.Status.VOID:
             return Response({'detail': 'Already voided.'}, status=status.HTTP_400_BAD_REQUEST)
         self._guard_posted(invoice)
+        refuse_void_with_returns(invoice)
         was_draft = invoice.status == SalesInvoice.Status.DRAFT
         invoice.status = SalesInvoice.Status.VOID
         invoice.save()
