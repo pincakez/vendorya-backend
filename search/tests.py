@@ -135,3 +135,19 @@ class PosHidesGhostsInsideSearchTests(TestCase):
             r = self.api.get('/api/inventory/products/autocomplete/', {'q': 'cable', 'pos': 1})
         self.assertEqual(r.status_code, 200, r.content)
         self.assertEqual([p['id'] for p in r.data['results']], [str(self.shown.id)])
+
+
+class TestRunNeverTouchesLiveSearchTests(TestCase):
+    """s166: the suite used to write every test product into the live dev collection."""
+
+    def test_typesense_is_switched_off_under_tests(self):
+        from search import client as ts
+        self.assertFalse(ts.is_configured())
+
+    def test_saving_a_product_makes_no_search_call(self):
+        from search import client as ts
+        owner = User.objects.create_user(username='own3', password='pw', role='OWNER')
+        store = Store.objects.create(name='S3', store_code='103', owner=owner)
+        with mock.patch.object(ts, 'get_client') as gc:
+            Product.objects.create(store=store, name='Nothing to index')
+        gc.assert_not_called()

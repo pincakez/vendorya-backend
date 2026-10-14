@@ -13,6 +13,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # if the file is absent — env vars set by the deploy take over.
 load_dotenv(BASE_DIR / '.env')
 
+# s166: `manage.py test` never writes into the live Typesense collection (see the runner's docstring).
+TEST_RUNNER = 'vendorya_project.test_runner.NoLiveSearchRunner'
+
 
 def _env_bool(key, default=False):
     raw = os.environ.get(key)
