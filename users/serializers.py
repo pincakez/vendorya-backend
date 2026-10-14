@@ -57,13 +57,26 @@ class CustomerSerializer(serializers.ModelSerializer):
     # Live balance = opening-balance seed + Σ posted-invoice AR. Computed, never
     # stored (the `balance` column holds only the opening seed). Positive = owes us.
     balance = serializers.SerializerMethodField()
+    # Opening balance = what they owed before Vendorya (s168, PROLINE-PARITY Upgrade 4) — the `balance` seed
+    # column. Negative = we owed them. MANAGER+ only: a cashier could otherwise wipe a debt.
+    opening_balance = serializers.DecimalField(source='balance', max_digits=12, decimal_places=2, required=False)
 
     class Meta:
         model = Customer
         fields = ['id', 'name', 'phone_number', 'email', 'gender', 'notes',
                   'whatsapp_number', 'instagram', 'website', 'country', 'city',
-                  'balance', 'credit_limit', 'store_credit', 'is_walk_in']
+                  'balance', 'opening_balance', 'credit_limit', 'store_credit', 'is_walk_in']
         read_only_fields = ['id', 'store_credit', 'is_walk_in']
+
+    def validate_opening_balance(self, value):
+        from decimal import Decimal
+        from rest_framework.exceptions import PermissionDenied
+        from .permissions import ROLE_RANK, _user_rank
+        request = self.context.get('request')
+        current = self.instance.balance if self.instance else Decimal('0')
+        if request and value != current and _user_rank(request.user) < ROLE_RANK[User.Role.MANAGER]:
+            raise PermissionDenied("Only a manager can set a customer's opening balance.")
+        return value
 
     def get_balance(self, obj):
         # The list annotates `live_balance` in one query (users.views.with_live_balance, §A36);

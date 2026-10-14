@@ -233,13 +233,14 @@ def with_live_balance(qs):
 
     balance = opening seed + Σ over POSTED, non-deleted sales of (grand_total − paid_amount)
                           + Σ over their live returns of (− total_refunded + restocking_fee + paid_back)
+                          − Σ over their live lump-sum receipts of the part that paid no sale (s168)
 
-    The two sums are SEPARATE correlated subqueries on purpose: joining sales to returns in one SUM
+    The sums are SEPARATE correlated subqueries on purpose: joining sales to returns in one SUM
     would count a sale's total once per return (join multiplication)."""
     from decimal import Decimal
     from django.db.models import DecimalField, ExpressionWrapper, F, OuterRef, Subquery, Sum, Value
     from django.db.models.functions import Coalesce
-    from finance.models import SalesInvoice, RefundInvoice
+    from finance.models import SalesInvoice, RefundInvoice, CustomerReceipt
     DEC = DecimalField(max_digits=14, decimal_places=2)
     ZERO = Value(Decimal('0'), output_field=DEC)
     posted = {'status': SalesInvoice.Status.POSTED, 'is_deleted': False}
@@ -254,10 +255,16 @@ def with_live_balance(qs):
                .order_by().values('original_invoice__customer')
                .annotate(s=Sum(F('restocking_fee') + F('paid_back') - F('total_refunded'), output_field=DEC))
                .values('s'))
+    receipts = (CustomerReceipt.all_objects
+                .filter(customer=OuterRef('pk'), is_deleted=False)
+                .order_by().values('customer')
+                .annotate(s=Sum('unallocated', output_field=DEC))
+                .values('s'))
     return qs.annotate(live_balance=ExpressionWrapper(
         Coalesce(F('balance'), ZERO, output_field=DEC)
         + Coalesce(Subquery(sales, output_field=DEC), ZERO, output_field=DEC)
-        + Coalesce(Subquery(returns, output_field=DEC), ZERO, output_field=DEC),
+        + Coalesce(Subquery(returns, output_field=DEC), ZERO, output_field=DEC)
+        - Coalesce(Subquery(receipts, output_field=DEC), ZERO, output_field=DEC),
         output_field=DEC,
     ))
 
@@ -291,7 +298,27 @@ class CustomerViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(store=self.request.user.store)
+        customer = serializer.save(store=self.request.user.store)
+        if customer.balance:
+            self._log_opening(customer, None)
+
+    def perform_update(self, serializer):
+        before = serializer.instance.balance
+        customer = serializer.save()
+        if customer.balance != before:
+            self._log_opening(customer, before)
+
+    def _log_opening(self, customer, before):
+        """An opening balance moves what the customer owes — keep a trail (s168)."""
+        from core.activity import log_activity
+        from core.models import ActivityLog
+        log_activity(
+            request=self.request,
+            action=f"Set opening balance of {customer.name} to {customer.balance}",
+            op_type=ActivityLog.OperationType.OTHER,
+            details={'customer_id': str(customer.id), 'customer': customer.name,
+                     'from': str(before) if before is not None else None, 'to': str(customer.balance)},
+        )
 
     @action(detail=True, methods=['get'])
     def invoices(self, request, pk=None):

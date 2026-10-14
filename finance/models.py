@@ -167,13 +167,49 @@ class Payment(TimestampedModel, SoftDeleteModel):
     
     # Added to track WHO took the money (for Shifts)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True)
-    
+    # Set when this payment is one invoice's share of a lump-sum CustomerReceipt (s168, Proline "دفع عملاء").
+    receipt = models.ForeignKey('CustomerReceipt', on_delete=models.PROTECT, null=True, blank=True,
+                                related_name='payments')
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         # Update Invoice Paid Amount
         total_paid = self.invoice.payments.aggregate(sum=Sum('amount'))['sum'] or 0
         self.invoice.paid_amount = total_paid
         self.invoice.save()
+
+
+class CustomerReceipt(TimestampedModel, SoftDeleteModel):
+    """Money a customer brings in to pay down their debt — one lump sum, not tied to one sale
+    (s168, PROLINE-PARITY Upgrade 2, Proline "دفع عملاء").
+
+    On save (finance.receipts.receive_customer_payment) it is spread oldest-first over the customer's
+    unpaid POSTED sales as normal Payment rows (Payment.receipt → this), so each sale's paid_amount and
+    status move through the usual path. What is left after every sale is paid is kept here as
+    `unallocated`: it pays the opening balance, and anything beyond that (`advance`) is credit we owe
+    them. customer_outstanding() subtracts `unallocated` — the invoice part already shows in paid_amount.
+    Deleting (soft) reverses it: its Payments are soft-deleted too, so the sales owe again."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='customer_receipts')
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='receipts')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, related_name='customer_receipts')
+    date = models.DateTimeField(default=timezone.now)
+    note = models.TextField(blank=True, default='')
+    # amount − Σ its invoice Payments: the opening-balance part + the advance part.
+    unallocated = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0'))
+    # How much of the receipt went beyond everything they owed at the time (only with allow_advance) — for display.
+    advance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0'))
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                   null=True, blank=True, related_name='customer_receipts')
+
+    objects = TenantSoftDeleteManager()   # store-scoped, hides soft-deleted
+
+    class Meta:
+        ordering = ['-date', '-created_at']
+
+    def __str__(self):
+        return f"{self.customer.name} → {self.amount} ({self.date:%Y-%m-%d})"
 
 # --- 4. SHIFT MANAGEMENT ---
 class WorkShift(TimestampedModel):
@@ -206,13 +242,22 @@ class WorkShift(TimestampedModel):
         return f"{self.user.username} - {self.start_time.date()}"
 
     def cash_in(self):
-        """Cash taken by this shift's cashier since it opened."""
-        return Payment.objects.filter(
+        """Cash taken by this shift's cashier since it opened — sale payments, plus the part of a
+        customer's lump-sum receipt that paid no sale (opening balance / advance, s168; the sale part
+        is already a Payment above)."""
+        paid = Payment.objects.filter(
             invoice__store=self.store,
             created_at__gte=self.start_time,
             method__is_cash=True,
             created_by=self.user
         ).aggregate(sum=Sum('amount'))['sum'] or Decimal('0')
+        received = CustomerReceipt.all_objects.filter(
+            store=self.store, is_deleted=False,
+            created_at__gte=self.start_time,
+            method__is_cash=True,
+            created_by=self.user,
+        ).aggregate(sum=Sum('unallocated'))['sum'] or Decimal('0')
+        return paid + received
 
     def cash_out(self):
         """Cash refunds paid out of this drawer (s157, §AUDIT A9)."""
@@ -501,8 +546,9 @@ def customer_outstanding(customer, exclude_invoice_id=None):
     column is the *opening-balance seed* only (a manual starting figure entered
     at onboarding, e.g. via V-Pilot `create_customer(opening_balance=…)`); live
     invoice activity is never written back to it, so the running total must be
-    computed here (Option A, s31; opening seed folded in s61). Mirrors the
-    AR-aging report. Positive = they owe us; negative = we owe them.
+    computed here (Option A, s31; opening seed folded in s61). Minus the part of
+    lump-sum CustomerReceipts that paid no sale (s168). Mirrors the AR-aging report
+    and users.views.with_live_balance(). Positive = they owe us; negative = we owe them.
     """
     qs = SalesInvoice.all_objects.filter(
         customer=customer, status=SalesInvoice.Status.POSTED, is_deleted=False,
@@ -512,7 +558,14 @@ def customer_outstanding(customer, exclude_invoice_id=None):
     total = customer.balance or Decimal('0')   # opening-balance seed
     for inv in with_refund_totals(qs):
         total += invoice_outstanding(inv)
-    return total
+    return total - receipts_unallocated(customer)
+
+
+def receipts_unallocated(customer):
+    """Σ of the customer's live lump-sum receipts NOT spread onto a sale (s168): the part that paid the
+    opening balance or sits as an advance. Their invoice part is already inside each sale's paid_amount."""
+    return (CustomerReceipt.all_objects.filter(customer=customer, is_deleted=False)
+            .aggregate(s=Sum('unallocated'))['s'] or Decimal('0'))
 
 
 @receiver(pre_save, sender=SalesInvoice)

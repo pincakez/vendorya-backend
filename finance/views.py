@@ -14,14 +14,14 @@ from users.permissions import RoleScopedPermission, ROLE_RANK, _user_rank
 from rest_framework.exceptions import PermissionDenied
 from inventory.models import StockLevel
 from .models import (
-    SalesInvoice, Payment, PaymentMethod,
+    SalesInvoice, Payment, PaymentMethod, CustomerReceipt,
     PurchaseInvoice, SupplierPayment,
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice,
 )
 from .serializers import (
-    SalesInvoiceSerializer, PaymentSerializer, PaymentMethodSerializer,
+    SalesInvoiceSerializer, PaymentSerializer, PaymentMethodSerializer, CustomerReceiptSerializer,
     PurchaseInvoiceSerializer, SupplierPaymentSerializer,
     ExpenseSerializer, ExpenseCategorySerializer,
     WorkShiftSerializer,
@@ -411,6 +411,69 @@ class PaymentViewSet(viewsets.ModelViewSet):
         )
 
 
+class CustomerReceiptViewSet(viewsets.ModelViewSet):
+    """Receive a customer's debt payment as one lump sum (s168, Proline "دفع عملاء"). Spread oldest-first over
+    their unpaid sales, then the opening balance (finance.receipts). Filter the list by ?customer=<uuid>.
+    No edit: a wrong receipt is deleted (ADMIN, reverses its sale payments) and entered again.
+    MANAGER, like supplier payments: lowering what a customer owes is a credit decision, not a till sale."""
+    serializer_class = CustomerReceiptSerializer
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':     'MANAGER',
+        'retrieve': 'MANAGER',
+        'create':   'MANAGER',
+        'destroy':  'ADMIN',
+    }
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        qs = (CustomerReceipt.objects.filter(store=self.request.user.store)
+              .select_related('customer', 'method', 'created_by'))
+        customer = self.request.query_params.get('customer')
+        if customer:
+            qs = qs.filter(customer_id=customer)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        from .receipts import receive_customer_payment
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        d = ser.validated_data
+        receipt, summary = receive_customer_payment(
+            store=request.user.store, customer=d['customer'], amount=d['amount'], method=d['method'],
+            user=request.user, date=d.get('date'), note=d.get('note', ''),
+            allow_advance=d.get('allow_advance', False),
+        )
+        log_activity(
+            request=request,
+            action=f"Received {receipt.amount} from customer {receipt.customer.name}",
+            op_type=ActivityLog.OperationType.SALE,
+            details={
+                'customer_receipt_id': str(receipt.id),
+                'customer': receipt.customer.name,
+                'method': receipt.method.name,
+                **{k: summary[k] for k in ('to_invoices', 'to_opening_balance', 'advance',
+                                           'balance_before', 'balance_after')},
+                'amount': str(receipt.amount),
+                'invoices': [a['invoice_number'] for a in summary['allocations']],
+            },
+        )
+        data = self.get_serializer(receipt).data
+        data['summary'] = summary
+        return Response(data, status=status.HTTP_201_CREATED)
+
+    def perform_destroy(self, instance):
+        from .receipts import reverse_customer_receipt
+        reverse_customer_receipt(instance)
+        log_activity(
+            request=self.request,
+            action=f"Deleted customer payment {instance.amount} from {instance.customer.name}",
+            op_type=ActivityLog.OperationType.SALE,
+            details={'customer_receipt_id': str(instance.id), 'customer': instance.customer.name,
+                     'amount': str(instance.amount)},
+        )
+
+
 class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
     serializer_class = PurchaseInvoiceSerializer
     permission_classes = [IsAuthenticated, RoleScopedPermission]
@@ -763,6 +826,12 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
                   'refund_number': None, 'amount': str(p['amount'])} for p in pays]
         moves += [{'time': r['created_at'], 'kind': 'OUT', 'invoice_number': r['original_invoice__invoice_number'],
                    'refund_number': r['refund_number'], 'amount': str(r['drawer_cash'])} for r in refunds]
+        # s168: the part of a customer's lump-sum payment that paid no sale (its sale part is in `pays` above)
+        received = (CustomerReceipt.objects.filter(store=shift.store, created_at__gte=shift.start_time,
+                                                   method__is_cash=True, created_by=shift.user, unallocated__gt=0)
+                    .values('created_at', 'unallocated', 'customer__name'))
+        moves += [{'time': c['created_at'], 'kind': 'IN', 'invoice_number': None, 'refund_number': None,
+                   'customer': c['customer__name'], 'amount': str(c['unallocated'])} for c in received]
         moves.sort(key=lambda m: m['time'], reverse=True)
         cash_in, cash_out = shift.cash_in(), shift.cash_out()
         return Response({

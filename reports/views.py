@@ -24,7 +24,7 @@ from users.models import User
 from finance.models import (
     SalesInvoice, SalesInvoiceItem, Payment,
     PurchaseInvoice, PurchaseItem,
-    Expense, RefundInvoice, RefundItem, WorkShift,
+    Expense, RefundInvoice, RefundItem, WorkShift, CustomerReceipt,
     with_refund_totals, invoice_outstanding,
 )
 from inventory.models import (
@@ -264,6 +264,14 @@ def _bucket_label(days):
 
 
 class ARAgingView(_StoreMixin, APIView):
+    """What each customer owes, by age. A customer's row total == finance.models.customer_outstanding()
+    (s168): opening balance (its own "opening" column — debt from before Vendorya, oldest of all) + each
+    unpaid sale in its age bucket, then every credit (the part of a lump-sum receipt that paid no sale,
+    a negative opening balance, a sale returned for more than was owed) pays the OLDEST debt first.
+    Customers who owe nothing — or are owed — are left out."""
+    BUCKETS = ('opening', 'b0_30', 'b31_60', 'b61_90', 'b90_plus')   # oldest debt goes first: opening, then
+    PAY_ORDER = ('opening', 'b90_plus', 'b61_90', 'b31_60', 'b0_30')  # the sales oldest → newest
+
     def get(self, request):
         store = self.get_store(request)
         if not store:
@@ -276,28 +284,48 @@ class ARAgingView(_StoreMixin, APIView):
             .select_related('customer')
         )
 
-        cust = defaultdict(lambda: {'name': '', 'b0_30': ZERO, 'b31_60': ZERO,
-                                    'b61_90': ZERO, 'b90_plus': ZERO, 'total': ZERO})
+        cust = defaultdict(lambda: {'name': '', 'credit': ZERO, **{b: ZERO for b in self.BUCKETS}})
         for inv in invoices:
             outstanding = invoice_outstanding(inv)   # same rule as the customer balance (s165)
-            if outstanding <= 0:
-                continue
-            age = (today - timezone.localtime(inv.date).date()).days
-            bucket = _bucket_label(age)
             c = cust[str(inv.customer_id)]
             c['name'] = inv.customer.name
-            c[bucket] += outstanding
-            c['total'] += outstanding
+            if outstanding < 0:
+                c['credit'] -= outstanding
+            elif outstanding > 0:
+                age = (today - timezone.localtime(inv.date).date()).days
+                c[_bucket_label(age)] += outstanding
 
+        from users.models import Customer
+        for cid, name, seed in (Customer.all_objects.filter(store=store).exclude(balance=0)
+                                .values_list('id', 'name', 'balance')):
+            c = cust[str(cid)]
+            c['name'] = name
+            if seed > 0:
+                c['opening'] += seed
+            else:
+                c['credit'] -= seed
+        for cid, name, unalloc in (CustomerReceipt.all_objects.filter(store=store, is_deleted=False)
+                                   .values('customer').annotate(s=Sum('unallocated'))
+                                   .values_list('customer', 'customer__name', 's')):
+            c = cust[str(cid)]
+            c['name'] = name
+            c['credit'] += unalloc or ZERO
+
+        for c in cust.values():                    # credits pay the oldest debt first
+            for b in self.PAY_ORDER:
+                take = min(c['credit'], c[b])
+                c[b] -= take
+                c['credit'] -= take
+            c['total'] = sum(c[b] for b in self.BUCKETS)
+
+        owing = {cid: v for cid, v in cust.items() if v['total'] > 0}
         rows = sorted(
             [{'customer_id': cid, 'name': v['name'],
-              'b0_30': _q(v['b0_30']), 'b31_60': _q(v['b31_60']),
-              'b61_90': _q(v['b61_90']), 'b90_plus': _q(v['b90_plus']),
-              'total': _q(v['total'])}
-             for cid, v in cust.items()],
+              **{k: _q(v[k]) for k in self.BUCKETS + ('total',)}}
+             for cid, v in owing.items()],
             key=lambda r: Decimal(r['total']), reverse=True)
-        totals = {k: _q(sum(v[k] for v in cust.values()))
-                  for k in ('b0_30', 'b31_60', 'b61_90', 'b90_plus', 'total')}
+        totals = {k: _q(sum(v[k] for v in owing.values()))
+                  for k in self.BUCKETS + ('total',)}
         return Response({'as_of': today, 'rows': rows, 'totals': totals})
 
 

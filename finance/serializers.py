@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.db import transaction
 from django.db.models import Sum
 from .models import (
-    SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod,
+    SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod, CustomerReceipt,
     PurchaseInvoice, PurchaseItem, SupplierPayment,
     Expense, ExpenseCategory,
     WorkShift,
@@ -217,6 +217,47 @@ class PaymentSerializer(serializers.ModelSerializer):
         owed = invoice_outstanding(invoice)
         if amount > owed + Decimal('0.005'):
             raise serializers.ValidationError({'amount': f'More than is owed on this sale ({owed}).'})
+        return attrs
+
+
+class CustomerReceiptSerializer(serializers.ModelSerializer):
+    """A lump-sum debt payment from a customer (s168). Write: customer, amount, method, date?, note?,
+    allow_advance? — the spreading over sales is done by finance.receipts.receive_customer_payment."""
+    allow_advance = serializers.BooleanField(write_only=True, required=False, default=False)
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    method_name = serializers.CharField(source='method.name', read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+    allocations = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomerReceipt
+        fields = ['id', 'customer', 'customer_name', 'amount', 'method', 'method_name', 'date', 'note',
+                  'unallocated', 'advance', 'allocations', 'allow_advance', 'created_by_name', 'created_at']
+        read_only_fields = ['id', 'unallocated', 'advance', 'created_at']
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        return (u.get_full_name() or u.username) if u else None
+
+    def get_allocations(self, obj):
+        return [{'invoice': str(p.invoice_id), 'invoice_number': p.invoice.invoice_number, 'amount': str(p.amount)}
+                for p in obj.payments.filter(is_deleted=False).select_related('invoice').order_by('invoice__date')]
+
+    def validate_amount(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError('Amount must be more than zero.')
+        return value
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        store_id = request.user.store_id if request else None
+        customer, method = attrs['customer'], attrs['method']
+        if customer.store_id != store_id or customer.is_deleted:      # tenant guard
+            raise serializers.ValidationError({'customer': 'Customer not found in this store.'})
+        if method.store_id != store_id or method.is_deleted:
+            raise serializers.ValidationError({'method': 'Unknown payment method.'})
+        if method.is_agel:
+            raise serializers.ValidationError({'method': 'Ajel (credit) is not a payment — choose how the money came in.'})
         return attrs
 
 

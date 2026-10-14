@@ -26,6 +26,8 @@ class CustomerListBalanceTests(_TillBase):
         self.manager = User.objects.create_user(username='mgr_a36', password='x', role='MANAGER', store=self.store)
         self.mgr = APIClient()
         self.mgr.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(self.manager).access_token))
+        self.own = APIClient()
+        self.own.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(self.owner).access_token))
         self.n = 0
 
     def _sale(self, customer, method, qty=1):
@@ -69,7 +71,25 @@ class CustomerListBalanceTests(_TillBase):
         self._draft(c)                                                                # a draft → ignored
         dead = self._sale(c, self.agel)
         SalesInvoice.all_objects.filter(pk=dead.pk).update(is_deleted=True)           # deleted sale → ignored
+        # s168: lump-sum receipts — sales only / sales + part of the opening balance / beyond everything
+        owed = customer_outstanding(c)
+        kind = self.n % 3
+        if kind == 1:
+            self._receive(c, '15')
+        elif kind == 2:
+            self._receive(c, str(owed - 3))                                           # 3 of the opening left
+        else:
+            self._receive(c, str(owed + 25), allow_advance=True)                      # we owe them 25
+        if customer_outstanding(c) >= 1:                                             # a deleted receipt → ignored
+            gone = self._receive(c, '1')
+            self.assertEqual(self.own.delete(f'/api/finance/customer-receipts/{gone}/').status_code, 204)
         return c
+
+    def _receive(self, c, amount, **extra):
+        r = self.mgr.post('/api/finance/customer-receipts/', {'customer': str(c.id), 'method': str(self.cash.id),
+                                                              'amount': amount, **extra}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.data['id']
 
     def _list(self):
         r = self.client.get(URL)
@@ -85,6 +105,21 @@ class CustomerListBalanceTests(_TillBase):
             expected = customer_outstanding(c)
             self.assertEqual(Decimal(balances[str(c.id)]), expected, c.name)
         self.assertNotEqual(len({balances[str(c.id)] for c in customers}), 1)   # really different numbers
+        # s168: the A/R aging row of every customer who owes = the same number; nobody else is listed
+        r = self.mgr.get('/api/reports/ar-aging/')
+        self.assertEqual(r.status_code, 200, r.content)
+        aging = {row['customer_id']: row for row in r.data['rows']}
+        for c in customers + [self.customer, self.walkin]:
+            expected = customer_outstanding(c)
+            if expected > 0:
+                row = aging[str(c.id)]
+                self.assertEqual(Decimal(row['total']), expected, c.name)
+                self.assertEqual(sum(Decimal(row[k]) for k in ('opening', 'b0_30', 'b31_60', 'b61_90', 'b90_plus')),
+                                 expected, c.name)
+            else:
+                self.assertNotIn(str(c.id), aging, c.name)
+        self.assertTrue(any(Decimal(row['opening']) > 0 for row in aging.values()))
+        self.assertTrue(any(customer_outstanding(c) < 0 for c in customers))     # an advance is in the mix
 
     def test_retrieve_uses_the_same_number(self):
         c = self._customer_with_history()
