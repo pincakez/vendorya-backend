@@ -73,9 +73,23 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
     ordering_fields = ['date', 'created_at', 'grand_total', 'invoice_number']
 
     def get_queryset(self):
-        return SalesInvoice.objects.filter(
+        qs = SalesInvoice.objects.filter(
             store=self.request.user.store
         ).prefetch_related('items', 'payments').select_related('customer', 'branch')
+        # s168: the Sales Invoices page and the Returns window send ?status= and ?search= — they were ignored
+        # (Returns offered DRAFT carts as "original invoices"). Only on the list; detail/actions are unaffected.
+        if self.action == 'list':
+            params = self.request.query_params
+            status_ = (params.get('status') or '').upper()
+            if status_ in SalesInvoice.Status.values:
+                qs = qs.filter(status=status_)
+            term = (params.get('search') or '').strip()
+            if term:
+                q = models.Q(customer__name__icontains=term) | models.Q(customer__phone_number__icontains=term)
+                if term.lstrip('#').isdigit() and len(term.lstrip('#')) <= 9:   # fits the integer column
+                    q |= models.Q(invoice_number=int(term.lstrip('#')))
+                qs = qs.filter(q)
+        return qs
 
     def _is_manager(self):
         return _user_rank(self.request.user) >= ROLE_RANK[User.Role.MANAGER]
@@ -334,6 +348,8 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         from inventory.models import is_weight_selling_enabled
         weight_on = is_weight_selling_enabled(store.id)
         items = [{
+            'variant': str(item.variant_id),                    # s168: the Returns screen picks lines by these
+            'unit': str(item.unit_id) if item.unit_id else None,
             'name': item.variant.product.name,
             'sku': item.variant.sku,
             'quantity': str(item.quantity),

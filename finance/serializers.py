@@ -2,6 +2,7 @@ from decimal import Decimal
 from rest_framework import serializers
 from django.db import transaction
 from django.db.models import Sum
+from inventory.models import ProductUnit
 from .models import (
     SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod, CustomerReceipt,
     PurchaseInvoice, PurchaseItem, SupplierPayment,
@@ -96,11 +97,13 @@ class SalesInvoiceItemSerializer(serializers.ModelSerializer):
 
 class SalesInvoiceSerializer(serializers.ModelSerializer):
     items = SalesInvoiceItemSerializer(many=True, required=False)
+    # s168: the invoice list + Returns window showed the customer's id (or nothing) — send the name.
+    customer_name = serializers.CharField(source='customer.name', read_only=True, default='')
 
     class Meta:
         model = SalesInvoice
         fields = [
-            'id', 'branch', 'customer', 'invoice_number', 'status', 'date',
+            'id', 'branch', 'customer', 'customer_name', 'invoice_number', 'status', 'date',
             'subtotal', 'tax_total', 'discount', 'grand_total', 'paid_amount', 'change_given',
             'items', 'created_at',
         ]
@@ -561,10 +564,20 @@ class WorkShiftSerializer(serializers.ModelSerializer):
 # --- REFUNDS ---
 
 class RefundItemSerializer(serializers.ModelSerializer):
+    # s168: the unit the customer brings back (e.g. 1 Pack). Write-only — the line freezes its
+    # unit_factor from it (same guard as a sale line: a unit of another product falls back to the
+    # base unit), so a returned Pack restocks 30 tablets, not 1. Omitted = the base unit.
+    unit = serializers.PrimaryKeyRelatedField(
+        queryset=ProductUnit.objects.filter(is_deleted=False),
+        required=False, allow_null=True, write_only=True)
+
     class Meta:
         model = RefundItem
-        fields = ['id', 'variant', 'quantity', 'refund_amount', 'restock_inventory']
-        read_only_fields = ['id']
+        fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'refund_amount', 'restock_inventory']
+        read_only_fields = ['id', 'unit_factor']
+
+    def validate(self, attrs):
+        return _stamp_unit_factor(attrs)
 
     def validate_quantity(self, value):
         # A refund line restocks (+=) inventory; a zero/negative quantity would
@@ -607,6 +620,7 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                 self._validate_return_window(store, original)
             refund = RefundInvoice.objects.create(**validated_data)
             for item_data in items_data:
+                item_data.pop('unit', None)   # only its factor is kept (frozen by RefundItemSerializer)
                 RefundItem.objects.create(refund=refund, **item_data)
             # RefundItem.save() recomputed total_refunded on a separate instance;
             # reload so we see the gross total here.
@@ -721,19 +735,24 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         that product, and the whole refund never more than the sale's grand total left unrefunded.
         Only enforced when the refund references an original invoice."""
         TOL = Decimal('0.01')
+        # s168: every quantity is counted in BASE units (qty × the line's frozen unit_factor), so a
+        # pharmacy that sold 1 Pack (30 tablets) can take back 1 Pack, or 1 Strip + 20 tablets — and
+        # can never take back 30 Packs because 30 "units" were sold.
+        def base(qty, factor):
+            return Decimal(str(qty)) * Decimal(str(factor or 1))
         sold, sold_value = {}, {}
         for it in original.items.all():
-            sold[it.variant_id] = sold.get(it.variant_id, Decimal('0')) + it.quantity
+            sold[it.variant_id] = sold.get(it.variant_id, Decimal('0')) + base(it.quantity, it.unit_factor)
             sold_value[it.variant_id] = sold_value.get(it.variant_id, Decimal('0')) + (it.total or Decimal('0'))
         already, already_value = {}, {}
         for ri in RefundItem.objects.filter(
                 refund__original_invoice=original, refund__is_deleted=False):
-            already[ri.variant_id] = already.get(ri.variant_id, Decimal('0')) + ri.quantity
+            already[ri.variant_id] = already.get(ri.variant_id, Decimal('0')) + base(ri.quantity, ri.unit_factor)
             already_value[ri.variant_id] = already_value.get(ri.variant_id, Decimal('0')) + (ri.refund_amount or 0)
         requested, requested_value = {}, {}
         for item in items_data:
             v = item['variant']
-            requested[v.id] = requested.get(v.id, Decimal('0')) + item['quantity']
+            requested[v.id] = requested.get(v.id, Decimal('0')) + base(item['quantity'], item.get('unit_factor'))
             requested_value[v.id] = requested_value.get(v.id, Decimal('0')) + (item.get('refund_amount') or 0)
 
         errors = []
@@ -746,7 +765,8 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
             if req > refundable:
                 errors.append(
                     f"Cannot refund {req} of variant {vid} — only {refundable} "
-                    f"refundable (sold {sold_q}, already refunded {already.get(vid, Decimal('0'))})."
+                    f"refundable (sold {sold_q}, already refunded {already.get(vid, Decimal('0'))}; "
+                    f"counted in the product's base unit)."
                 )
                 continue
             per_unit = sold_value.get(vid, Decimal('0')) / sold_q

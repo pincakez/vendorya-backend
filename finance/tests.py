@@ -565,3 +565,97 @@ class PrintDataTests(_TillBase):
         it = r.data['items'][0]
         self.assertEqual(Decimal(it['discount_amount']), Decimal('15'))
         self.assertEqual(Decimal(it['total']), Decimal('85'))
+
+
+class RefundByUnitTests(RefundCustomerBalanceTests):
+    """s168 (MustTest audit 10-14): returns by unit. A refund line carries the unit the customer brings back
+    (Pack / Strip / base) and freezes its factor; caps are counted in BASE units. Before: returning 1 Pack put
+    back 1 tablet, and a shop that sold 1 Pack could "return" 1 Pack 30 times."""
+
+    def setUp(self):
+        super().setUp()
+        from inventory.models import ProductUnit
+        self.settings.multi_unit_enabled = True
+        self.settings.save(update_fields=['multi_unit_enabled'])
+        StockLevel.objects.filter(variant=self.variant, branch=self.branch).update(quantity=Decimal('100'))
+        self.pack = ProductUnit.objects.create(variant=self.variant, name='Pack', factor=Decimal('30'),
+                                               sell_price=Decimal('300'))
+        self.strip = ProductUnit.objects.create(variant=self.variant, name='Strip', factor=Decimal('10'),
+                                                sell_price=Decimal('100'))
+
+    def _pack_sale(self):
+        """1 Pack (= 30 tablets) sold for 300, paid cash."""
+        inv = self._draft()
+        inv.items.update(unit=self.pack, unit_factor=Decimal('30'), unit_price=Decimal('300'), total=Decimal('300'))
+        SalesInvoice.objects.filter(pk=inv.pk).update(grand_total=Decimal('300'))
+        inv.refresh_from_db()
+        self.assertEqual(self._checkout(inv, self.cash).status_code, 200)
+        return inv
+
+    def _stock(self):
+        return StockLevel.objects.get(variant=self.variant, branch=self.branch).quantity
+
+    def _ret(self, inv, qty, amount, unit=None):
+        line = {'variant': str(self.variant.id), 'quantity': qty, 'refund_amount': amount}
+        if unit is not None:
+            line['unit'] = str(unit.id)
+        return self.mgr.post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(inv.customer_id),
+            'refund_method': 'CASH', 'items': [line],
+        }, format='json')
+
+    def test_one_pack_back_restocks_30_tablets(self):
+        inv = self._pack_sale()
+        self.assertEqual(self._stock(), Decimal('70'))
+        r = self._ret(inv, '1', '300', unit=self.pack)
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._stock(), Decimal('100'))
+        self.assertEqual(Decimal(r.data['items'][0]['unit_factor']), Decimal('30'))
+
+    def test_cannot_return_more_packs_than_sold(self):
+        inv = self._pack_sale()
+        self.assertEqual(self._ret(inv, '2', '300', unit=self.pack).status_code, 400)
+        self.assertEqual(self._stock(), Decimal('70'))
+
+    def test_strip_and_tablets_out_of_a_pack(self):
+        inv = self._pack_sale()
+        self.assertEqual(self._ret(inv, '1', '100', unit=self.strip).status_code, 201)   # 10 back
+        self.assertEqual(self._ret(inv, '20', '200').status_code, 201)                    # 20 tablets back
+        self.assertEqual(self._stock(), Decimal('100'))
+        self.assertEqual(self._ret(inv, '1', '0').status_code, 400)                       # all 30 already back
+
+    def test_base_units_capped_by_the_pack(self):
+        inv = self._pack_sale()
+        self.assertEqual(self._ret(inv, '31', '300').status_code, 400)
+        self.assertEqual(self._ret(inv, '30', '300').status_code, 201)
+        self.assertEqual(self._stock(), Decimal('100'))
+
+    def test_unit_of_another_product_falls_back_to_base(self):
+        from inventory.models import ProductUnit
+        other = ProductVariant.objects.create(product=self.variant.product, sell_price=Decimal('5'))
+        foreign = ProductUnit.objects.create(variant=other, name='Box', factor=Decimal('50'), sell_price=Decimal('1'))
+        inv = self._pack_sale()
+        r = self._ret(inv, '1', '10', unit=foreign)
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._stock(), Decimal('71'))          # 1 base unit, not 50
+
+
+class InvoiceListFilterTests(_TillBase):
+    """s168: ?status= and ?search= on the invoice list were silently ignored (the Returns window offered
+    DRAFT carts as "original invoices", the Sales Invoices status filter did nothing); customer_name was missing."""
+
+    def test_status_search_and_customer_name(self):
+        posted = self._draft()
+        self.assertEqual(self._checkout(posted, self.cash).status_code, 200)
+        posted.refresh_from_db()
+        self._draft()                                         # a DRAFT cart
+        r = self.client.get('/api/finance/invoices/', {'status': 'POSTED', 'page_size': 50})
+        rows = r.data.get('results', r.data)
+        self.assertEqual([x['id'] for x in rows], [str(posted.id)])
+        self.assertEqual(rows[0]['customer_name'], 'Buyer')
+        r = self.client.get('/api/finance/invoices/', {'search': f'#{posted.invoice_number}'})
+        self.assertEqual(len(r.data.get('results', r.data)), 1)
+        r = self.client.get('/api/finance/invoices/', {'search': 'buy', 'status': 'DRAFT'})
+        self.assertEqual(len(r.data.get('results', r.data)), 1)
+        r = self.client.get('/api/finance/invoices/', {'search': '9' * 30})
+        self.assertEqual(r.status_code, 200)
