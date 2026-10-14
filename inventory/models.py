@@ -721,6 +721,11 @@ class StockAdjustment(TimestampedModel):
         from decimal import Decimal
         from django.core.exceptions import ValidationError
         with transaction.atomic():
+            if self.serial_numbers:
+                # New 7: the per-shop serial lock comes BEFORE the StockLevel row lock (same order as
+                # receive / register) so two of them at the same moment can't deadlock.
+                from inventory import serials as serial_engine
+                serial_engine.lock_shop_serials(self.store)
             super().save(*args, **kwargs)
             stock, created = (StockLevel.objects.select_for_update()
                               .get_or_create(variant=self.variant, branch=self.branch))

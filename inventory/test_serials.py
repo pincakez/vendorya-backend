@@ -449,6 +449,75 @@ class LookupAndScanTests(_SerialBase):
         self.assertFalse(any(row.get('scan_serial') for row in r.data['results']))
 
 
+class PreTrackingReturnTests(_SerialBase):
+    """GATES already sells laptops: a unit sold BEFORE tracking was switched on has no serial row, and must
+    still be returnable — with no serial, or with one typed now (review s168)."""
+
+    def setUp(self):
+        super().setUp()
+        Product.objects.filter(pk=self.product.pk).update(track_serials=False)
+        self.product.refresh_from_db()
+        StockLevel.objects.create(variant=self.variant, branch=self.branch, quantity=Decimal('3'))
+        self.old_inv = self._sell([], qty=2)                      # sold with no serials
+        self.assertEqual(self._stock(), Decimal('1'))
+        Product.objects.filter(pk=self.product.pk).update(track_serials=True)   # tracking switched on
+        self.product.refresh_from_db()
+        r = self.mgr.post('/api/inventory/serials/register/', {   # the unit still on the shelf gets its serial
+            'variant': str(self.variant.id), 'branch': str(self.branch.id), 'serial_numbers': ['SHELF-1']},
+            format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def _refund(self, serials, qty=1, original=True, restock=True):
+        body = {'branch': str(self.branch.id), 'customer': str(self.customer.id), 'refund_method': 'CASH',
+                'items': [{'variant': str(self.variant.id), 'quantity': str(qty), 'refund_amount': '20000',
+                           'restock_inventory': restock, 'serial_numbers': serials}]}
+        if original:
+            body['original_invoice'] = self.old_inv
+        return self.mgr.post('/api/finance/refunds/', body, format='json')
+
+    def test_old_sale_returns_without_serial_then_with_typed_serial(self):
+        r = self._refund([])
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._stock(), Decimal('2'))
+        ref = RefundInvoice.objects.get(pk=r.data['id'])
+        self.assertEqual((ref.total_refunded, ref.paid_back), (Decimal('20000'), Decimal('20000')))
+        self.assertEqual(SerialUnit.all_objects.filter(status='IN_STOCK').count(), 1)   # serials ≤ stock
+
+        r = self._refund(['old-2'])
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._stock(), Decimal('3'))
+        u = self._unit('OLD-2')
+        self.assertEqual((u.status, u.branch_id), ('IN_STOCK', self.branch.id))
+        self.assertTrue(SerialMove.all_objects.filter(unit=u, kind='RETURNED').exists())
+        self._sell(['OLD-2'])                                       # sellable by serial from now on
+        self.assertEqual(self._unit('OLD-2').status, 'SOLD')
+
+        r = self._refund([])                                        # both old units are back already
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(self._stock(), Decimal('2'))
+
+    def test_typed_serial_of_a_unit_sold_by_serial_is_refused(self):
+        self._sell(['SHELF-1'])
+        r = self._refund(['SHELF-1'])                               # sold by serial on ANOTHER sale
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.data['serial_code'], 'serial_not_sold')
+        self.assertEqual(self._unit('SHELF-1').status, 'SOLD')
+
+    def test_no_receipt_return_of_pre_tracking_unit(self):
+        r = self._refund([], original=False)
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._stock(), Decimal('1') + Decimal('1'))
+
+    def test_sale_by_serial_still_needs_its_serial_back(self):
+        new_inv = self._sell(['SHELF-1'])
+        body = {'branch': str(self.branch.id), 'customer': str(self.customer.id), 'original_invoice': new_inv,
+                'items': [{'variant': str(self.variant.id), 'quantity': '1', 'refund_amount': '1',
+                           'restock_inventory': True, 'serial_numbers': []}]}
+        r = self.mgr.post('/api/finance/refunds/', body, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.data['serial_code'], 'serial_count')
+
+
 class TillAddPathTests(_SerialBase):
     """Every way the till adds a product tells it the product is serial-tracked (→ the serial picker)."""
 

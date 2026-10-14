@@ -366,6 +366,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             # New 7/8 — printed only when present. condition = a code (NEW / IMPORTED_INSPECTED / USED) the
             # receipt words in the shop's language; on a DRAFT these are still empty (frozen at checkout).
             'serial_numbers': list(item.serial_numbers or []),
+            'track_serials': bool(item.variant.product.track_serials),   # the Returns screen asks for serials
             'condition': item.condition or '',
             'warranty_months': item.warranty_months or 0,
             'warranty_ends_on': item.warranty_ends_on.isoformat() if item.warranty_ends_on else None,

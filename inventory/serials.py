@@ -250,11 +250,46 @@ def void_sale(invoice, user=None):
 
 # ── refund ──────────────────────────────────────────────────────────────────
 
+def untracked_sold(store, variant, original=None, exclude_refund_item=None):
+    """Units of `variant` sold WITHOUT a serial (before tracking was switched on) that have not come back yet —
+    on `original` when given, else across the shop. = base units sold on POSTED sales − units sold by serial
+    there − units already returned without one of those serials. Those units may come back with no serial."""
+    from django.db.models import F, Sum
+    from finance.models import SalesInvoiceItem, RefundItem
+    lines = SalesInvoiceItem.objects.filter(variant=variant, invoice__store=store, invoice__status='POSTED',
+                                            invoice__is_deleted=False)
+    refunds = RefundItem.objects.filter(variant=variant, refund__store=store, refund__is_deleted=False)
+    moves = SerialMove.all_objects.filter(store=store, unit__variant=variant)
+    if original is not None:
+        lines = lines.filter(invoice=original)
+        refunds = refunds.filter(refund__original_invoice=original)
+        moves = moves.filter(sale_item__invoice=original)
+    else:
+        moves = moves.filter(sale_item__invoice__status='POSTED', sale_item__invoice__is_deleted=False)
+    if exclude_refund_item is not None:
+        refunds = refunds.exclude(pk=exclude_refund_item.pk)
+    sold = lines.aggregate(q=Sum(F('quantity') * F('unit_factor')))['q'] or Decimal('0')
+    returned = refunds.aggregate(q=Sum(F('quantity') * F('unit_factor')))['q'] or Decimal('0')
+    if exclude_refund_item is not None:
+        moves_returned = moves.filter(kind=SerialMove.Kind.RETURNED).exclude(refund_item=exclude_refund_item)
+    else:
+        moves_returned = moves.filter(kind=SerialMove.Kind.RETURNED)
+    sold_by_serial = moves.filter(kind=SerialMove.Kind.SOLD).count()
+    returned_by_serial = moves_returned.count()   # returns of a unit SOLD by serial (they carry its sale line)
+    pre_sold = Decimal(str(sold)) - sold_by_serial
+    pre_returned = Decimal(str(returned)) - returned_by_serial
+    return max(int((pre_sold - pre_returned).to_integral_value(rounding='ROUND_FLOOR')), 0)
+
+
 def return_units(refund_item, original=None, user=None):
-    """A refund line of a tracked product: the serials coming back, one per unit, each SOLD by this shop for
-    this product — on `original` when the return names its sale. Restocked → IN_STOCK at the refund's
-    branch (sellable again; StockLevel went up in RefundItem.save). Not restocked → RETURNED (kept apart,
-    not sellable). Either way the warranty of that sale ends here."""
+    """A refund line of a tracked product: the units coming back, each SOLD by this shop for this product — on
+    `original` when the return names its sale. Restocked → IN_STOCK at the refund's branch (sellable again;
+    StockLevel went up in RefundItem.save). Not restocked → RETURNED (kept apart, not sellable). Either way
+    the warranty of that sale ends here.
+
+    A unit sold BEFORE tracking was switched on has no serial row: up to `untracked_sold` such units may come
+    back with no serial (stock goes up without one — "serials ≤ stock" still holds), or with a serial typed
+    now, which becomes a new unit row (the shop can sell it by serial from then on)."""
     from finance.models import RefundItem
     variant = refund_item.variant
     if not is_tracked(variant):
@@ -263,30 +298,53 @@ def return_units(refund_item, original=None, user=None):
     name = variant.product.name
     need = whole_units(name, refund_item.quantity, refund_item.unit_factor)
     serials = clean_list(refund_item.serial_numbers, name)
-    _check_count(name, serials, need)
+    if len(serials) > need:
+        _check_count(name, serials, need)
+    restock = refund_item.restock_inventory
+    if restock:
+        lock_shop_serials(refund.store)   # normally already held (RefundInvoiceSerializer.create takes it first)
     qs = SerialUnit.all_objects.select_for_update(of=('self',)).filter(
         store=refund.store, variant=variant, serial__in=serials,
         status=SerialUnit.Status.SOLD, is_deleted=False)
     if original is not None:
         qs = qs.filter(sale_item__invoice=original)
     units = {u.serial: u for u in qs}
-    missing = sorted(set(serials) - set(units))
-    if missing:
-        where = f'on invoice #{original.invoice_number}' if original is not None else 'by this shop'
-        raise _err('serial_not_sold', f'Not sold {where}: {", ".join(missing)}.', serials=missing, product=name)
-    if refund_item.restock_inventory:
-        lock_shop_serials(refund.store)
+    typed_new = [s for s in serials if s not in units]           # serials for units sold before tracking
+    no_row_slots = need - (len(serials) - len(typed_new))        # units coming back that have no SOLD row
+    if no_row_slots > 0:
+        room = untracked_sold(refund.store, variant, original, exclude_refund_item=refund_item)
+        if no_row_slots > room:
+            if typed_new:
+                where = f'on invoice #{original.invoice_number}' if original is not None else 'by this shop'
+                raise _err('serial_not_sold', f'Not sold {where}: {", ".join(sorted(typed_new))}.',
+                           serials=sorted(typed_new), product=name)
+            raise _err('serial_count', f'{name} needs exactly {need} serial number(s), one per unit — '
+                                       f'got {len(serials)}.', product=name, need=need, got=len(serials))
+    if typed_new:
+        # A serial typed for a pre-tracking unit must not be a unit we sold BY SERIAL (another sale / mistyped).
+        sold_elsewhere = sorted(SerialUnit.all_objects.filter(
+            store=refund.store, serial__in=typed_new, status=SerialUnit.Status.SOLD, is_deleted=False,
+        ).values_list('serial', flat=True))
+        if sold_elsewhere:
+            raise _err('serial_not_sold', f'Not sold on this invoice: {", ".join(sold_elsewhere)}.',
+                       serials=sold_elsewhere, product=name)
+    if restock:
         _refuse_if_on_shelf(refund.store, serials, name)
-    status = SerialUnit.Status.IN_STOCK if refund_item.restock_inventory else SerialUnit.Status.RETURNED
+    status = SerialUnit.Status.IN_STOCK if restock else SerialUnit.Status.RETURNED
     for s in serials:
-        u = units[s]
-        sold_on = u.sale_item
-        u.status = status
-        u.branch = refund.branch
-        _clear_sale(u)
-        u.save(update_fields=_SALE_FIELDS)
+        if s in units:
+            u = units[s]
+            sold_on = u.sale_item
+            u.status = status
+            u.branch = refund.branch
+            _clear_sale(u)
+            u.save(update_fields=_SALE_FIELDS)
+        else:
+            u, sold_on = SerialUnit.all_objects.create(store=refund.store, variant=variant, branch=refund.branch,
+                                                       serial=s, status=status), None
         _move(u, SerialMove.Kind.RETURNED, branch=refund.branch, sale_item=sold_on,
-              refund_item=refund_item, created_by=user)
+              refund_item=refund_item, created_by=user,
+              note='' if sold_on is not None else 'sold before serial tracking')
     RefundItem.objects.filter(pk=refund_item.pk).update(serial_numbers=serials)
 
 

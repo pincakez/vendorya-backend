@@ -731,8 +731,12 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
             if original is not None:
                 self._validate_against_original(original, items_data)
                 self._validate_return_window(store, original)
-            refund = RefundInvoice.objects.create(**validated_data)
             from inventory import serials as serial_engine
+            # New 7: take the per-shop serial lock BEFORE any StockLevel row lock (RefundItem.save) — receive /
+            # register take it in that order too, so a return and a receive at the same moment can't deadlock.
+            if any(serial_engine.is_tracked(i['variant']) for i in items_data):
+                serial_engine.lock_shop_serials(store)
+            refund = RefundInvoice.objects.create(**validated_data)
             for item_data in items_data:
                 item_data.pop('unit', None)   # only its factor is kept (frozen by RefundItemSerializer)
                 ri = RefundItem.objects.create(refund=refund, **item_data)
