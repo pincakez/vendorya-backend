@@ -261,6 +261,14 @@ class WorkShift(TimestampedModel):
     objects     = TenantScopedManager()   # secure-by-default
     all_objects = models.Manager()        # unscoped escape hatch (sudo/audit/commands)
 
+    class Meta(TimestampedModel.Meta):   # keeps the inherited ordering
+        constraints = [
+            # One drawer per person at a time (2026-10-14): a double-click on "Open shift" made two OPEN shifts,
+            # both counting the same sales as cash in → a false "cash short" on close.
+            models.UniqueConstraint(fields=['user'], condition=models.Q(status='OPEN'),
+                                    name='one_open_shift_per_user'),
+        ]
+
     def __str__(self):
         return f"{self.user.username} - {self.start_time.date()}"
 

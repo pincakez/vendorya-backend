@@ -130,18 +130,21 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
             'grand_total', 'paid_amount', 'change_given', 'created_at',
         ]
 
+    def validate_status(self, value):
+        # 2026-10-14: a sale is BORN a draft. Creating it already POSTED skipped every checkout rule (open shift,
+        # credit selling off, stock, quota) — even for a cashier. Complete it with checkout, or a manager's Post.
+        if self.instance is None and value and value != SalesInvoice.Status.DRAFT:
+            raise serializers.ValidationError('A new sale starts as a draft — complete it with checkout.')
+        return value
+
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])
+        validated_data['status'] = SalesInvoice.Status.DRAFT
         with transaction.atomic():
             invoice = SalesInvoice.objects.create(**validated_data)
             for item_data in items_data:
                 SalesInvoiceItem.objects.create(invoice=invoice, **_stamp_unit_factor(item_data))
             self._recalculate(invoice)  # authoritative: sets every line's tax + invoice totals
-        # Only enforce credit when the invoice is created already-POSTED (legacy
-        # direct-post path). The POS flow creates a DRAFT cart then posts via the
-        # checkout action, which runs enforce_credit_policy at the real post moment.
-        if invoice.status == SalesInvoice.Status.POSTED:
-            enforce_credit_policy(invoice)
         return invoice
 
     @staticmethod

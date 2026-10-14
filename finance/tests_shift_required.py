@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -104,3 +105,71 @@ class RequireShiftToSellTests(_TillBase):
         self.settings.refresh_from_db()
         self.assertTrue(self.settings.require_shift_to_sell)
         self.assertTrue(self.client.get('/api/core/settings/').data['require_shift_to_sell'])   # the till reads it
+
+
+class OneOpenShiftTests(_TillBase):
+    """2026-10-14 (surgeon review): a double-click on "Open shift" opened TWO shifts for one person — both counted
+    the same sales as cash in → a false "cash short". Now the DB allows one OPEN shift per person."""
+    SURL = '/api/finance/shifts/'
+
+    def _open(self):
+        return self.client.post(self.SURL, {'branch': str(self.branch.id), 'starting_cash': '100'}, format='json')
+
+    def test_second_open_is_refused_cleanly(self):
+        self.assertEqual(self._open().status_code, 201)
+        r = self._open()
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.data['code'], 'shift_already_open')
+        self.assertEqual(WorkShift.objects.filter(user=self.cashier, status=WorkShift.Status.OPEN).count(), 1)
+
+    def test_the_race_is_stopped_by_the_database(self):
+        # A row the view's pre-check can't see (another shop) stands in for the twin request that won the race.
+        from core.models import Store
+        other = Store.objects.create(name='T2', store_code='102', owner=self.owner)
+        a2 = Address.objects.create(store=other, street_1='9', city='Alex')
+        b2 = Branch.objects.create(store=other, name='B2', address=a2)
+        WorkShift.all_objects.create(store=other, branch=b2, user=self.cashier)
+        r = self._open()
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.data['code'], 'shift_already_open')
+        self.assertEqual(WorkShift.all_objects.filter(user=self.cashier, status=WorkShift.Status.OPEN).count(), 1)
+
+    def test_closed_shifts_do_not_count(self):
+        WorkShift.objects.create(store=self.store, branch=self.branch, user=self.cashier, status=WorkShift.Status.CLOSED)
+        WorkShift.objects.create(store=self.store, branch=self.branch, user=self.cashier, status=WorkShift.Status.CLOSED)
+        self.assertEqual(self._open().status_code, 201)
+
+
+class SaleIsBornADraftTests(_TillBase):
+    """2026-10-14 (surgeon review): POST /invoices/ with status=POSTED made a completed sale that skipped checkout
+    (open shift, credit selling off, stock) — even for a cashier. A new sale is always a draft now."""
+    IURL = '/api/finance/invoices/'
+
+    def _body(self, status_):
+        return {'branch': str(self.branch.id), 'customer': str(self.customer.id), 'status': status_, 'discount': 0,
+                'date': timezone.now().isoformat(),
+                'items': [{'variant': str(self.variant.id), 'unit': None, 'quantity': 1, 'unit_price': '100',
+                           'discount_amount': 0}]}
+
+    def test_creating_a_posted_sale_is_refused(self):
+        before = self._stock()
+        manager = User.objects.create_user(username='mgr_d', password='x', role='MANAGER', store=self.store)
+        for c in (self.client, _client(manager)):
+            r = c.post(self.IURL, self._body('POSTED'), format='json')
+            self.assertEqual(r.status_code, 400, r.content)
+            self.assertIn('status', r.data)
+        self.assertFalse(SalesInvoice.objects.filter(store=self.store).exists())
+        self.assertEqual(self._stock(), before)
+
+    def test_a_draft_still_works_and_stays_a_draft(self):
+        r = self.client.post(self.IURL, self._body('DRAFT'), format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.data['status'], 'DRAFT')
+        body = self._body('DRAFT')
+        body.pop('status')
+        r = self.client.post(self.IURL, body, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(SalesInvoice.objects.get(pk=r.data['id']).status, SalesInvoice.Status.DRAFT)
+
+    def _stock(self):
+        return StockLevel.objects.get(variant=self.variant, branch=self.branch).quantity

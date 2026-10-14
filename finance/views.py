@@ -824,9 +824,19 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
             user=self.request.user,
             status=WorkShift.Status.OPEN,
         ).first()
+        already = {'detail': 'You already have an open shift.', 'code': 'shift_already_open'}
         if open_shift:
-            raise ValidationError('You already have an open shift.')
-        shift = serializer.save(store=self.request.user.store, user=self.request.user)
+            raise ValidationError(already)
+        # Two requests at once (double-click) both pass the check above — the DB's one_open_shift_per_user
+        # constraint stops the second; answer it with the same clean 400 (2026-10-14).
+        from django.db import IntegrityError
+        try:
+            with transaction.atomic():
+                shift = serializer.save(store=self.request.user.store, user=self.request.user)
+        except IntegrityError as exc:
+            if 'one_open_shift_per_user' not in str(exc):
+                raise
+            raise ValidationError(already)
         log_activity(
             request=self.request,
             action="Opened Shift",
