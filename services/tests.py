@@ -91,3 +91,262 @@ class ServiceDonePaymentTests(TestCase):
 
     def test_free_job_needs_no_method(self):
         self.assertEqual(self._done(self._job(cost='0')).status_code, 200)
+
+
+class ServiceDeskTests(TestCase):
+    """PROLINE-PARITY Upgrade 13 — service desk: technician, device, parts from stock, a REAL invoice on Done
+    (labour line + parts + tax, completed by the till's checkout), Returned refunds through the normal return."""
+
+    def setUp(self):
+        from core.models import Branch, Address, StoreSettings
+        from finance.models import PaymentMethod
+        from inventory.models import Supplier, Product, ProductVariant, StockLevel, Tax
+        from users.models import Customer
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_k', password='x', role='OWNER')
+        self.store = Store.objects.create(name='Fix', store_code='105', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.save(update_fields=['store'])
+        self.branch = Branch.objects.create(store=self.store, name='Main',
+                                            address=Address.objects.create(store=self.store, street_1='1', city='Cairo'))
+        self.cashier = User.objects.create_user(username='csh_k', password='x', role='CASHIER', store=self.store)
+        self.manager = User.objects.create_user(username='mgr_k', password='x', role='MANAGER', store=self.store)
+        self.tech = User.objects.create_user(username='tech_k', password='x', role='CASHIER', store=self.store)
+        vat = Tax.objects.create(store=self.store, name='VAT', rate=Decimal('14'))
+        st, _ = StoreSettings.objects.get_or_create(store=self.store)
+        st.default_tax = vat
+        st.save()
+        sup = Supplier.objects.create(store=self.store, name='Sup', code_prefix='401', prefix_locked=True)
+        self.part = ProductVariant.objects.create(
+            product=Product.objects.create(store=self.store, name='SSD 512', supplier=sup),
+            sell_price=Decimal('150'), cost_price=Decimal('90'))
+        self.stock = StockLevel.objects.create(variant=self.part, branch=self.branch, quantity=Decimal('10'))
+        self.walkin = Customer.objects.create(store=self.store, name='Walk-in', phone_number='0', is_walk_in=True)
+        self.named = Customer.objects.create(store=self.store, name='Ali', phone_number='0103')
+        self.cash = PaymentMethod.objects.create(store=self.store, name='Cash', is_cash=True)
+        self.agel = PaymentMethod.objects.create(store=self.store, name='Ajel', is_agel=True)
+
+        # another shop — its technician and product must never be usable here
+        o2 = User.objects.create_user(username='own_k2', password='x', role='OWNER')
+        self.store2 = Store.objects.create(name='Other', store_code='106', owner=o2)
+        o2.store = self.store2
+        o2.save(update_fields=['store'])
+        self.tech2 = User.objects.create_user(username='tech_k2', password='x', role='CASHIER', store=self.store2)
+        sup2 = Supplier.objects.create(store=self.store2, name='Sup2', code_prefix='402', prefix_locked=True)
+        self.part2 = ProductVariant.objects.create(
+            product=Product.objects.create(store=self.store2, name='Their SSD', supplier=sup2), sell_price=Decimal('1'))
+
+    # ── helpers ──
+    def _api(self, user):
+        api = APIClient()
+        api.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(user).access_token))
+        return api
+
+    def _job(self, client=None, parts=((2, '150'),), detection='100', cost='400', **extra):
+        body = {'client': str(client.id) if client else None, 'client_name': 'Ali', 'receive_date': str(date.today()),
+                'device': 'Dell Latitude 5420', 'device_serial': 'TAG-123', 'damage': 'No power',
+                'detection_fee': detection, 'cost': cost, 'technician': self.tech.id,
+                'parts': [{'variant': str(self.part.id), 'quantity': q, 'unit_price': p} for q, p in parts]}
+        body.update(extra)
+        r = self._api(self.cashier).post('/api/services/', body, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        return Service.objects.get(pk=r.data['id'])
+
+    def _done(self, job, method=None, user=None):
+        body = {'method': str(method.id)} if method else {}
+        return self._api(user or self.cashier).post(f'/api/services/{job.id}/done/', body, format='json')
+
+    def _stock(self):
+        self.stock.refresh_from_db()
+        return self.stock.quantity
+
+    # ── Done = a real invoice ──
+    def test_done_bills_labour_parts_and_tax_and_moves_parts_stock(self):
+        from finance.models import SalesInvoice
+        from inventory.models import Product, StockLevel
+        job = self._job()
+        self.assertEqual(self._stock(), Decimal('10'))           # nothing leaves stock while the job is open
+        r = self._done(job, self.cash)
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        job.refresh_from_db()
+        inv = job.invoice
+        self.assertEqual((job.status, inv.status), (Service.Status.DONE, SalesInvoice.Status.POSTED))
+        self.assertIsNotNone(inv.invoice_number)
+        items = {i.variant.product.product_type: i for i in inv.items.select_related('variant__product')}
+        labour, part = items[Product.ProductType.SERVICE], items[Product.ProductType.STANDARD]
+        self.assertEqual((labour.quantity, labour.unit_price), (Decimal('1'), Decimal('500')))   # 100 + 400
+        self.assertEqual((part.quantity, part.unit_price), (Decimal('2'), Decimal('150')))
+        self.assertEqual((labour.tax_rate, labour.tax_amount), (Decimal('14'), Decimal('70')))   # tax snapshot
+        self.assertEqual(part.tax_amount, Decimal('42'))
+        self.assertEqual((inv.subtotal, inv.tax_total, inv.grand_total), (Decimal('800'), Decimal('112'), Decimal('912')))
+        self.assertEqual(inv.paid_amount, Decimal('912'))
+        self.assertEqual(part.cost_at_sale, Decimal('90'))                                      # COGS snapshot
+        self.assertEqual(self._stock(), Decimal('8'))                                           # parts left once
+        self.assertFalse(StockLevel.objects.filter(variant=labour.variant).exists())            # labour = no stock
+        self.assertTrue(labour.variant.product.hide_from_pos)
+        self.assertEqual(r.data['invoice_number'], inv.invoice_number)
+
+    def test_done_twice_makes_one_invoice(self):
+        from finance.models import SalesInvoice
+        job = self._job()
+        self.assertEqual(self._done(job, self.cash).status_code, 200)
+        r = self._done(job, self.cash)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(SalesInvoice.objects.filter(store=self.store).count(), 1)
+        self.assertEqual(self._stock(), Decimal('8'))
+
+    def test_second_job_reuses_the_one_labour_product(self):
+        from inventory.models import Product
+        for _ in range(2):
+            self.assertEqual(self._done(self._job(parts=()), self.cash).status_code, 200)
+        self.assertEqual(Product.all_objects.filter(store=self.store, product_type=Product.ProductType.SERVICE).count(), 1)
+
+    def test_ajel_without_named_customer_refused_and_nothing_kept(self):
+        from finance.models import SalesInvoice
+        job = self._job()
+        self.assertEqual(self._done(job, self.agel).status_code, 400)
+        job.refresh_from_db()
+        self.assertEqual((job.status, job.invoice_id), (Service.Status.OPEN, None))
+        self.assertEqual(SalesInvoice.all_objects.filter(store=self.store).count(), 0)   # the draft rolled back
+        self.assertEqual(self._stock(), Decimal('10'))
+
+    def test_charged_job_needs_a_payment_method(self):
+        job = self._job()
+        self.assertEqual(self._done(job).status_code, 400)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.OPEN)
+
+    def test_split_payment_on_done(self):
+        from finance.models import customer_outstanding
+        job = self._job(client=self.named)
+        r = self._api(self.cashier).post(f'/api/services/{job.id}/done/', {'payments': [
+            {'method': str(self.cash.id), 'amount': '500'}, {'method': str(self.agel.id), 'amount': '1'}]}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(customer_outstanding(self.named), Decimal('412'))   # 912 − 500 cash, the rest on account
+
+    def test_part_short_of_stock_refused_like_the_till(self):
+        job = self._job(parts=((20, '150'),))
+        r = self._done(job, self.cash)
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.OPEN)
+        self.assertEqual(self._stock(), Decimal('10'))
+
+    def test_warranty_job_is_free_but_parts_leave_stock(self):
+        job = self._job(is_warranty=True, warranty_days=90)
+        r = self._done(job)                          # nothing to pay → no method needed
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        job.refresh_from_db()
+        self.assertEqual(job.invoice.grand_total, Decimal('0'))
+        self.assertEqual(self._stock(), Decimal('8'))
+        self.assertEqual(r.data['warranty_days'], 90)
+
+    def test_charges_and_parts_frozen_after_done(self):
+        job = self._job()
+        self._done(job, self.cash)
+        api = self._api(self.manager)
+        r = api.patch(f'/api/services/{job.id}/', {'cost': '1'}, format='json')
+        self.assertEqual(r.status_code, 400)
+        r = api.patch(f'/api/services/{job.id}/', {'parts': []}, format='json')
+        self.assertEqual(r.status_code, 400)
+        r = api.patch(f'/api/services/{job.id}/', {'diagnosis': 'fan replaced'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    def test_status_cannot_be_set_by_edit(self):
+        job = self._job()
+        self._api(self.manager).patch(f'/api/services/{job.id}/', {'status': 'DONE'}, format='json')
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.OPEN)
+
+    # ── Returned = the normal return ──
+    def test_returned_paid_job_refunds_money_and_restocks_parts(self):
+        from finance.models import RefundInvoice, customer_outstanding
+        job = self._job(client=self.named)
+        self._done(job, self.cash)
+        self.assertEqual(self._api(self.cashier).post(f'/api/services/{job.id}/return/', {}, format='json').status_code, 403)
+        r = self._api(self.manager).post(f'/api/services/{job.id}/return/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.RETURNED)
+        refund = RefundInvoice.objects.get(original_invoice=job.invoice)
+        self.assertEqual(job.refund, refund)
+        self.assertEqual((refund.total_refunded, refund.paid_back, refund.drawer_cash),
+                         (Decimal('912'), Decimal('912'), Decimal('912')))
+        self.assertEqual(self._stock(), Decimal('10'))                                  # parts back on the shelf
+        self.assertEqual(customer_outstanding(self.named), Decimal('0'))
+        self.assertEqual(r.data['refund_number'], refund.refund_number)
+
+    def test_returned_ajel_job_cancels_the_debt_and_pays_nothing_back(self):
+        from finance.models import RefundInvoice, customer_outstanding
+        job = self._job(client=self.named)
+        self._done(job, self.agel)
+        self.assertEqual(customer_outstanding(self.named), Decimal('912'))
+        r = self._api(self.manager).post(f'/api/services/{job.id}/return/', {'restock_parts': False}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        job.refresh_from_db()
+        refund = RefundInvoice.objects.get(original_invoice=job.invoice)
+        self.assertEqual(refund.total_refunded, Decimal('912'))
+        self.assertEqual((refund.paid_back, refund.drawer_cash), (Decimal('0'), Decimal('0')))
+        self.assertEqual(customer_outstanding(self.named), Decimal('0'))
+        self.assertEqual(self._stock(), Decimal('8'))                                   # dead part: not restocked
+
+    def test_return_after_an_earlier_partial_return_refunds_only_the_rest(self):
+        from finance.models import RefundInvoice
+        job = self._job(client=self.named)
+        self._done(job, self.cash)
+        inv = Service.objects.get(pk=job.pk).invoice
+        r = self._api(self.manager).post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(self.named.id),
+            'items': [{'variant': str(self.part.id), 'quantity': '1', 'refund_amount': '171'}]}, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        r = self._api(self.manager).post(f'/api/services/{job.id}/return/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        total = sum(x.total_refunded for x in RefundInvoice.objects.filter(original_invoice=inv))
+        self.assertEqual(total, Decimal('912'))
+        self.assertEqual(self._stock(), Decimal('10'))
+
+    # ── tenant + roles ──
+    def test_technician_from_another_shop_refused(self):
+        api = self._api(self.cashier)
+        body = {'client_name': 'X', 'receive_date': str(date.today()), 'technician': self.tech2.id}
+        self.assertEqual(api.post('/api/services/', body, format='json').status_code, 400)
+        body['technician'] = self.tech.id
+        self.assertEqual(api.post('/api/services/', body, format='json').status_code, 201)
+        r = api.get(f'/api/services/?technician={self.tech.id}')
+        rows = r.data['results'] if isinstance(r.data, dict) else r.data
+        self.assertEqual(len(rows), 1)
+        names = {u['name'] for u in api.get('/api/services/technicians/').data}
+        self.assertIn('tech_k', names)
+        self.assertNotIn('tech_k2', names)                     # never another shop's staff
+
+    def test_part_from_another_shop_refused(self):
+        body = {'client_name': 'X', 'receive_date': str(date.today()),
+                'parts': [{'variant': str(self.part2.id), 'quantity': 1}]}
+        self.assertEqual(self._api(self.cashier).post('/api/services/', body, format='json').status_code, 400)
+
+    def test_part_price_defaults_to_sell_price_and_removal_soft_deletes(self):
+        from services.models import ServicePart
+        job = self._job(parts=())
+        r = self._api(self.manager).patch(f'/api/services/{job.id}/', {
+            'parts': [{'variant': str(self.part.id), 'quantity': 1}]}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertEqual(Decimal(r.data['parts'][0]['unit_price']), Decimal('150'))
+        r = self._api(self.manager).patch(f'/api/services/{job.id}/', {'parts': []}, format='json')
+        self.assertEqual(r.data['parts'], [])
+        self.assertTrue(ServicePart.all_objects.get(service=job).is_deleted)
+
+    def test_cashier_does_not_see_part_cost(self):
+        job = self._job()
+        r = self._api(self.cashier).get(f'/api/services/{job.id}/')
+        self.assertNotIn('unit_cost', r.data['parts'][0])
+        r = self._api(self.owner).get(f'/api/services/{job.id}/')
+        self.assertEqual(Decimal(r.data['parts'][0]['unit_cost']), Decimal('90'))
+
+    def test_notes_timeline(self):
+        job = self._job()
+        api = self._api(self.tech)
+        self.assertEqual(api.post(f'/api/services/{job.id}/notes/', {'body': '  '}, format='json').status_code, 400)
+        r = api.post(f'/api/services/{job.id}/notes/', {'body': 'Ordered a new fan'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        r = api.get(f'/api/services/{job.id}/')
+        self.assertEqual([(n['body'], n['user_name']) for n in r.data['notes']], [('Ordered a new fan', 'tech_k')])

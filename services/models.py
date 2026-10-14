@@ -57,6 +57,25 @@ class Service(TimestampedModel, SoftDeleteModel):
 
     diagnosis     = models.TextField(blank=True)
 
+    # ── Service desk (PROLINE-PARITY Upgrade 13, Proline tb_Ser_Service) ──
+    # Who works on the job — a user of the SAME shop (checked in the serializer).
+    technician    = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='service_jobs',
+    )
+    device        = models.CharField(max_length=200, blank=True)          # e.g. "Dell Latitude 5420"
+    # Serial / IMEI / service tag as typed. Plain text on purpose: per-unit serials in inventory are a separate
+    # feature and are linked later.
+    device_serial = models.CharField(max_length=100, blank=True, db_index=True)
+    damage        = models.TextField(blank=True)                          # the problem / damage the customer reports
+    # Price split (Proline "detect value" vs "repair value"): `detection_fee` = the check-up / diagnosis charge,
+    # `cost` (kept, unchanged meaning) = the repair charge. The job's labour line = detection_fee + cost.
+    detection_fee = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    # Repair under warranty = no charge: Done bills the labour and the parts at 0 (parts still leave stock).
+    is_warranty   = models.BooleanField(default=False)
+    # Warranty the shop gives on THIS repair (0 = none) — printed on the service ticket.
+    warranty_days = models.PositiveIntegerField(default=0)
+
     notify_bell   = models.BooleanField(default=False)
     notified      = models.BooleanField(default=False)
 
@@ -64,6 +83,12 @@ class Service(TimestampedModel, SoftDeleteModel):
     invoice       = models.ForeignKey(
         'finance.SalesInvoice', null=True, blank=True,
         on_delete=models.SET_NULL, related_name='service',
+    )
+
+    # The return that gave the money back when a paid job was marked Returned (finance RefundInvoice).
+    refund        = models.ForeignKey(
+        'finance.RefundInvoice', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='service_returns',
     )
 
     created_by    = models.ForeignKey(
@@ -79,6 +104,7 @@ class Service(TimestampedModel, SoftDeleteModel):
         indexes = [
             models.Index(fields=['store', 'status']),
             models.Index(fields=['store', 'eta_datetime']),
+            models.Index(fields=['store', 'technician']),
         ]
 
     def __str__(self):
@@ -106,3 +132,58 @@ class Service(TimestampedModel, SoftDeleteModel):
             self.eta_datetime = None
 
         super().save(*args, **kwargs)
+
+    @property
+    def labour_total(self):
+        """What the job charges for the work itself (before tax): detection fee + repair charge."""
+        return (self.detection_fee or Decimal('0')) + (self.cost or Decimal('0'))
+
+
+class ServicePart(TimestampedModel, SoftDeleteModel):
+    """A part taken from stock for a repair (Proline tb_Ser_Item).
+
+    Planning only while the job is open — NOTHING moves stock here. When the job is marked Done each live part
+    becomes a real line on the job's sales invoice, and the stock leaves through the normal sale checkout
+    (oversell check, FEFO batches, COGS snapshot). A returned job gives the parts back through a normal return.
+    """
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store      = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='service_parts')
+    service    = models.ForeignKey(Service, on_delete=models.CASCADE, related_name='parts')
+    variant    = models.ForeignKey('inventory.ProductVariant', on_delete=models.PROTECT, related_name='service_parts')
+    quantity   = models.DecimalField(max_digits=10, decimal_places=3)       # in the variant's base unit
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)       # selling price per unit, before tax
+
+    objects     = TenantSoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ['created_at']
+
+    @property
+    def line_total(self):
+        return (self.quantity or Decimal('0')) * (self.unit_price or Decimal('0'))
+
+
+class ServiceNote(TimestampedModel, SoftDeleteModel):
+    """One dated note on a job, by a user (Proline tb_Ser_Service_Tasks) — the job's timeline."""
+    id      = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store   = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='service_notes')
+    service = models.ForeignKey(Service, on_delete=models.CASCADE, related_name='notes')
+    user    = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                on_delete=models.SET_NULL, related_name='service_notes')
+    body    = models.TextField()
+
+    objects     = TenantSoftDeleteManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        ordering = ['created_at']
+
+
+class ServiceDeskSettings(models.Model):
+    """Per-shop service-desk wiring. `labour_variant` = the shop's ONE system "Repair service" product
+    (type SERVICE = no stock) that a job's labour line points at on its sales invoice. Made on first use by
+    services.labour.labour_variant() — like finance.split_payment.store_credit_method()."""
+    store          = models.OneToOneField(Store, on_delete=models.CASCADE, related_name='service_desk')
+    labour_variant = models.ForeignKey('inventory.ProductVariant', null=True, blank=True,
+                                       on_delete=models.SET_NULL, related_name='+')

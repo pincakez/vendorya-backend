@@ -8,9 +8,30 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from users.permissions import RoleScopedPermission, IsManagerOrAbove
+from core.activity import log_activity
+from core.models import ActivityLog
+from users.permissions import RoleScopedPermission
+from .desk import add_job_lines, refund_lines
 from .models import Service
-from .serializers import ServiceSerializer
+from .serializers import ServiceSerializer, ServiceNoteSerializer
+
+
+class _Refuse(Exception):
+    """Leave the atomic block (rolling everything back) and answer with this response."""
+    def __init__(self, detail=None, code=status.HTTP_400_BAD_REQUEST, response=None):
+        super().__init__(detail)
+        self.response = response if response is not None else Response({'detail': detail}, status=code)
+
+
+def _till_checkout(request, invoice):
+    """Complete a DRAFT sale with the till's own checkout action — the ONE place the sale policies live
+    (payment plan, Ajel, credit limit, quota, oversell, expiry, store credit). Same caller, same body
+    (`method` / `payments`), so a finished job is paid exactly like a till sale."""
+    from finance.views import SalesInvoiceViewSet
+    pk = str(invoice.pk)
+    view = SalesInvoiceViewSet(request=request, args=(), kwargs={'pk': pk},
+                               action='checkout', format_kwarg=None)
+    return view.checkout(request, pk=pk)
 
 
 class ServiceViewSet(viewsets.ModelViewSet):
@@ -27,7 +48,10 @@ class ServiceViewSet(viewsets.ModelViewSet):
         'cancel':             'MANAGER',
         'archive':            'MANAGER',
         'toggle_bell':        'CASHIER',
-        'return_service':     'CASHIER',
+        # A return gives money back — same minimum role as a normal return (finance RefundInvoice create).
+        'return_service':     'MANAGER',
+        'notes':              'CASHIER',
+        'technicians':        'CASHIER',
         'run_notifications':  'MANAGER',
     }
     filter_backends = [filters.OrderingFilter]
@@ -35,11 +59,23 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         store = self.request.user.store
-        qs = Service.objects.filter(store=store).select_related('client', 'invoice')
+        qs = (Service.objects.filter(store=store)
+              .select_related('client', 'invoice', 'refund', 'technician')
+              .prefetch_related('parts__variant__product', 'notes__user'))
 
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter.upper())
+
+        technician = self.request.query_params.get('technician')
+        if technician:
+            if technician == 'none':
+                qs = qs.filter(technician__isnull=True)
+            else:
+                try:
+                    qs = qs.filter(technician_id=int(technician))
+                except (TypeError, ValueError):
+                    qs = qs.none()
 
         search = self.request.query_params.get('search', '').strip()
         if search:
@@ -50,7 +86,9 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 Q(client_name__icontains=search) |
                 Q(client_phone__icontains=search) |
                 Q(client__phone_number__icontains=search) |
-                Q(service_type__icontains=search)
+                Q(service_type__icontains=search) |
+                Q(device__icontains=search) |
+                Q(device_serial__icontains=search)
             )
 
         return qs
@@ -104,81 +142,67 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def done(self, request, pk=None):
+        """Finish the job and bill it (Upgrade 13): a real sale with a labour line (detection fee + repair
+        charge) and one line per part, taxed like any sale, completed by the till's own checkout — so payment
+        (`method`, or split `payments`), Ajel-needs-a-named-customer, the credit policy, the invoice quota, the
+        oversell check and the parts' stock-out are exactly the till's. Anything refused → nothing is kept."""
         service = self.get_object()
-
-        if service.status == Service.Status.DONE:
-            return Response({'detail': 'Service is already marked as Done.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if service.status == Service.Status.CANCELLED:
-            return Response({'detail': 'Cannot mark a cancelled service as Done.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
         store = request.user.store
+        try:
+            with transaction.atomic():
+                # Lock the job: two "Done" clicks at once must not make two invoices.
+                service = Service.objects.select_for_update().get(pk=service.pk, store=store)
+                if service.status == Service.Status.DONE or service.invoice_id:
+                    raise _Refuse('Service is already marked as Done.')
+                if service.status == Service.Status.CANCELLED:
+                    raise _Refuse('Cannot mark a cancelled service as Done.')
+                if service.status != Service.Status.OPEN:
+                    raise _Refuse('Only an open job can be marked Done.')
 
-        with transaction.atomic():
-            from finance.models import SalesInvoice
-            from users.models import Customer
-            from core.models import Branch
+                from finance.models import SalesInvoice
+                from finance.serializers import SalesInvoiceSerializer
+                from users.models import Customer
+                from core.models import Branch
 
-            # Resolve customer (registered client or walk-in)
-            customer = service.client
-            if not customer:
-                customer = Customer.objects.filter(store=store, is_walk_in=True).first()
-            if not customer:
-                return Response({'detail': 'No walk-in customer found for this store.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                # Resolve customer (registered client or walk-in)
+                customer = service.client
+                if not customer:
+                    customer = Customer.objects.filter(store=store, is_walk_in=True).first()
+                if not customer:
+                    raise _Refuse('No walk-in customer found for this store.', status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # Resolve branch (user default or store primary)
-            branch = getattr(request.user, 'default_branch', None)
-            if not branch:
-                branch = Branch.objects.filter(store=store).first()
-            if not branch:
-                return Response({'detail': 'No branch found for this store.'},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                # Resolve branch (user default or store primary)
+                branch = getattr(request.user, 'default_branch', None)
+                if branch is not None and branch.store_id != store.id:
+                    branch = None
+                if not branch:
+                    branch = Branch.objects.filter(store=store).first()
+                if not branch:
+                    raise _Refuse('No branch found for this store.', status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            cost = service.cost or Decimal('0.00')
+                invoice = SalesInvoice.objects.create(
+                    store=store, branch=branch, customer=customer,
+                    status=SalesInvoice.Status.DRAFT, date=timezone.now(),
+                )
+                add_job_lines(service, invoice)
+                SalesInvoiceSerializer._recalculate(invoice)   # the normal sale tax rule (per-line snapshot)
 
-            # How the customer paid (Yakot 2026-10-06, option a — like the till; §AUDIT A8). Before, every
-            # finished job became an unpaid invoice = customer debt. A normal method pays the cost in full;
-            # Ajel leaves it unpaid as the NAMED customer's debt (same credit rules as the till). Free job → none.
-            from finance.models import PaymentMethod, Payment
-            method = None
-            if cost > 0:
-                if not request.data.get('method'):
-                    return Response({'detail': 'Choose how the customer paid.'}, status=status.HTTP_400_BAD_REQUEST)
-                method = PaymentMethod.objects.filter(store=store, pk=request.data['method']).first()
-                if method is None:
-                    return Response({'detail': 'Unknown payment method.'}, status=status.HTTP_400_BAD_REQUEST)
-                if method.is_agel:
-                    if customer.is_walk_in:
-                        return Response({'detail': 'A credit (Ajel) payment needs a named customer on the job.'},
-                                        status=status.HTTP_400_BAD_REQUEST)
-                    if not getattr(getattr(store, 'settings', None), 'enable_agel_selling', True):
-                        return Response({'detail': 'Credit sales are disabled for this store.'},
-                                        status=status.HTTP_400_BAD_REQUEST)
+                # How the customer paid (Yakot 2026-10-06, option a — like the till; §AUDIT A8): a charged job
+                # must say how. The till's checkout alone would post it unpaid.
+                if invoice.grand_total > 0 and not (request.data.get('method') or request.data.get('payments')):
+                    raise _Refuse('Choose how the customer paid.')
 
-            invoice = SalesInvoice.objects.create(
-                store=store,
-                branch=branch,
-                customer=customer,
-                status=SalesInvoice.Status.POSTED,
-                date=timezone.now(),
-                subtotal=cost,
-                tax_total=Decimal('0.00'),
-                discount=Decimal('0.00'),
-                grand_total=cost,
-                paid_amount=Decimal('0.00'),
-            )
-            if method is not None and method.is_agel:
-                from finance.serializers import enforce_credit_policy
-                enforce_credit_policy(invoice, paid_amount=Decimal('0.00'))   # BLOCK raises → whole Done rolls back
-            elif method is not None:
-                Payment.objects.create(invoice=invoice, method=method, amount=cost, created_by=request.user)
+                result = _till_checkout(request, invoice)
+                if result.status_code >= 400:
+                    raise _Refuse(response=result)
 
-            service.status = Service.Status.DONE
-            service.invoice = invoice
-            service.save()
+                service.status = Service.Status.DONE
+                service.invoice = invoice
+                service.save()
+        except _Refuse as r:
+            return r.response
 
+        service = self.get_queryset().get(pk=service.pk)
         return Response(ServiceSerializer(service, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
@@ -219,17 +243,77 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='return')
     def return_service(self, request, pk=None):
+        """The customer brings the job back (Upgrade 13). If it was billed, everything still unreturned on its
+        sale goes back through the NORMAL return (finance RefundInvoice): money back only up to what was paid
+        (an Ajel job just cancels the debt), the drawer and store credit kept right, the shop's restocking-fee
+        policy applied, parts back on the shelf (`restock_parts`: false for a dead part). Body (all optional):
+        refund_method CASH | STORE_CREDIT, restock_parts, reason."""
         service = self.get_object()
+        store = request.user.store
+        from finance.models import SalesInvoice
+        from finance.serializers import RefundInvoiceSerializer
 
-        if service.status != Service.Status.DONE:
-            return Response(
-                {'detail': 'Only completed (Done) services can be returned.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        with transaction.atomic():
+            service = Service.objects.select_for_update().get(pk=service.pk, store=store)
+            if service.status != Service.Status.DONE:
+                return Response(
+                    {'detail': 'Only completed (Done) services can be returned.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        service.status = Service.Status.RETURNED
-        service.save(update_fields=['status', 'updated_at'])
+            refund = None
+            invoice = service.invoice
+            if invoice is not None and invoice.status == SalesInvoice.Status.POSTED:
+                restock = request.data.get('restock_parts', True)
+                restock = not (restock is False or str(restock).lower() in ('false', '0', 'no'))
+                lines = refund_lines(invoice, restock_parts=restock)
+                if lines:
+                    ser = RefundInvoiceSerializer(data={
+                        'branch': invoice.branch_id,
+                        'original_invoice': invoice.id,
+                        'customer': invoice.customer_id,
+                        'refund_method': request.data.get('refund_method') or 'CASH',
+                        'reason': (request.data.get('reason') or '').strip()
+                                  or f'Service job {service.serial_number} returned',
+                        'items': lines,
+                    }, context={'request': request})
+                    ser.is_valid(raise_exception=True)
+                    refund = ser.save(store=store, created_by=request.user)
+                    log_activity(
+                        request=request,
+                        action=f"Created Return #{refund.refund_number or refund.id} (service {service.serial_number})",
+                        op_type=ActivityLog.OperationType.RETURN,
+                        details={
+                            'refund_id': str(refund.id),
+                            'original_invoice': invoice.invoice_number,
+                            'service': service.serial_number,
+                            'total': str(refund.total_refunded),
+                        },
+                    )
+
+            service.status = Service.Status.RETURNED
+            service.refund = refund
+            service.save(update_fields=['status', 'refund', 'updated_at'])
+
+        service = self.get_queryset().get(pk=service.pk)
         return Response(ServiceSerializer(service, context={'request': request}).data)
+
+    @action(detail=False, methods=['get'])
+    def technicians(self, request):
+        """Who can be put on a job: the active users of the caller's shop (id + name only — the staff list
+        itself is manager-only, but the cashier who books a job in must be able to pick a technician)."""
+        from users.models import User
+        users = User.objects.filter(store=request.user.store, is_active=True).order_by('first_name', 'username')
+        return Response([{'id': u.id, 'name': (u.get_full_name() or u.username).strip()} for u in users])
+
+    @action(detail=True, methods=['post'])
+    def notes(self, request, pk=None):
+        """Add one dated note to the job's timeline (Proline tb_Ser_Service_Tasks)."""
+        service = self.get_object()
+        ser = ServiceNoteSerializer(data=request.data, context={'request': request})
+        ser.is_valid(raise_exception=True)
+        ser.save(store=service.store, service=service, user=request.user)
+        return Response(ser.data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['post'], url_path='run-notifications')
     def run_notifications(self, request):

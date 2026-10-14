@@ -232,6 +232,9 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             if not allow_negative:
                 shortages = []
                 for item in items:
+                    # A "Service (No Stock)" product (e.g. repair labour, Upgrade 13) has no stock to run out of.
+                    if item.variant.product.product_type == item.variant.product.ProductType.SERVICE:
+                        continue
                     stock = (StockLevel.objects.select_for_update()
                              .filter(variant=item.variant, branch=invoice.branch).first())
                     available = stock.quantity if stock else Decimal('0')
