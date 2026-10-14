@@ -66,6 +66,11 @@ class CustomerSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'store_credit', 'is_walk_in']
 
     def get_balance(self, obj):
+        # The list annotates `live_balance` in one query (users.views.with_live_balance, §A36);
+        # anything else (create/update responses, other callers) falls back to the per-customer query.
+        live = getattr(obj, 'live_balance', None)
+        if live is not None:
+            return str(live)
         from finance.models import customer_outstanding
         return str(customer_outstanding(obj))
 

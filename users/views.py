@@ -227,6 +227,41 @@ class ChangePasswordView(APIView):
         return Response({'detail': 'Password changed.'})
 
 
+def with_live_balance(qs):
+    """Annotate a Customer queryset with `live_balance` in ONE query (s165, §A36) — the same number as
+    finance.models.customer_outstanding(), which used to run once per row on the Customers list.
+
+    balance = opening seed + Σ over POSTED, non-deleted sales of (grand_total − paid_amount)
+                          + Σ over their live returns of (− total_refunded + restocking_fee + paid_back)
+
+    The two sums are SEPARATE correlated subqueries on purpose: joining sales to returns in one SUM
+    would count a sale's total once per return (join multiplication)."""
+    from decimal import Decimal
+    from django.db.models import DecimalField, ExpressionWrapper, F, OuterRef, Subquery, Sum, Value
+    from django.db.models.functions import Coalesce
+    from finance.models import SalesInvoice, RefundInvoice
+    DEC = DecimalField(max_digits=14, decimal_places=2)
+    ZERO = Value(Decimal('0'), output_field=DEC)
+    posted = {'status': SalesInvoice.Status.POSTED, 'is_deleted': False}
+    sales = (SalesInvoice.all_objects   # the customer rows are already store-filtered
+             .filter(customer=OuterRef('pk'), **posted)
+             .order_by().values('customer')
+             .annotate(s=Sum(F('grand_total') - F('paid_amount'), output_field=DEC))
+             .values('s'))
+    returns = (RefundInvoice.all_objects
+               .filter(original_invoice__customer=OuterRef('pk'), is_deleted=False,
+                       **{f'original_invoice__{k}': v for k, v in posted.items()})
+               .order_by().values('original_invoice__customer')
+               .annotate(s=Sum(F('restocking_fee') + F('paid_back') - F('total_refunded'), output_field=DEC))
+               .values('s'))
+    return qs.annotate(live_balance=ExpressionWrapper(
+        Coalesce(F('balance'), ZERO, output_field=DEC)
+        + Coalesce(Subquery(sales, output_field=DEC), ZERO, output_field=DEC)
+        + Coalesce(Subquery(returns, output_field=DEC), ZERO, output_field=DEC),
+        output_field=DEC,
+    ))
+
+
 class CustomerViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerSerializer
     permission_classes = [IsAuthenticated, RoleScopedPermission]
@@ -248,6 +283,8 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Customer.objects.filter(store=self.request.user.store)
+        if self.action in ('list', 'retrieve'):
+            qs = with_live_balance(qs)   # §A36: no per-row balance query on the list
         walk = self.request.query_params.get('is_walk_in')
         if walk is not None:
             qs = qs.filter(is_walk_in=walk.lower() in ('true', '1', 'yes'))
