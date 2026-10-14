@@ -673,6 +673,19 @@ class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
             seen = {p.id for p in sku_hits}
             results = (sku_hits + [p for p in results if p.id not in seen])[:20]
 
+        # s166 (Yakot): a Memory Base copy of a product the shop ALREADY has is hidden — it showed right
+        # under the shop's own row with identical text, and picking it went down the "new product" path
+        # (a duplicate on receive). Same rule as the Memory Base itself: case-insensitive name.
+        if not store_history:
+            from django.db.models.functions import Lower, Trim
+            mb_names = {(p.name or '').strip().lower() for p in results if p.source == Product.Source.MEMORY_BASE}
+            if mb_names:
+                owned = set(Product.objects.filter(store=store, source=Product.Source.STORE)
+                            .annotate(_ln=Lower(Trim('name'))).filter(_ln__in=mb_names)
+                            .values_list('_ln', flat=True))
+                results = [p for p in results
+                           if not (p.source == Product.Source.MEMORY_BASE and (p.name or '').strip().lower() in owned)]
+
         no_history = (store_history and len(results) == 0)
         data = ProductListSerializer(results, many=True, context={'request': request}).data
         if pos_mode:

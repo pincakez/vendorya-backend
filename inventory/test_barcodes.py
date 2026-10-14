@@ -212,3 +212,33 @@ class BarcodeSameInstantRaceTests(_Shop, TransactionTestCase):
                 t.join(timeout=30)
         self.assertCountEqual(results.values(), [201, 400], results)
         self.assertEqual(ProductVariant.objects.filter(barcode='7777').count(), 1)
+
+
+class MemoryBaseTwinHiddenTests(_Shop, TestCase):
+    """s166 (Yakot: "hide the copy"): when the shop already HAS a product, its Memory Base copy is no
+    longer listed under it in the purchase / new-product search — picking the copy made a duplicate."""
+
+    def setUp(self):
+        self.store, self.st, self.sup, self.api = self.make_shop('100')
+        self.st.autocomplete_source = 'memory_base'
+        self.st.save()
+        self.product(self.store, self.sup, 'HP EliteBook 840 G8')
+        for name in ('hp elitebook 840 g8 ', 'HP EliteBook 850 G8'):      # a twin (other case/space) + a real MB-only entry
+            mb = Product.objects.create(store=self.store, name=name, source=Product.Source.MEMORY_BASE)
+            ProductVariant.objects.create(product=mb)
+
+    def _names(self):
+        r = self.api.get('/api/inventory/products/autocomplete/', {'q': 'EliteBook'})
+        self.assertEqual(r.status_code, 200, r.content)
+        return [(x['name'].strip(), x['source']) for x in r.json()['results']]
+
+    def test_copy_of_an_owned_product_is_hidden(self):
+        rows = self._names()
+        self.assertIn(('HP EliteBook 840 G8', 'STORE'), rows)
+        self.assertNotIn(('hp elitebook 840 g8', 'MEMORY_BASE'), rows)
+        self.assertIn(('HP EliteBook 850 G8', 'MEMORY_BASE'), rows)     # not owned → still offered
+
+    def test_copy_comes_back_when_the_shop_product_is_deleted(self):
+        p = Product.objects.get(store=self.store, source=Product.Source.STORE)
+        p.delete()
+        self.assertIn(('hp elitebook 840 g8', 'MEMORY_BASE'), self._names())
