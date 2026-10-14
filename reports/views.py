@@ -25,6 +25,7 @@ from finance.models import (
     SalesInvoice, SalesInvoiceItem, Payment,
     PurchaseInvoice, PurchaseItem,
     Expense, RefundInvoice, RefundItem, WorkShift,
+    with_refund_totals, invoice_outstanding,
 )
 from inventory.models import (
     StockAdjustment, ProductVariant, StockLevel,
@@ -269,19 +270,16 @@ class ARAgingView(_StoreMixin, APIView):
             return _no_store()
         today = timezone.localdate()
 
-        invoices = (
+        invoices = with_refund_totals(
             SalesInvoice.objects.filter(
                 store=store, status=SalesInvoice.Status.POSTED, is_deleted=False)
-            .annotate(refunded=Coalesce(
-                Sum('refunds__total_refunded', filter=Q(refunds__is_deleted=False)),
-                Value(ZERO), output_field=DEC))
             .select_related('customer')
         )
 
         cust = defaultdict(lambda: {'name': '', 'b0_30': ZERO, 'b31_60': ZERO,
                                     'b61_90': ZERO, 'b90_plus': ZERO, 'total': ZERO})
         for inv in invoices:
-            outstanding = (inv.grand_total or ZERO) - (inv.paid_amount or ZERO) - (inv.refunded or ZERO)
+            outstanding = invoice_outstanding(inv)   # same rule as the customer balance (s165)
             if outstanding <= 0:
                 continue
             age = (today - timezone.localtime(inv.date).date()).days
@@ -348,6 +346,39 @@ class APAgingView(_StoreMixin, APIView):
 # 5. P&L — daily / weekly / monthly (must reconcile)
 # ============================================================
 
+def _returns_by_period(store, df, dt, g):
+    """Yield (period, returns_ex_tax, restock_fee, cost_back) per live refund in the range (s165, B2).
+    Ex-tax: a refund on a known sale takes off that sale's tax share pro-rata (refund × (total − tax) / total);
+    with no original sale the tax share is unknown and the whole amount counts. Cost back: restocked lines at
+    the original sale line's cost_at_sale (per sold unit — refund lines keep the sold unit's factor), else the
+    product's current cost × unit factor."""
+    from finance.models import weighted_avg_cost
+    refunds = (RefundInvoice.objects.filter(store=store, is_deleted=False,
+                                            date__date__gte=df, date__date__lte=dt)
+               .annotate(period=_trunc(g, 'date'))
+               .select_related('original_invoice')
+               .prefetch_related('items__variant', 'original_invoice__items'))
+    for r in refunds:
+        gross = r.total_refunded or ZERO
+        orig = r.original_invoice
+        ex_tax = gross
+        if orig is not None and (orig.grand_total or ZERO) > 0:
+            ex_tax = (gross * (orig.grand_total - (orig.tax_total or ZERO)) / orig.grand_total).quantize(Decimal('0.01'))
+        sold_cost = {}
+        if orig is not None:
+            for it in orig.items.all():
+                sold_cost.setdefault(it.variant_id, it.cost_at_sale or ZERO)
+        cost_back = ZERO
+        for ri in r.items.all():
+            if not ri.restock_inventory:
+                continue
+            unit_cost = sold_cost.get(ri.variant_id)
+            if unit_cost is None:
+                unit_cost = weighted_avg_cost(ri.variant, store) * (ri.unit_factor or 1)
+            cost_back += (ri.quantity or ZERO) * unit_cost
+        yield r.period, ex_tax, (r.restocking_fee or ZERO), cost_back
+
+
 class ProfitLossView(_StoreMixin, APIView):
     def get(self, request):
         store = self.get_store(request)
@@ -380,15 +411,8 @@ class ProfitLossView(_StoreMixin, APIView):
             .values('period')
             .annotate(expenses=Coalesce(Sum('amount'), Value(ZERO), output_field=DEC))
         )
-        return_periods = (
-            RefundInvoice.objects.filter(store=store, is_deleted=False,
-                                         date__date__gte=df, date__date__lte=dt)
-            .annotate(period=_trunc(g, 'date'))
-            .values('period')
-            .annotate(returns=Coalesce(Sum('total_refunded'), Value(ZERO), output_field=DEC))
-        )
-
-        periods = defaultdict(lambda: {'revenue': ZERO, 'cogs': ZERO, 'expenses': ZERO, 'returns': ZERO})
+        periods = defaultdict(lambda: {'revenue': ZERO, 'cogs': ZERO, 'expenses': ZERO, 'returns': ZERO,
+                                       'returns_ex_tax': ZERO, 'restock_fees': ZERO, 'cogs_returned': ZERO})
 
         def _key(p):
             return p.isoformat() if p else None
@@ -398,32 +422,37 @@ class ProfitLossView(_StoreMixin, APIView):
             periods[_key(r['period'])]['cogs'] += Decimal(r['cogs'] or 0)
         for r in expense_periods:
             periods[_key(r['period'])]['expenses'] += Decimal(r['expenses'] or 0)
-        for r in return_periods:
-            periods[_key(r['period'])]['returns'] += Decimal(r['returns'] or 0)
+        # Returns (s165, §WALK-S163 B2 — standard accounting): counted WITHOUT tax (revenue is ex-tax too),
+        # less the restocking fee the shop keeps (fee = income); the cost of goods put back on the shelf
+        # comes back out of COGS. So 'returns' = net returns and 'cogs' = net COGS, and the screen's
+        # net = revenue − cogs − expenses − returns stays true.
+        for p, ex_tax, fee, cost_back in _returns_by_period(store, df, dt, g):
+            v = periods[_key(p)]
+            v['returns_ex_tax'] += ex_tax
+            v['restock_fees'] += fee
+            v['cogs_returned'] += cost_back
+        for v in periods.values():
+            v['returns'] = v['returns_ex_tax'] - v['restock_fees']
+            v['cogs'] -= v['cogs_returned']
 
+        keys = ('revenue', 'cogs', 'expenses', 'returns', 'returns_ex_tax', 'restock_fees', 'cogs_returned')
         rows = []
-        tot = {'revenue': ZERO, 'cogs': ZERO, 'expenses': ZERO, 'returns': ZERO, 'net': ZERO}
+        tot = {k: ZERO for k in keys + ('net',)}
         for period in sorted(k for k in periods if k is not None):
             v = periods[period]
             net = v['revenue'] - v['cogs'] - v['expenses'] - v['returns']
-            for k in ('revenue', 'cogs', 'expenses', 'returns'):
+            for k in keys:
                 tot[k] += v[k]
             tot['net'] += net
             rows.append({
                 'period': period,
-                'revenue': _q(v['revenue']),
-                'cogs': _q(v['cogs']),
-                'gross_profit': _q(v['revenue'] - v['cogs']),
-                'expenses': _q(v['expenses']),
-                'returns': _q(v['returns']),
+                **{k: _q(v[k]) for k in keys},
+                'gross_profit': _q(v['revenue'] - v['returns'] - v['cogs']),
                 'net': _q(net),
             })
         totals = {
-            'revenue': _q(tot['revenue']),
-            'cogs': _q(tot['cogs']),
-            'gross_profit': _q(tot['revenue'] - tot['cogs']),
-            'expenses': _q(tot['expenses']),
-            'returns': _q(tot['returns']),
+            **{k: _q(tot[k]) for k in keys},
+            'gross_profit': _q(tot['revenue'] - tot['returns'] - tot['cogs']),
             'net': _q(tot['net']),
         }
         # Reconciliation guard: revenue - cogs - expenses - returns must equal net.

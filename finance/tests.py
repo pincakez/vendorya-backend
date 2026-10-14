@@ -71,7 +71,11 @@ class ReturnsPolicyTests(TestCase):
     def test_store_credit_accrues_net(self):
         self.settings.restocking_fee_percent = Decimal('10')
         self.settings.save()
-        self._refund(self._make_invoice(), method='STORE_CREDIT')
+        inv = self._make_invoice()
+        # s165: the wallet only gets money that was really paid — mark this sale as paid in full.
+        SalesInvoice.objects.filter(pk=inv.pk).update(grand_total=Decimal('200'), paid_amount=Decimal('200'))
+        inv.refresh_from_db()
+        self._refund(inv, method='STORE_CREDIT')
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.store_credit, Decimal('180.00'))
 
@@ -359,3 +363,119 @@ class CheckoutIdempotencyTests(_TillBase):
         inv = self._draft()
         self._post(inv, 'k-1')
         self.assertEqual(self._checkout(inv, self.cash).status_code, 400)
+
+
+class RefundCustomerBalanceTests(_TillBase):
+    """§WALK-S163 B1 (s165): a return must leave the customer's balance right. Each return records
+    `paid_back` = money really handed back (cash / card / wallet) — never more than was paid on the
+    sale; the unpaid part only cancels debt. Balance per sale = total − paid − returned + fee + paid_back.
+    Before: a paid sale fully refunded showed the customer at −100, and store credit counted twice."""
+
+    def setUp(self):
+        super().setUp()
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from finance.models import PaymentMethod
+        self.card = PaymentMethod.objects.create(store=self.store, name='Card')
+        self.manager = User.objects.create_user(username='mgr_b1', password='x', role='MANAGER', store=self.store)
+        self.mgr = APIClient()
+        self.mgr.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(self.manager).access_token))
+
+    def _sale(self, method):
+        inv = self._draft()
+        self.assertEqual(self._checkout(inv, method).status_code, 200)
+        return inv
+
+    def _refund(self, inv, amount, method='CASH'):
+        r = self.mgr.post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(inv.customer_id),
+            'refund_method': method,
+            'items': [{'variant': str(self.variant.id), 'quantity': '1', 'refund_amount': amount}],
+        }, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        from finance.models import RefundInvoice
+        return RefundInvoice.objects.get(pk=r.data['id'])
+
+    def _balance(self):
+        from finance.models import customer_outstanding
+        return customer_outstanding(self.customer)
+
+    def _wallet(self):
+        self.customer.refresh_from_db()
+        return self.customer.store_credit
+
+    def test_paid_cash_sale_fully_refunded_is_zero(self):
+        ref = self._refund(self._sale(self.cash), '100')
+        self.assertEqual(ref.paid_back, Decimal('100'))
+        self.assertEqual(self._balance(), Decimal('0'))
+
+    def test_card_sale_refunded_is_zero(self):
+        self._refund(self._sale(self.card), '100')
+        self.assertEqual(self._balance(), Decimal('0'))
+
+    def test_ajel_sale_refund_cancels_debt_only(self):
+        ref = self._refund(self._sale(self.agel), '40')
+        self.assertEqual(ref.paid_back, Decimal('0'))
+        self.assertEqual(self._balance(), Decimal('60'))
+
+    def test_ajel_refund_then_paying_the_rest_is_zero(self):
+        inv = self._sale(self.agel)
+        self._refund(inv, '40')
+        r = self.client.post('/api/finance/payments/', {'invoice': str(inv.id), 'method': str(self.cash.id),
+                                                        'amount': '61'}, format='json')
+        self.assertEqual(r.status_code, 400)             # only 60 is owed
+        r = self.client.post('/api/finance/payments/', {'invoice': str(inv.id), 'method': str(self.cash.id),
+                                                        'amount': '60'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._balance(), Decimal('0'))
+
+    def test_store_credit_refund_counts_once(self):
+        self._refund(self._sale(self.cash), '100', 'STORE_CREDIT')
+        self.assertEqual(self._balance(), Decimal('0'))   # was −100 AND +100 in the wallet
+        self.assertEqual(self._wallet(), Decimal('100'))
+
+    def test_store_credit_on_unpaid_sale_cancels_debt_not_wallet(self):
+        ref = self._refund(self._sale(self.agel), '40', 'STORE_CREDIT')
+        self.assertEqual(ref.paid_back, Decimal('0'))
+        self.assertEqual(self._wallet(), Decimal('0'))
+        self.assertEqual(self._balance(), Decimal('60'))
+
+    def test_restocking_fee_on_paid_sale(self):
+        self.settings.restocking_fee_percent = Decimal('10')
+        self.settings.save()
+        ref = self._refund(self._sale(self.cash), '100')
+        self.assertEqual(ref.paid_back, Decimal('90'))   # the shop keeps the 10 fee
+        self.assertEqual(self._balance(), Decimal('0'))
+
+    def test_restocking_fee_on_unpaid_sale_is_still_owed(self):
+        self.settings.restocking_fee_percent = Decimal('10')
+        self.settings.save()
+        self._refund(self._sale(self.agel), '100')
+        self.assertEqual(self._balance(), Decimal('10'))
+
+    def test_partly_paid_sale_pays_back_only_what_was_paid(self):
+        inv = self._sale(self.agel)                      # owes 100
+        self.client.post('/api/finance/payments/', {'invoice': str(inv.id), 'method': str(self.cash.id),
+                                                    'amount': '30'}, format='json')
+        ref = self._refund(inv, '100')
+        self.assertEqual(ref.paid_back, Decimal('30'))
+        self.assertEqual(ref.drawer_cash, Decimal('30'))
+        self.assertEqual(self._balance(), Decimal('0'))
+
+    def test_two_refunds_never_pay_back_more_than_paid(self):
+        inv = self._draft()                              # 2 × 50 = 100, on Ajel
+        inv.items.update(quantity=Decimal('2'), unit_price=Decimal('50'))
+        self.assertEqual(self._checkout(inv, self.agel).status_code, 200)
+        self.client.post('/api/finance/payments/', {'invoice': str(inv.id), 'method': str(self.cash.id),
+                                                    'amount': '50'}, format='json')   # paid 50 of 100
+        self.assertEqual(self._refund(inv, '40').paid_back, Decimal('40'))
+        self.assertEqual(self._refund(inv, '60').paid_back, Decimal('10'))   # only 10 of the 50 paid is left
+        self.assertEqual(self._balance(), Decimal('0'))
+
+    def test_ar_aging_matches_the_customer_balance(self):
+        self._refund(self._sale(self.cash), '100')       # settled → not listed
+        self._refund(self._sale(self.agel), '40')        # 60 still owed
+        r = self.mgr.get('/api/reports/ar-aging/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(Decimal(r.data['totals']['total']), Decimal('60'))
+        self.assertEqual(self._balance(), Decimal('60'))
