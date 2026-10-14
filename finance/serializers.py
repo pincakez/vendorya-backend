@@ -8,7 +8,7 @@ from .models import (
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice, RefundItem,
-    customer_outstanding,
+    customer_outstanding, invoice_outstanding,
 )
 
 
@@ -207,8 +207,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'amount': 'Amount must be more than zero.'})
         if invoice.status != SalesInvoice.Status.POSTED:
             raise serializers.ValidationError({'invoice': 'Payments can only be taken on a completed sale.'})
-        refunded = invoice.refunds.filter(is_deleted=False).aggregate(s=Sum('total_refunded'))['s'] or Decimal('0')
-        owed = (invoice.grand_total or 0) - (invoice.paid_amount or 0) - refunded
+        owed = invoice_outstanding(invoice)
         if amount > owed + Decimal('0.005'):
             raise serializers.ValidationError({'amount': f'More than is owed on this sale ({owed}).'})
         return attrs
@@ -536,12 +535,12 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'branch', 'original_invoice', 'customer', 'customer_name',
             'refund_number', 'date', 'total_refunded', 'reason', 'items',
-            'restocking_fee', 'refund_method', 'net_refund', 'drawer_cash',
+            'restocking_fee', 'refund_method', 'net_refund', 'drawer_cash', 'paid_back',
         ]
         # restocking_fee is computed server-side from the store's policy %, not
         # client-supplied, so a caller can't zero it out.
         read_only_fields = ['id', 'refund_number', 'date', 'total_refunded',
-                            'restocking_fee', 'net_refund', 'drawer_cash']
+                            'restocking_fee', 'net_refund', 'drawer_cash', 'paid_back']
 
     def create(self, validated_data):
         items_data = validated_data.pop('items', [])
@@ -565,17 +564,33 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                     .quantize(Decimal('0.01'))
                 )
                 refund.save(update_fields=['restocking_fee'])
+            self._record_paid_back(refund, original)
             if refund.refund_method == RefundInvoice.RefundMethod.CASH:
                 self._record_drawer_cash(refund, original)
-            # Store-credit payout accrues to the customer's wallet (net of fee).
+            # Store-credit payout accrues to the customer's wallet — only what is really paid back (s165).
             if (refund.refund_method == RefundInvoice.RefundMethod.STORE_CREDIT
-                    and refund.customer_id):
+                    and refund.customer_id and refund.paid_back > 0):
                 from users.models import Customer
                 cust = (Customer.all_objects.select_for_update()
                         .get(pk=refund.customer_id))
-                cust.store_credit = (cust.store_credit or Decimal('0')) + refund.net_refund
+                cust.store_credit = (cust.store_credit or Decimal('0')) + refund.paid_back
                 cust.save(update_fields=['store_credit'])
         return refund
+
+    @staticmethod
+    def _record_paid_back(refund, original):
+        """s165 (§WALK-S163 B1): how much money goes back to the customer (cash, card or wallet). With an
+        original sale: never more than was paid on it, less what earlier returns already paid back — the
+        unpaid (Ajel) part of the refund only cancels debt. Without one: the whole net refund."""
+        back = refund.net_refund
+        if original is not None:
+            SalesInvoice.all_objects.select_for_update().filter(pk=original.pk).first()   # serialise returns on one sale
+            original.refresh_from_db(fields=['paid_amount'])
+            earlier = (RefundInvoice.objects.filter(original_invoice=original, is_deleted=False)
+                       .exclude(pk=refund.pk).aggregate(s=Sum('paid_back'))['s'] or Decimal('0'))
+            back = min(back, (original.paid_amount or Decimal('0')) - earlier)
+        refund.paid_back = max(back, Decimal('0'))
+        refund.save(update_fields=['paid_back'])
 
     @staticmethod
     def _record_drawer_cash(refund, original):
@@ -583,7 +598,7 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         With an original sale, only the cash taken on it (less cash already given back) goes back in cash;
         the rest returns to the card / cancels Ajel debt. The drawer = the refunder's own open shift in
         this branch, else the branch's most recently opened one; none open → paid from outside a till."""
-        cash = refund.net_refund
+        cash = refund.paid_back
         if original is not None:
             taken = (Payment.objects.filter(invoice=original, method__is_cash=True)
                      .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
