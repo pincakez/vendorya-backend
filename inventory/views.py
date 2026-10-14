@@ -896,6 +896,22 @@ class CategoryViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
+def supplier_account_sources(store):
+    """The two querysets a supplier's RUNNING ACCOUNT is built from (Yakot's call, s127):
+    payable = Σ RECEIVED purchases' total − Σ payments made to the supplier.
+
+    ONE definition, shared by the suppliers-list balance (SupplierViewSet.get_queryset) and the
+    account statement (SupplierViewSet.statement), so the two can never drift apart. A DRAFT
+    purchase isn't a liability yet (matches the AP-aging report); soft-deleted rows don't count.
+    There are no purchase returns and no supplier opening balance in the system yet (checked s167) —
+    when either is built, add it HERE so the list and the statement both pick it up."""
+    from finance.models import PurchaseInvoice, SupplierPayment
+    purchases = PurchaseInvoice.objects.filter(
+        store=store, status=PurchaseInvoice.Status.RECEIVED, is_deleted=False)
+    payments = SupplierPayment.objects.filter(store=store, is_deleted=False)
+    return purchases, payments
+
+
 class SupplierViewSet(viewsets.ModelViewSet):
     serializer_class = SupplierSerializer
     permission_classes = [IsAuthenticated, RoleScopedPermission]
@@ -907,6 +923,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
         'partial_update': 'MANAGER',
         'destroy':        'ADMIN',
         'purchases':      'MANAGER',
+        'statement':      'MANAGER',
     }
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'contact_info']
@@ -919,15 +936,13 @@ class SupplierViewSet(viewsets.ModelViewSet):
         # liability — a DRAFT hasn't been received, so it's excluded (matches the
         # AP-aging report). Two independent Subqueries avoid the join-multiplication
         # that a single annotate over both reverse relations would cause.
-        from finance.models import PurchaseInvoice, SupplierPayment
+        # The two sources live in supplier_account_sources() — shared with `statement`.
         store = self.request.user.store
         DEC = DecimalField(max_digits=12, decimal_places=2)
-        received = (PurchaseInvoice.objects
-                    .filter(supplier=OuterRef('pk'), store=store,
-                            status=PurchaseInvoice.Status.RECEIVED, is_deleted=False)
+        purchases, payments = supplier_account_sources(store)
+        received = (purchases.filter(supplier=OuterRef('pk'))
                     .values('supplier').annotate(t=Sum('total_amount')).values('t'))
-        paid = (SupplierPayment.objects
-                .filter(supplier=OuterRef('pk'), store=store, is_deleted=False)
+        paid = (payments.filter(supplier=OuterRef('pk'))
                 .values('supplier').annotate(t=Sum('amount')).values('t'))
         return (
             Supplier.objects
@@ -973,6 +988,95 @@ class SupplierViewSet(viewsets.ModelViewSet):
         pager.page_size = 20
         page = pager.paginate_queryset(qs, request)
         return pager.get_paginated_response(PurchaseSummarySerializer(page, many=True).data)
+
+    @action(detail=True, methods=['get'])
+    def statement(self, request, pk=None):
+        """GET /api/inventory/suppliers/<id>/statement/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+        The supplier's account statement (كشف حساب): every purchase and payment on their running
+        account, oldest first, with a running balance.
+
+        Shop's point of view (a payable account): a RECEIVED purchase is a CREDIT (we owe more),
+        a payment to the supplier is a DEBIT (we owe less). balance = credit − debit, so a positive
+        balance = money the shop still owes the supplier (same sign as the suppliers list).
+
+        opening_balance = everything dated before date_from; lines = date_from..date_to (both
+        inclusive, shop-local dates); closing_balance = opening + the lines. With no date_to the
+        closing balance equals the list's `balance` (same sources — supplier_account_sources)."""
+        from django.utils.dateparse import parse_date
+        supplier = self.get_object()   # store-scoped via get_queryset → another shop's supplier = 404
+        store = request.user.store
+
+        dates = {}
+        for key in ('date_from', 'date_to'):
+            raw = (request.query_params.get(key) or '').strip()
+            try:
+                dates[key] = parse_date(raw) if raw else None
+            except ValueError:   # well-formed but impossible, e.g. 2026-02-31
+                dates[key] = None
+            if raw and dates[key] is None:
+                return Response({key: 'Use a date like 2026-01-31.'}, status=status.HTTP_400_BAD_REQUEST)
+        df, dt = dates['date_from'], dates['date_to']
+        if df and dt and df > dt:
+            return Response({'date_to': 'The end date is before the start date.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        ZERO = Decimal('0.00')
+        purchases, payments = supplier_account_sources(store)
+        entries = []
+        for p in purchases.filter(supplier=supplier).order_by():
+            entries.append({
+                'date': p.date, 'created_at': p.created_at, 'kind': 'purchase',
+                'ref': p.purchase_number or p.vendor_reference or '',
+                'vendor_reference': p.vendor_reference or '', 'note': p.notes or '',
+                'debit': ZERO, 'credit': p.total_amount or ZERO, 'link_id': str(p.id),
+            })
+        for pay in payments.filter(supplier=supplier).order_by():
+            entries.append({
+                'date': pay.date, 'created_at': pay.created_at, 'kind': 'payment',
+                'ref': pay.note or '', 'note': '',
+                'method': pay.method, 'method_display': pay.get_method_display(),
+                'debit': pay.amount or ZERO, 'credit': ZERO, 'link_id': str(pay.id),
+            })
+        entries.sort(key=lambda e: (e['date'], e['created_at']))
+
+        def money(v):
+            return str(Decimal(v).quantize(Decimal('0.01')))
+
+        opening = ZERO
+        running = ZERO
+        tot_debit = ZERO
+        tot_credit = ZERO
+        lines = []
+        for e in entries:
+            day = timezone.localtime(e['date']).date()
+            effect = e['credit'] - e['debit']
+            if df and day < df:
+                opening += effect
+                running = opening
+                continue
+            if dt and day > dt:
+                break   # sorted by date — nothing after this can be in range
+            running += effect
+            tot_debit += e['debit']
+            tot_credit += e['credit']
+            line = {k: v for k, v in e.items() if k != 'created_at'}
+            line.update(debit=money(e['debit']), credit=money(e['credit']),
+                        running_balance=money(running))
+            lines.append(line)
+
+        return Response({
+            'supplier': {'id': str(supplier.id), 'name': supplier.name,
+                         'company_name': supplier.company_name,
+                         'code_prefix': supplier.code_prefix,
+                         'phone_number': supplier.phone_number},
+            'date_from': df, 'date_to': dt,
+            'opening_balance': money(opening),
+            'lines': lines,
+            'totals': {'debit': money(tot_debit), 'credit': money(tot_credit)},
+            'closing_balance': money(running),
+            # The live balance the suppliers list shows (as of now — ignores the dates); a cross-check.
+            'current_balance': money(supplier.balance),
+        })
 
 
 class SupplierPrefixCheckView(APIView):

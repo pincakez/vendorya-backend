@@ -398,3 +398,112 @@ class TransferExpiryBatchTests(TestCase):
         s2 = Store.objects.create(name='X', store_code='109', owner=o)
         foreign = Branch.objects.create(store=s2, name='F', address=Address.objects.create(store=s2, street_1='1', city='Giza'))
         self.assertEqual(self._move('1', to=foreign).status_code, 400)
+
+
+class SupplierStatementTests(TestCase):
+    """PROLINE-PARITY Upgrade 3 (supplier half, s167): GET /api/inventory/suppliers/<id>/statement/ —
+    the supplier's account statement (كشف حساب). Purchase = credit (we owe more), payment = debit."""
+
+    def setUp(self):
+        from datetime import datetime
+        from django.conf import settings as dj_settings
+        from django.utils import timezone
+        from finance.models import PurchaseInvoice, SupplierPayment
+        dj_settings.ALLOWED_HOSTS = ['*']
+        self.owner = User.objects.create_user(username='own_st', password='x', role='OWNER')
+        self.store = Store.objects.create(name='St', store_code='110', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.save(update_fields=['store'])
+        addr = Address.objects.create(store=self.store, street_1='1', city='Cairo')
+        self.branch = Branch.objects.create(store=self.store, name='Main', address=addr)
+        self.manager = User.objects.create_user(username='mgr_st', password='x', role='MANAGER', store=self.store)
+        self.cashier = User.objects.create_user(username='csh_st', password='x', role='CASHIER', store=self.store)
+        self.supplier = Supplier.objects.create(store=self.store, name='Proline Co', code_prefix='510',
+                                                prefix_locked=True)
+
+        def at(m, d, h=12):
+            return timezone.make_aware(datetime(2026, m, d, h, 0))
+
+        R, D = PurchaseInvoice.Status.RECEIVED, PurchaseInvoice.Status.DRAFT
+
+        def mk(when, amt, st=R, ref=''):
+            return PurchaseInvoice.objects.create(
+                store=self.store, branch=self.branch, supplier=self.supplier, date=when,
+                status=st, total_amount=Decimal(amt), vendor_reference=ref)
+
+        def pay(when, amt, note=''):
+            return SupplierPayment.objects.create(
+                store=self.store, supplier=self.supplier, date=when, amount=Decimal(amt), note=note)
+
+        # Before the window (Jan): +1000 − 300 → opening 700
+        mk(at(1, 10), '1000.00', ref='INV-A')
+        pay(at(1, 20), '300.00', 'cash jan')
+        # In the window (Feb–Mar)
+        self.p_feb = mk(at(2, 5), '500.00', ref='INV-B')
+        pay(at(2, 15), '200.00', 'feb')
+        mk(at(3, 1), '250.00', ref='INV-C')
+        pay(at(3, 1), '50.00', 'same day')   # same timestamp as INV-C, created later → listed after it
+        # Excluded everywhere: a DRAFT purchase and a soft-deleted payment
+        mk(at(2, 10), '9999.00', st=D, ref='DRAFT-X')
+        pay(at(2, 12), '777.00', 'deleted').delete()
+        # After the window (April)
+        mk(at(4, 2), '100.00', ref='INV-D')
+
+    def _get(self, user, url):
+        from rest_framework.test import APIClient
+        from rest_framework_simplejwt.tokens import RefreshToken
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(user).access_token))
+        return c.get(url)
+
+    def _url(self, sup=None, qs=''):
+        return f'/api/inventory/suppliers/{(sup or self.supplier).id}/statement/{qs}'
+
+    def test_window_opening_running_and_closing(self):
+        r = self._get(self.manager, self._url(qs='?date_from=2026-02-01&date_to=2026-03-31'))
+        self.assertEqual(r.status_code, 200, r.content)
+        d = r.json()
+        self.assertEqual(d['opening_balance'], '700.00')
+        self.assertEqual([(l['kind'], l['debit'], l['credit'], l['running_balance']) for l in d['lines']], [
+            ('purchase', '0.00', '500.00', '1200.00'),
+            ('payment', '200.00', '0.00', '1000.00'),
+            ('purchase', '0.00', '250.00', '1250.00'),
+            ('payment', '50.00', '0.00', '1200.00'),
+        ])
+        self.assertEqual(d['totals'], {'debit': '250.00', 'credit': '750.00'})
+        self.assertEqual(d['closing_balance'], '1200.00')
+        self.assertEqual(d['lines'][0]['link_id'], str(self.p_feb.id))
+        self.assertEqual(d['lines'][1]['ref'], 'feb')
+
+    def test_draft_purchase_and_deleted_payment_excluded(self):
+        d = self._get(self.manager, self._url()).json()
+        self.assertNotIn('deleted', [l['ref'] for l in d['lines']])
+        self.assertNotIn('DRAFT-X', [l.get('vendor_reference') for l in d['lines']])
+        self.assertEqual(len(d['lines']), 7)
+
+    def test_closing_without_dates_equals_list_balance(self):
+        d = self._get(self.manager, self._url()).json()
+        self.assertEqual(d['opening_balance'], '0.00')
+        self.assertEqual(d['closing_balance'], '1300.00')   # 1850 received − 550 paid
+        self.assertEqual(d['closing_balance'], d['current_balance'])
+        lst = self._get(self.manager, '/api/inventory/suppliers/').json()
+        rows = lst['results'] if isinstance(lst, dict) else lst
+        row = next(s for s in rows if s['id'] == str(self.supplier.id))
+        self.assertEqual(Decimal(str(row['balance'])), Decimal(d['closing_balance']))
+
+    def test_date_to_only_and_bad_dates(self):
+        d = self._get(self.manager, self._url(qs='?date_to=2026-01-31')).json()
+        self.assertEqual(d['closing_balance'], '700.00')
+        self.assertEqual(self._get(self.manager, self._url(qs='?date_from=nope')).status_code, 400)
+        self.assertEqual(self._get(self.manager, self._url(qs='?date_from=2026-02-31')).status_code, 400)
+        self.assertEqual(self._get(self.manager,
+                                   self._url(qs='?date_from=2026-05-01&date_to=2026-04-01')).status_code, 400)
+
+    def test_other_shop_supplier_is_404(self):
+        o = User.objects.create_user(username='own_st2', password='x', role='OWNER')
+        s2 = Store.objects.create(name='St2', store_code='111', owner=o)
+        foreign = Supplier.objects.create(store=s2, name='Theirs', code_prefix='520', prefix_locked=True)
+        self.assertEqual(self._get(self.manager, self._url(sup=foreign)).status_code, 404)
+
+    def test_cashier_is_403(self):
+        self.assertEqual(self._get(self.cashier, self._url()).status_code, 403)
