@@ -264,6 +264,21 @@ class StoreSettings(TimestampedModel):
         help_text=_("Master switch for selling products by weight (per kg / 100g, "
                     "decimal quantities). Off = feature hidden."))
 
+    # 1d-bis. Default DISPLAY unit for weight (§WT). Storage never changes: a weight
+    # product's base unit is the kilogram, kept to the gram (Decimal(12,3)). Grams
+    # are only a ×0.001 display tier over that base — like packs over pills — so
+    # G means "show and type weights in grams" (POS entry 250 → 0.250 kg stored;
+    # stock/receipts read "250 g"). KG (default) = exactly the old behaviour.
+    class WeightUnit(models.TextChoices):
+        KG = 'KG', _('Kilograms (kg)')
+        G  = 'G',  _('Grams (g)')
+
+    default_weight_unit = models.CharField(
+        _("Default Weight Unit"), max_length=2,
+        choices=WeightUnit.choices, default=WeightUnit.KG,
+        help_text=_("How weights are shown and typed (kg or g). Display only — "
+                    "stock is always stored in kg to the gram."))
+
     # 1e. Autocomplete source — controls which product pool the New Purchase /
     # New Product name-search queries. MEMORY_BASE (default) includes the full
     # shared drug reference; STORE_HISTORY restricts to products this store has

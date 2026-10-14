@@ -116,7 +116,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         fields = [
             'allow_negative_stock', 'enable_agel_selling',
             'expiry_tracking_enabled', 'expired_sale_policy', 'expiry_alert_days',
-            'multi_unit_enabled', 'weight_selling_enabled',
+            'multi_unit_enabled', 'weight_selling_enabled', 'default_weight_unit',
             'autocomplete_source', 'mb_auto_register',
             'credit_policy', 'default_credit_limit',
             'return_window_days', 'restocking_fee_percent',
