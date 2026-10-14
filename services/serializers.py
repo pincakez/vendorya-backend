@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
 
 from core.field_visibility import hides_cost, request_user
@@ -94,6 +95,39 @@ class _ShopCustomerField(serializers.PrimaryKeyRelatedField):
         return Customer.all_objects.filter(store=store, is_deleted=False)
 
 
+def device_unit_info(unit):
+    """What a job shows about the shop's own serial unit behind its device serial (read-only): the product,
+    the sale it left on and its warranty. None when the serial is not one of the shop's units. No cost, no
+    supplier — a cashier sees this."""
+    from inventory.models import SerialUnit
+    if unit is None:
+        return None
+    inv = unit.sale_item.invoice if unit.sale_item_id else None
+    ends = unit.warranty_ends_on
+    return {
+        'id': str(unit.id),
+        'serial': unit.serial,
+        'status': unit.status,
+        'product_id': str(unit.variant.product_id),
+        'product_name': unit.variant.product.name,
+        'sale': {'id': str(inv.id), 'invoice_number': inv.invoice_number, 'date': inv.date} if inv else None,
+        'warranty_ends_on': ends,
+        # Same rule as the Serial Lookup page: a SOLD unit whose warranty end is today or later.
+        'warranty_active': bool(unit.status == SerialUnit.Status.SOLD and ends and ends >= timezone.localdate()),
+    }
+
+
+class _ServiceListSerializer(serializers.ListSerializer):
+    """The jobs list resolves every job's device serial in ONE query (not one lookup per row)."""
+
+    def to_representation(self, data):
+        from inventory.serials import find_serials
+        rows = list(data.all() if hasattr(data, 'all') else data)
+        store = getattr(request_user(self), 'store', None)
+        self._context['device_units'] = find_serials(store, [r.device_serial for r in rows if r.device_serial])
+        return super().to_representation(rows)
+
+
 class ServiceSerializer(serializers.ModelSerializer):
     # Ids from the request body must belong to the caller's shop.
     technician = _ShopUserField(required=False, allow_null=True)
@@ -108,9 +142,12 @@ class ServiceSerializer(serializers.ModelSerializer):
     parts_total = serializers.SerializerMethodField()
     invoice_number = serializers.SerializerMethodField()
     refund_number = serializers.SerializerMethodField()
+    # The shop's serial unit the device serial names (product, sale, warranty) — null when it names none.
+    device_unit = serializers.SerializerMethodField()
 
     class Meta:
         model = Service
+        list_serializer_class = _ServiceListSerializer
         fields = [
             'id', 'serial_number', 'store',
             'client', 'client_name', 'client_phone',
@@ -119,7 +156,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             'no_eta', 'eta_days', 'eta_hours', 'eta_datetime',
             'info', 'keeping', 'cost', 'diagnosis',
             'technician', 'technician_name',
-            'device', 'device_serial', 'damage',
+            'device', 'device_serial', 'device_unit', 'damage',
             'detection_fee', 'labour_total', 'parts', 'parts_total',
             'is_warranty', 'warranty_days',
             'notes',
@@ -132,7 +169,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             'id', 'serial_number', 'store', 'created_by',
             'invoice', 'invoice_number', 'refund', 'refund_number', 'eta_datetime', 'notified',
             'client_display_name', 'client_display_phone', 'eta_label', 'technician_name',
-            'labour_total', 'parts_total', 'notes', 'status',
+            'labour_total', 'parts_total', 'notes', 'status', 'device_unit',
         ]
 
     # ── read helpers ──
@@ -165,6 +202,16 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     def get_refund_number(self, obj):
         return obj.refund.refund_number if obj.refund_id else None
+
+    def get_device_unit(self, obj):
+        """Looked up in the CALLER's shop only — a job of another shop (never served anyway) gets nothing."""
+        from inventory.serials import find_serial, normalize
+        store = getattr(request_user(self), 'store', None)
+        if not obj.device_serial or store is None or obj.store_id != store.id:
+            return None
+        units = self.context.get('device_units')
+        unit = units.get(normalize(obj.device_serial)) if units is not None else find_serial(store, obj.device_serial)
+        return device_unit_info(unit)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

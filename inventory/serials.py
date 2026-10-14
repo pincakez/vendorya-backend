@@ -482,6 +482,21 @@ def find_serial(store, serial):
             or qs.order_by('-created_at').first())
 
 
+def find_serials(store, serials):
+    """find_serial for many serials in ONE query (a list screen): {normalized serial: unit}. Same pick — the
+    unit on the shelf, else the most recent row. Serials the shop never had are simply absent."""
+    wanted = {normalize(s) for s in serials} - {''}
+    if not wanted or store is None:
+        return {}
+    out = {}
+    for u in (SerialUnit.all_objects.filter(store=store, serial__in=wanted, is_deleted=False)
+              .select_related('variant__product', 'branch', 'sale_item__invoice').order_by('-created_at')):
+        have = out.get(u.serial)
+        if have is None or (u.status == SerialUnit.Status.IN_STOCK and have.status != SerialUnit.Status.IN_STOCK):
+            out[u.serial] = u
+    return out
+
+
 def in_stock_unit(store, serial):
     """The unit on the shelf with this exact serial, or None (the POS scan)."""
     s = normalize(serial)
