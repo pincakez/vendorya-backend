@@ -1089,10 +1089,16 @@ class SupplierViewSet(viewsets.ModelViewSet):
                 'vendor_reference': p.vendor_reference or '', 'note': p.notes or '',
                 'debit': ZERO, 'credit': p.total_amount or ZERO, 'link_id': str(p.id),
             })
-        for pay in payments.filter(supplier=supplier).order_by():
+        for pay in payments.filter(supplier=supplier).select_related('payment_method').order_by():
             entries.append({
                 'date': pay.date, 'created_at': pay.created_at, 'kind': 'payment',
                 'ref': pay.note or '', 'note': '',
+                # PROLINE-PARITY Upgrade 6: the shop's own method name; an old payment the migration could
+                # not map has payment_method = None and its name falls back to the old code's label
+                # (same rule as SupplierPaymentSerializer.payment_method_name).
+                'payment_method': str(pay.payment_method_id) if pay.payment_method_id else None,
+                'payment_method_name': (pay.payment_method.name if pay.payment_method_id
+                                        else pay.get_method_display()),
                 'method': pay.method, 'method_display': pay.get_method_display(),
                 'debit': pay.amount or ZERO, 'credit': ZERO, 'link_id': str(pay.id),
             })

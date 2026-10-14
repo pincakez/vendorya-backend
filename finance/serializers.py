@@ -501,18 +501,68 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
 
 
 class SupplierPaymentSerializer(serializers.ModelSerializer):
+    """A payment TO a supplier. Write: supplier, amount, payment_method (one of the shop's own methods —
+    not Ajel, not store credit), date?, note?.
+
+    PROLINE-PARITY Upgrade 6: `payment_method` replaced the fixed CASH/BANK/CARD/OTHER `method` code. An old
+    client that still sends only `method` keeps working — the code is mapped to the shop's matching method
+    (supplier_payment_methods.pick_method_for_legacy, the same rule the data migration used); a code with no
+    match is refused, so every NEW payment has a real method. Read: `payment_method_name` = the method's name,
+    or the old code's label for an old payment the migration could not map."""
     method_display = serializers.CharField(source='get_method_display', read_only=True)
+    payment_method_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = SupplierPayment
-        fields = ['id', 'supplier', 'amount', 'date', 'method', 'method_display',
-                  'note', 'created_by_name', 'created_at']
-        read_only_fields = ['id', 'method_display', 'created_by_name', 'created_at']
+        fields = ['id', 'supplier', 'amount', 'date', 'payment_method', 'payment_method_name',
+                  'method', 'method_display', 'note', 'created_by_name', 'created_at']
+        read_only_fields = ['id', 'payment_method_name', 'method_display', 'created_by_name', 'created_at']
+        extra_kwargs = {'method': {'required': False}}
+
+    def get_fields(self):
+        # Tenant guard (defence in depth): an id from the body resolves ONLY among the caller's shop's
+        # methods — another shop's id is "does not exist", never a match. validate() refuses the rest.
+        fields = super().get_fields()
+        request = self.context.get('request')
+        store_id = getattr(getattr(request, 'user', None), 'store_id', None)
+        fields['payment_method'].queryset = PaymentMethod.all_objects.filter(store_id=store_id)
+        return fields
 
     def get_created_by_name(self, obj):
         u = obj.created_by
         return (u.get_full_name() or u.username) if u else None
+
+    def get_payment_method_name(self, obj):
+        return obj.payment_method.name if obj.payment_method_id else obj.get_method_display()
+
+    def validate(self, attrs):
+        from .supplier_payment_methods import pick_method_for_legacy, legacy_code_for
+        request = self.context.get('request')
+        store_id = request.user.store_id if request else None
+        method = attrs.get('payment_method')
+        if method is None and 'method' in attrs:
+            # Old client: map the fixed code to the shop's own method (or refuse — no new unmapped rows).
+            shop_methods = PaymentMethod.objects.filter(store_id=store_id).order_by('created_at', 'id')
+            method = pick_method_for_legacy(shop_methods, attrs['method'])
+            if method is None:
+                raise serializers.ValidationError(
+                    {'payment_method': 'Choose one of the shop\'s payment methods.'})
+            attrs['payment_method'] = method
+        if method is None:
+            if self.instance is None or 'payment_method' in attrs:   # new payment, or clearing it
+                raise serializers.ValidationError({'payment_method': 'Choose how you paid the supplier.'})
+            return attrs
+        if method.store_id != store_id or method.is_deleted:
+            raise serializers.ValidationError({'payment_method': 'This payment method was not found in your shop.'})
+        if method.is_agel:
+            raise serializers.ValidationError(
+                {'payment_method': 'Ajel (credit) is not a payment — choose how the money was actually paid.'})
+        if method.is_store_credit:
+            raise serializers.ValidationError(
+                {'payment_method': 'Store credit belongs to customers — it cannot pay a supplier.'})
+        attrs['method'] = legacy_code_for(method)   # keep the old column truthful for anything still reading it
+        return attrs
 
     def validate_amount(self, value):
         if value is None or value <= 0:

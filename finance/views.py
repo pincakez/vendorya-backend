@@ -724,7 +724,8 @@ class SupplierPaymentViewSet(viewsets.ModelViewSet):
     ordering = ['-date']
 
     def get_queryset(self):
-        qs = SupplierPayment.objects.filter(store=self.request.user.store).select_related('created_by')
+        qs = (SupplierPayment.objects.filter(store=self.request.user.store)
+              .select_related('created_by', 'payment_method'))
         supplier = self.request.query_params.get('supplier')
         if supplier:
             qs = qs.filter(supplier_id=supplier)
@@ -741,6 +742,7 @@ class SupplierPaymentViewSet(viewsets.ModelViewSet):
                 'supplier': payment.supplier.name,
                 'amount': str(payment.amount),
                 'method': payment.method,
+                'payment_method': payment.payment_method.name if payment.payment_method_id else None,
             },
         )
 
