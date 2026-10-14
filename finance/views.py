@@ -376,7 +376,21 @@ class PaymentViewSet(viewsets.ModelViewSet):
         return Payment.objects.filter(invoice__store=self.request.user.store)
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        payment = serializer.save(created_by=self.request.user)
+        invoice = payment.invoice
+        log_activity(
+            request=self.request,
+            action=f"Received Payment {payment.amount} on Sale #{invoice.invoice_number or str(invoice.id)[:8]}",
+            op_type=ActivityLog.OperationType.SALE,
+            details={
+                'payment_id': str(payment.id),
+                'invoice_id': str(invoice.id),
+                'invoice_number': invoice.invoice_number,
+                'customer': invoice.customer.name if invoice.customer_id else None,
+                'method': payment.method.name,
+                'amount': str(payment.amount),
+            },
+        )
 
 
 class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
