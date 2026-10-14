@@ -323,6 +323,19 @@ class ServiceDeskTests(TestCase):
         self.assertEqual(total, Decimal('912'))
         self.assertEqual(self._stock(), Decimal('10'))
 
+    def test_returning_the_labour_line_from_the_returns_screen_never_stocks_it(self):
+        from inventory.models import StockLevel
+        from services.desk import find_labour_variant
+        job = self._job(client=self.named)
+        self._done(job, self.cash)
+        inv = Service.objects.get(pk=job.pk).invoice
+        labour = find_labour_variant(self.store)
+        r = self._api(self.manager).post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(self.named.id),
+            'items': [{'variant': str(labour.id), 'quantity': '1', 'refund_amount': '1'}]}, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        self.assertFalse(StockLevel.objects.filter(variant=labour).exists())   # no "Low stock: Repair service" ever
+
     # ── tenant + roles ──
     def test_technician_from_another_shop_refused(self):
         api = self._api(self.cashier)

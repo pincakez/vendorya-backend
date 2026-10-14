@@ -395,7 +395,8 @@ class RefundItem(models.Model):
     def save(self, *args, **kwargs):
         is_new = self._state.adding
         super().save(*args, **kwargs)
-        if is_new and self.restock_inventory:
+        # A service (e.g. the repair desk's labour line) has no stock — returning it never puts anything on a shelf.
+        if is_new and self.restock_inventory and self.variant.product.product_type != 'SERVICE':
             base_qty = Decimal(str(self.quantity)) * Decimal(str(self.unit_factor or 1))
             with transaction.atomic():
                 stock, _ = StockLevel.objects.select_for_update().get_or_create(
