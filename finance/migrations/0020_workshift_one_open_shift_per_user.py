@@ -20,7 +20,7 @@ def refuse_if_duplicates(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('finance', '0018_supplier_payment_payment_method'),
+        ('finance', '0019_sale_purchase_refund_serials_warranty'),
     ]
 
     operations = [
