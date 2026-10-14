@@ -441,8 +441,12 @@ class ProductViewSet(viewsets.ModelViewSet):
         if qs is None:
             return Response({'error': 'ids must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
         hide = bool(request.data.get('hide', True))
+        from search.indexing import sync_products_on_commit
         with transaction.atomic():
+            ids = list(qs.values_list('id', flat=True))
             count = qs.update(hide_from_pos=hide)
+            # .update() skips the post_save signal → re-sync these products' search docs (B8).
+            sync_products_on_commit(ids)
         log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,
                      action=f"Bulk {'ghosted' if hide else 'un-ghosted'} {count} product(s)")
         return Response({'updated': count, 'hide_from_pos': hide})
@@ -805,10 +809,15 @@ class CategoryViewSet(viewsets.ModelViewSet):
                     {'reason': 'A valid reason is required to delete a category with its items.'})
             desc_ids = self._descendant_ids(category)
             now = timezone.now()
-            Product.objects.filter(category_id__in=[category.id] + desc_ids).update(
+            doomed = Product.objects.filter(category_id__in=[category.id] + desc_ids)
+            doomed_ids = list(doomed.values_list('id', flat=True))
+            doomed.update(
                 is_deleted=True, deleted_at=now,
                 delete_reason=reason, delete_note=note, deleted_by=request.user,
             )
+            # .update() skips the post_save signal → drop these products from search (B8).
+            from search.indexing import sync_products_on_commit
+            sync_products_on_commit(doomed_ids)
             Category.objects.filter(id__in=desc_ids).update(is_deleted=True, deleted_at=now)
             category.delete()                 # soft
             return Response({'detail': 'Category and its contents deleted.'})
