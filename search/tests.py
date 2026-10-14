@@ -76,3 +76,62 @@ class BulkIndexSyncTests(TestCase):
         with mock.patch.object(indexing, 'ts', fake):
             indexing.sync_products([self.a.id])
         fake.get_client.assert_not_called()
+
+
+class PosHidesGhostsInsideSearchTests(TestCase):
+    """s166: the till asked Typesense for the top 20, THEN dropped ghosted products — so hidden products
+    crowded visible ones out. Now the index carries `hide_from_pos` and the POS query filters on it."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='own2', password='pw', role='OWNER')
+        self.store = Store.objects.create(name='S2', store_code='102', owner=self.owner)
+        self.owner.store = self.store
+        self.owner.save()
+        StoreSettings.objects.get_or_create(store=self.store)
+        self.api = APIClient()
+        self.api.force_authenticate(self.owner)
+        self.shown = Product.objects.create(store=self.store, name='Cable shown')
+        self.ghost = Product.objects.create(store=self.store, name='Cable ghost', hide_from_pos=True)
+
+    def test_document_carries_the_ghost_flag(self):
+        self.assertIs(indexing.build_document(self.ghost)['hide_from_pos'], True)
+        self.assertIs(indexing.build_document(self.shown)['hide_from_pos'], False)
+
+    def test_bulk_ghost_sends_the_new_flag(self):
+        fake, docs = _fake_ts()
+        with mock.patch.object(indexing, 'ts', fake), self.captureOnCommitCallbacks(execute=True):
+            self.api.post('/api/inventory/products/bulk_ghost/',
+                          {'ids': [str(self.shown.id)], 'hide': True}, format='json')
+        sent = [d for call in docs.import_.call_args_list for d in call.args[0]]
+        self.assertEqual([(d['id'], d['hide_from_pos']) for d in sent], [(str(self.shown.id), True)])
+
+    def test_pos_query_filters_ghosts_in_typesense(self):
+        from search import client as ts
+        fake_client = mock.MagicMock()
+        search = fake_client.collections.__getitem__.return_value.documents.search
+        search.return_value = {'hits': []}
+        with mock.patch.object(ts, 'get_client', return_value=fake_client):
+            ts.search_ids('s1', 'cab', store_history=True, pos=True)
+            ts.search_ids('s1', 'cab')
+        pos_filter, plain_filter = (c.args[0]['filter_by'] for c in search.call_args_list)
+        self.assertIn('hide_from_pos:false', pos_filter)
+        self.assertNotIn('hide_from_pos', plain_filter)
+
+    def test_autocomplete_pos_mode_asks_for_the_filter(self):
+        from search import client as ts
+        with mock.patch.object(ts, 'is_configured', return_value=True), \
+             mock.patch.object(ts, 'search_ids', return_value=[str(self.shown.id)]) as sid:
+            r = self.api.get('/api/inventory/products/autocomplete/', {'q': 'cab', 'pos': 1})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(sid.call_args.kwargs['pos'])
+        self.assertEqual([p['id'] for p in r.data['results']], [str(self.shown.id)])
+
+    def test_old_collection_without_the_field_falls_back_to_the_database(self):
+        """Before `ts_reindex` the live collection has no hide_from_pos field → Typesense errors →
+        the pg_trgm path answers, and it already excludes ghosts."""
+        from search import client as ts
+        with mock.patch.object(ts, 'is_configured', return_value=True), \
+             mock.patch.object(ts, 'search_ids', side_effect=Exception('no filter field hide_from_pos')):
+            r = self.api.get('/api/inventory/products/autocomplete/', {'q': 'cable', 'pos': 1})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual([p['id'] for p in r.data['results']], [str(self.shown.id)])

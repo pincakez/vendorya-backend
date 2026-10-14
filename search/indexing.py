@@ -38,6 +38,7 @@ def build_document(product):
         'brand_ar':      attrs.get('brand_ar', ''),
         'active_ing':    attrs.get('active_ing', ''),
         'active_ing_ar': attrs.get('active_ing_ar', ''),
+        'hide_from_pos': bool(product.hide_from_pos),
     }
 
 

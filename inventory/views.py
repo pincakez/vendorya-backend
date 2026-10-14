@@ -597,7 +597,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         from search import client as ts
         if ts.is_configured():
             try:
-                ids = ts.search_ids(str(store.id), q, store_history=store_history)
+                ids = ts.search_ids(str(store.id), q, store_history=store_history, pos=pos_mode)
                 by_id = {str(p.id): p for p in base.filter(id__in=ids)}
                 results = [by_id[i] for i in ids if i in by_id]
             except Exception:

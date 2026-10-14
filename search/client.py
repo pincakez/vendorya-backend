@@ -60,6 +60,11 @@ SCHEMA = {
         {'name': 'brand_ar',      'type': 'string', 'optional': True},
         {'name': 'active_ing',    'type': 'string', 'optional': True},
         {'name': 'active_ing_ar', 'type': 'string', 'optional': True},
+        # s166: ghosted products ("hide from POS") are filtered INSIDE Typesense for the till — filtering
+        # after the top-20 cut let hidden products crowd out visible ones. A collection built before this
+        # field has no such filter field → the POS search raises → the caller falls back to pg_trgm
+        # (still correct) until `ts_reindex` rebuilds the collection.
+        {'name': 'hide_from_pos', 'type': 'bool'},
     ],
 }
 
@@ -134,16 +139,18 @@ def search_nav(q, limit=10):
     return [hit['document'] for hit in res.get('hits', [])]
 
 
-def search_ids(store_id, q, store_history=False, limit=20):
+def search_ids(store_id, q, store_history=False, limit=20, pos=False):
     """Return ranked product IDs (strings) for the query.
 
     Typo-tolerant + prefix (so 'convantin' → 'Conventin'). Filters by store, and
-    by source=STORE in store_history mode. Raises on ANY Typesense error — the
+    by source=STORE in store_history mode, and drops ghosted products in POS mode. Raises on ANY Typesense error — the
     caller MUST catch and fall back to pg_trgm.
     """
     filter_by = f'store_id:={store_id}'
     if store_history:
         filter_by += ' && source:=STORE'
+    if pos:
+        filter_by += ' && hide_from_pos:false'
     res = get_client(timeout=2).collections[COLLECTION].documents.search({
         'q': q,
         'query_by': 'name,brand_ar,active_ing,active_ing_ar',
