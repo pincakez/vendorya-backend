@@ -309,6 +309,13 @@ class CustomerViewSet(viewsets.ModelViewSet):
         if customer.balance != before:
             self._log_opening(customer, before)
 
+    def perform_destroy(self, instance):
+        # s167: the till opens every sale on the shop's Walk-in — deleting it left GATES' prod till with no customer.
+        if instance.is_walk_in:
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError({'detail': "The Walk-in customer can't be deleted — the till needs it for every cash sale."})
+        instance.delete()
+
     def _log_opening(self, customer, before):
         """An opening balance moves what the customer owes — keep a trail (s167)."""
         from core.activity import log_activity
