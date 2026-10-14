@@ -137,6 +137,8 @@ DATABASES = {
         'PASSWORD': _env_required('DB_PASSWORD'),
         'HOST':     os.environ.get('DB_HOST', 'localhost'),
         'PORT':     os.environ.get('DB_PORT', '5432'),
+        # Optional own test DB name, so two test runs (e.g. parallel agents in worktrees) never share one.
+        'TEST':     {'NAME': os.environ.get('DB_TEST_NAME') or None},
     }
 }
 
