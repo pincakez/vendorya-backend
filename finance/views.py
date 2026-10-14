@@ -31,6 +31,18 @@ from core.activity import log_activity
 from core.models import ActivityLog, Branch
 
 
+def require_open_shift(store, user, branch):
+    """Yakot 2026-10-14: when the shop turned on "Require an open shift to sell", a sale is completed only by
+    someone with their OWN open shift (drawer) in the sale's branch — the drawer that will count its cash.
+    Raises a 400 the till recognises by `code` (to offer "Open shift"); does nothing when the setting is off."""
+    if not getattr(getattr(store, 'settings', None), 'require_shift_to_sell', False):
+        return
+    if WorkShift.objects.filter(store=store, user=user, branch=branch, status=WorkShift.Status.OPEN).exists():
+        return
+    raise ValidationError({'detail': 'Open your shift first — this shop sells only with an open shift.',
+                           'code': 'shift_required'})
+
+
 class PaymentMethodViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentMethodSerializer
     permission_classes = [IsAuthenticated, RoleScopedPermission]
@@ -107,6 +119,9 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         new_status = serializer.validated_data.get('status')
         self._guard_posted(serializer.instance, new_status)
         if new_status == SalesInvoice.Status.POSTED and serializer.instance.status != SalesInvoice.Status.POSTED:
+            # A manager posting a draft by edit is a sale too — same shift rule as the till (2026-10-14).
+            branch = serializer.validated_data.get('branch') or serializer.instance.branch
+            require_open_shift(self.request.user.store, self.request.user, branch)
             from billing.quota import enforce_quota
             enforce_quota(self.request.user.store, 'invoices')   # a manager posting by edit uses the quota too (s166)
         serializer.save()
@@ -183,6 +198,9 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         if not items:
             return Response({'detail': 'Cannot post an empty invoice.'},
                             status=status.HTTP_400_BAD_REQUEST)
+
+        # Policy 0 — the shop sells only with an open shift (off by default). Before any payment / stock work.
+        require_open_shift(invoice.store, request.user, invoice.branch)
 
         settings_obj = getattr(invoice.store, 'settings', None)
 

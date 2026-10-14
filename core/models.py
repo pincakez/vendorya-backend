@@ -314,6 +314,11 @@ class StoreSettings(TimestampedModel):
 
     # 2. Sales Rules
     enable_agel_selling = models.BooleanField(default=True, help_text="Allow selling on credit (Customer Debt).")
+    # Yakot 2026-10-14: when on, nobody completes a sale without their own open shift (cash drawer) in
+    # that branch — every sale then lands in a drawer someone counts. Off = sell as before.
+    require_shift_to_sell = models.BooleanField(
+        _("Require an open shift to sell"), default=False,
+        help_text=_("When on, the till refuses a sale until the seller opens a shift in that branch."))
 
     class CreditPolicy(models.TextChoices):
         ALLOW = 'ALLOW', _('Allow — no enforcement')

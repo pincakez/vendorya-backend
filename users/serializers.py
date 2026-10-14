@@ -79,6 +79,18 @@ class CustomerSerializer(serializers.ModelSerializer):
             raise PermissionDenied("Only a manager can set a customer's opening balance.")
         return value
 
+    def validate_credit_limit(self, value):
+        """How much this customer may owe — MANAGER+ only (Yakot, 2026-10-14), same rule as the opening
+        balance: a cashier could otherwise raise a friend's limit and sell them more on credit.
+        Sending the unchanged value (a full form) is fine; leaving it out keeps it."""
+        from rest_framework.exceptions import PermissionDenied
+        from .permissions import ROLE_RANK, _user_rank
+        request = self.context.get('request')
+        current = self.instance.credit_limit if self.instance else None
+        if request and value != current and _user_rank(request.user) < ROLE_RANK[User.Role.MANAGER]:
+            raise PermissionDenied("Only a manager can set a customer's credit limit.")
+        return value
+
     def get_balance(self, obj):
         # The list annotates `live_balance` in one query (users.views.with_live_balance, §A36);
         # anything else (create/update responses, other callers) falls back to the per-customer query.
