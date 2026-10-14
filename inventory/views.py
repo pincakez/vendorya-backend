@@ -492,8 +492,11 @@ class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
                        .prefetch_related('attributes')
                        .order_by('created_at'))
         products = (Product.objects.filter(store=store, id__in=ids, source=Product.Source.STORE)
+                    .select_related('category__parent__parent__parent')   # spec-set chain, no per-row query
                     .prefetch_related(Prefetch('variants', queryset=variants_qs))
                     .order_by('name'))
+        from .spec_sets import SpecLineBuilder
+        spec_lines = SpecLineBuilder()   # Upgrade 9: the category's specs on one line (printed if the preset says so)
         items = []
         for p in products:
             variants = list(p.variants.all())
@@ -513,6 +516,7 @@ class ProductViewSet(_AtomicWritesMixin, viewsets.ModelViewSet):
                     'sku2':         (v.sku2 or '') if with_sku2 else '',
                     'barcode':      v.barcode or v.sku,
                     'sell_price':   str(v.sell_price),
+                    'specs':        spec_lines.line(p.category, v.attributes.all()),
                     'stock':        str(stock),
                     'by_weight':    by_weight,
                     'quantity':     1,
@@ -861,10 +865,57 @@ class CategoryViewSet(viewsets.ModelViewSet):
         'destroy':        'ADMIN',
         'contents':       'MANAGER',
         'resolve_delete': 'ADMIN',
+        # Spec sets (Upgrade 9, s168). Reading = anyone who reads categories (the product form needs it);
+        # editing a set = same as editing a category; a preset may CREATE attributes = same as attributes.
+        'specs':          'CASHIER',
+        'set_specs':      'MANAGER',
+        'spec_presets':   'MANAGER',
+        'apply_preset':   'ADMIN',
     }
 
     def get_queryset(self):
-        return Category.objects.filter(store=self.request.user.store)
+        from django.db.models import Count
+        return Category.objects.filter(store=self.request.user.store).annotate(
+            spec_count=Count('spec_items', filter=Q(spec_items__is_deleted=False,
+                                                    spec_items__definition__is_deleted=False)))
+
+    # ── Spec sets (PROLINE-PARITY Upgrade 9, s168) — logic in inventory/spec_sets.py ──
+    def _specs_payload(self, category):
+        from .spec_sets import effective_spec_set
+        effective = effective_spec_set(category)
+        return {
+            'category': str(category.id),
+            'effective': effective,                                   # what the product form asks for
+            'own': [s for s in effective if s['inherited_from'] is None],
+            'inherited': [s for s in effective if s['inherited_from'] is not None],
+        }
+
+    @action(detail=True, methods=['get'])
+    def specs(self, request, pk=None):
+        """The category's spec set: `effective` = parents' lines (root first) + its own."""
+        return Response(self._specs_payload(self.get_object()))
+
+    @specs.mapping.put
+    def set_specs(self, request, pk=None):
+        """Replace the category's OWN lines. Body: {items: [{definition, required}]} in order."""
+        from .spec_sets import set_own_specs
+        category = self.get_object()
+        set_own_specs(category, request.data.get('items'))
+        return Response(self._specs_payload(category))
+
+    @action(detail=False, methods=['get'], url_path='spec-presets')
+    def spec_presets(self, request):
+        """The built-in starter spec sets (Laptop, Phone, Monitor…), both languages."""
+        from .spec_presets import preset_catalog
+        return Response(preset_catalog())
+
+    @action(detail=True, methods=['post'], url_path='apply-preset')
+    def apply_preset(self, request, pk=None):
+        """Attach a starter preset. Body: {preset: 'laptop'}. Creates missing attributes; never duplicates."""
+        from .spec_sets import apply_preset
+        category = self.get_object()
+        result = apply_preset(category, request.data.get('preset'))
+        return Response({**self._specs_payload(category), **result})
 
     def _descendant_ids(self, category):
         """Ids of every active category below `category` (not including itself)."""

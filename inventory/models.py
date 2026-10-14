@@ -127,11 +127,48 @@ class AttributeDefinition(TimestampedModel, SoftDeleteModel):
     key = models.SlugField(_("Code Name"), max_length=50)
     input_type = models.CharField(max_length=20, choices=InputType.choices, default=InputType.TEXT)
     options = models.JSONField(default=list, blank=True)
+    # Optional unit printed after the value (Upgrade 9 spec sets): "GB", "Hz", '"' (inch). Display only.
+    unit = models.CharField(_("Unit"), max_length=20, blank=True, default='')
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     def __str__(self):
         return self.name
+
+
+class CategorySpec(TimestampedModel, SoftDeleteModel):
+    """One line of a category's SPEC SET (PROLINE-PARITY Upgrade 9, s168).
+
+    A spec set = the ordered shop attributes a product in this category is asked for (Laptops → CPU,
+    RAM, Storage…; Phones → Storage, Color…). A sub-category inherits every line of its parents and adds
+    its own — `inventory.spec_sets.effective_spec_set` builds the merged list. Generic on purpose: no
+    product field is laptop-only; a shop builds its own sets or applies a starter preset
+    (`inventory/spec_presets.py`). Removing a line soft-deletes it; re-adding restores the same row."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Copied from the category on save (never set by hand) — lets the tenant manager scope the rows.
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='category_specs', editable=False)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='spec_items')
+    definition = models.ForeignKey(AttributeDefinition, on_delete=models.CASCADE, related_name='category_specs')
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    required = models.BooleanField(default=False)
+
+    objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
+
+    class Meta:
+        ordering = ['sort_order', 'created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['category', 'definition'], name='uniq_category_spec_definition'),
+        ]
+
+    def __str__(self):
+        return f"{self.category.name}: {self.definition.name}"
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        self.store_id = self.category.store_id
+        if self.definition.store_id != self.store_id:
+            raise ValidationError({'definition': 'Attribute belongs to another store.'})
+        super().save(*args, **kwargs)
 
 # --- 3. DRUG PROFILE (canonical, platform-wide) ---
 class DrugProfile(models.Model):

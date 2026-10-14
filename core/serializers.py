@@ -231,6 +231,6 @@ class LabelPresetSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'width_mm', 'height_mm',
             'show_store_name', 'show_product_name', 'show_sku', 'show_barcode', 'show_price',
-            'is_default', 'created_at',
+            'show_specs', 'is_default', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']

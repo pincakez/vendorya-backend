@@ -602,6 +602,8 @@ class LabelPreset(TimestampedModel):
     show_sku          = models.BooleanField(default=True)
     show_barcode      = models.BooleanField(default=True)
     show_price        = models.BooleanField(default=True)
+    # Upgrade 9 (s168): one line of the product's category specs ("i7-1185G7 · 16GB · 512GB SSD · 14\""). Opt-in.
+    show_specs        = models.BooleanField(default=False)
     is_default = models.BooleanField(default=False)
 
     class Meta:

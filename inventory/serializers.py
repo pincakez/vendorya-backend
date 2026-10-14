@@ -74,9 +74,12 @@ class TaxSerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 class CategorySerializer(serializers.ModelSerializer):
+    # Own spec-set lines (Upgrade 9) — from CategoryViewSet.get_queryset's annotation; 0 on a fresh row.
+    spec_count = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = Category
-        fields = ['id', 'name', 'parent']
+        fields = ['id', 'name', 'parent', 'spec_count']
 
 class SupplierSerializer(serializers.ModelSerializer):
     # All three come from SupplierViewSet.get_queryset annotations (running
@@ -111,7 +114,7 @@ class SupplierSerializer(serializers.ModelSerializer):
 class AttributeDefinitionSerializer(serializers.ModelSerializer):
     class Meta:
         model = AttributeDefinition
-        fields = ['id', 'name', 'key', 'input_type', 'options']
+        fields = ['id', 'name', 'key', 'input_type', 'options', 'unit']
 
 # --- VARIANT SERIALIZERS ---
 class ProductAttributeSerializer(serializers.ModelSerializer):
@@ -481,7 +484,51 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                 data['unit'] = 'kg'
         if data.get('selling_units'):
             self._check_unit_barcodes(data['selling_units'])
+        if 'attributes' in (getattr(self, 'initial_data', None) or {}):
+            self._check_spec_values(data)
         return data
+
+    def _check_spec_values(self, data):
+        """Upgrade 9 (s168): a NUMBER attribute takes a number, and the category's REQUIRED specs
+        (inherited ones included) must have a value. On edit, a spec not sent keeps its stored value;
+        one sent blank is being cleared. Only runs when the request carries `attributes` (the product
+        forms), so bulk edits / ghosting never trip over a product made before the spec set existed."""
+        from .spec_sets import effective_spec_set, _parse_uuid
+        store = self.context['request'].user.store
+        sent = {}
+        for a in data.get('attributes') or []:
+            did = _parse_uuid(a.get('definition') or a.get('definition_id'))
+            if did is not None:
+                sent[str(did)] = str(a.get('value') if a.get('value') is not None else '').strip()
+        if sent:
+            for d in AttributeDefinition.objects.filter(store=store, id__in=list(sent),
+                                                        input_type=AttributeDefinition.InputType.NUMBER):
+                v = sent[str(d.id)]
+                if not v:
+                    continue
+                try:
+                    ok = Decimal(v).is_finite()
+                except (ArithmeticError, ValueError):
+                    ok = False
+                if not ok:
+                    raise serializers.ValidationError({
+                        'attributes': _('"%(name)s" must be a number.') % {'name': d.name},
+                        'not_a_number': d.name})
+        category = data['category'] if 'category' in data else getattr(self.instance, 'category', None)
+        required = [s for s in effective_spec_set(category) if s['required']] if category else []
+        if not required:
+            return
+        stored = {}
+        if self.instance is not None:
+            variant = self.instance.variants.first()
+            if variant is not None:
+                stored = {str(a.definition_id): a.value for a in variant.attributes.all()}
+        missing = [s['name'] for s in required
+                   if not (sent[s['definition']] if s['definition'] in sent else stored.get(s['definition']))]
+        if missing:
+            raise serializers.ValidationError({
+                'attributes': _('Please fill in the required specs: %(names)s') % {'names': ', '.join(missing)},
+                'missing_specs': missing})
 
     def _check_unit_barcodes(self, units):
         """A pack barcode is unique per shop, across variants AND packs (live STORE products only).

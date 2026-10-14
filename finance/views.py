@@ -598,8 +598,11 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         from inventory.sku import sku2_active
         st = store.settings
         with_sku2 = sku2_active(store) and st.sku2_print_label
+        from inventory.spec_sets import SpecLineBuilder
+        spec_lines = SpecLineBuilder()   # Upgrade 9 (s168): same spec line as the product-list stickers
         items = []
-        for item in invoice.items.select_related('variant__product'):
+        for item in (invoice.items.select_related('variant__product__category__parent__parent__parent')
+                     .prefetch_related('variant__attributes')):
             v = item.variant
             items.append({
                 'variant_id':   str(v.id),
@@ -608,6 +611,7 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
                 'sku2':         (v.sku2 or '') if with_sku2 else '',
                 'barcode':      v.barcode or v.sku,
                 'sell_price':   str(v.sell_price),
+                'specs':        spec_lines.line(v.product.category, v.attributes.all()),
                 'quantity':     int(item.quantity),
             })
         return Response({'store_name': store.name, 'items': items})
