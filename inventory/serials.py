@@ -274,10 +274,13 @@ def untracked_sold(store, variant, original=None, exclude_refund_item=None):
         moves_returned = moves.filter(kind=SerialMove.Kind.RETURNED).exclude(refund_item=exclude_refund_item)
     else:
         moves_returned = moves.filter(kind=SerialMove.Kind.RETURNED)
+    # s168 review: only serial returns that belong to the refunds counted above — a no-receipt return of a unit
+    # sold on `original` still carries its sale line, and counting it here would free a phantom serial-less unit.
+    moves_returned = moves_returned.filter(refund_item__in=refunds)
     sold_by_serial = moves.filter(kind=SerialMove.Kind.SOLD).count()
     returned_by_serial = moves_returned.count()   # returns of a unit SOLD by serial (they carry its sale line)
     pre_sold = Decimal(str(sold)) - sold_by_serial
-    pre_returned = Decimal(str(returned)) - returned_by_serial
+    pre_returned = max(Decimal(str(returned)) - returned_by_serial, Decimal('0'))
     return max(int((pre_sold - pre_returned).to_integral_value(rounding='ROUND_FLOOR')), 0)
 
 

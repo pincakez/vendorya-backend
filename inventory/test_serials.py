@@ -518,6 +518,23 @@ class PreTrackingReturnTests(_SerialBase):
         self.assertEqual(r.data['serial_code'], 'serial_count')
 
 
+    def test_no_receipt_serial_return_does_not_free_a_serialless_return(self):
+        """s168 review: S sold by serial on #A → returned with NO receipt (by serial) → a second return against #A
+        with no serial must be refused (it would refund the laptop twice and add a phantom unit)."""
+        new_inv = self._sell(['SHELF-1'])
+        body = {'branch': str(self.branch.id), 'customer': str(self.customer.id), 'refund_method': 'CASH',
+                'items': [{'variant': str(self.variant.id), 'quantity': '1', 'refund_amount': '1',
+                           'restock_inventory': True, 'serial_numbers': ['SHELF-1']}]}
+        r = self.mgr.post('/api/finance/refunds/', body, format='json')          # no original_invoice
+        self.assertEqual(r.status_code, 201, r.content)
+        stock = self._stock()
+        body['original_invoice'] = new_inv
+        body['items'][0]['serial_numbers'] = []
+        r = self.mgr.post('/api/finance/refunds/', body, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(self._stock(), stock)
+
+
 class TillAddPathTests(_SerialBase):
     """Every way the till adds a product tells it the product is serial-tracked (→ the serial picker)."""
 
