@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -16,14 +17,14 @@ from rest_framework.exceptions import PermissionDenied
 from inventory.models import StockLevel
 from .models import (
     SalesInvoice, Payment, PaymentMethod, CustomerReceipt,
-    PurchaseInvoice, SupplierPayment, PurchaseReturn,
+    PurchaseInvoice, SupplierPayment, PurchaseReturn, Cheque,
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice,
 )
 from .serializers import (
     SalesInvoiceSerializer, PaymentSerializer, PaymentMethodSerializer, CustomerReceiptSerializer,
-    PurchaseInvoiceSerializer, SupplierPaymentSerializer, PurchaseReturnSerializer,
+    PurchaseInvoiceSerializer, SupplierPaymentSerializer, PurchaseReturnSerializer, ChequeSerializer,
     ExpenseSerializer, ExpenseCategorySerializer,
     WorkShiftSerializer,
     RefundInvoiceSerializer,
@@ -1371,3 +1372,127 @@ class PurchaseReturnViewSet(viewsets.ReadOnlyModelViewSet):
                          'supplier': str(purchase.supplier_id) if purchase.supplier_id else None,
                          'supplier_name': purchase.supplier.name if purchase.supplier_id else '',
                          'branch': str(purchase.branch_id), 'lines': lines})
+
+
+class ChequeViewSet(viewsets.ReadOnlyModelViewSet):
+    """Cheques received / given (s171). GET ?status= &direction= &due=soon|overdue &customer= &supplier=
+    POST = a new waiting cheque · POST {id}/clear/ {method?, box?, on?} · {id}/bounce/ {reason} · {id}/cancel/ {reason}.
+    All state changes in finance/cheques.py. A bounce AFTER clearing reverses a payment → ADMIN."""
+    serializer_class = ChequeSerializer
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list': 'MANAGER', 'retrieve': 'MANAGER', 'create': 'MANAGER',
+        'clear': 'MANAGER', 'bounce': 'MANAGER', 'cancel': 'MANAGER', 'summary': 'MANAGER',
+    }
+    SOON_DAYS = 7
+
+    def get_queryset(self):
+        qs = (Cheque.objects.filter(store=self.request.user.store)
+              .select_related('customer', 'supplier', 'method', 'created_by'))
+        p = self.request.query_params
+        if p.get('status'):
+            qs = qs.filter(status=p['status'])
+        if p.get('direction'):
+            qs = qs.filter(direction=p['direction'])
+        for key in ('customer', 'supplier'):
+            if p.get(key):
+                if not _is_uuid(p[key]):
+                    return qs.none()
+                qs = qs.filter(**{key + '_id': p[key]})
+        today = tz.localdate()
+        if p.get('due') == 'soon':
+            qs = qs.filter(status=Cheque.Status.PENDING, due_date__gte=today,
+                           due_date__lte=today + timedelta(days=self.SOON_DAYS))
+        elif p.get('due') == 'overdue':
+            qs = qs.filter(status=Cheque.Status.PENDING, due_date__lt=today)
+        return qs
+
+    def get_object(self):
+        if not _is_uuid(self.kwargs.get('pk')):
+            from django.http import Http404
+            raise Http404
+        return super().get_object()
+
+    def _pick(self, model, key, data=None, **scope):
+        val = (data if data is not None else self.request.data).get(key)
+        if not val:
+            return None
+        obj = model.all_objects.filter(pk=val, **scope).first() if _is_uuid(val) else None
+        if obj is None:
+            raise ValidationError({key: 'Not found.'})
+        return obj
+
+    def _date(self, key):
+        from django.utils.dateparse import parse_date
+        raw = (self.request.data.get(key) or '').strip() if isinstance(self.request.data.get(key), str) else ''
+        if not raw:
+            return None
+        try:
+            d = parse_date(raw)
+        except ValueError:
+            d = None
+        if d is None:
+            raise ValidationError({key: 'Use a date like 2026-01-31.'})
+        return d
+
+    def create(self, request, *args, **kwargs):
+        from inventory.models import Supplier
+        from users.models import Customer
+        from .cheques import create_cheque
+        store = request.user.store
+        ch = create_cheque(
+            store, request.user, direction=request.data.get('direction'),
+            customer=self._pick(Customer, 'customer', store=store),
+            supplier=self._pick(Supplier, 'supplier', store=store),
+            number=request.data.get('number') or '', bank_name=request.data.get('bank_name') or '',
+            amount=request.data.get('amount'), issue_date=self._date('issue_date'), due_date=self._date('due_date'),
+            method=self._pick(PaymentMethod, 'method', store=store), note=request.data.get('note') or '')
+        log_activity(request=request, action=f"Recorded cheque {ch.number}: {ch.amount} ({ch.party_name})",
+                     op_type=ActivityLog.OperationType.OTHER, details={'cheque_id': str(ch.id)})
+        return Response(self.get_serializer(ch).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def clear(self, request, pk=None):
+        from treasury.models import MoneyBox
+        from .cheques import clear_cheque
+        store = request.user.store
+        ch = clear_cheque(self.get_object(), request.user,
+                          method=self._pick(PaymentMethod, 'method', store=store),
+                          box=self._pick(MoneyBox, 'box', store=store), on=self._date('on'))
+        log_activity(request=request, action=f"Cheque {ch.number} cleared: {ch.amount} ({ch.party_name})",
+                     op_type=ActivityLog.OperationType.OTHER, details={'cheque_id': str(ch.id)})
+        return Response(self.get_serializer(ch).data)
+
+    @action(detail=True, methods=['post'])
+    def bounce(self, request, pk=None):
+        from users.permissions import ROLE_RANK, _user_rank
+        from .cheques import bounce_cheque
+        ch = self.get_object()
+        if ch.status == Cheque.Status.CLEARED and _user_rank(request.user) < ROLE_RANK['ADMIN']:
+            raise PermissionDenied('Only an admin can bounce a cheque that was already cleared (it reverses a payment).')
+        ch = bounce_cheque(ch, request.user, request.data.get('reason') or '')
+        log_activity(request=request, action=f"Cheque {ch.number} bounced ({ch.party_name})",
+                     op_type=ActivityLog.OperationType.OTHER, details={'cheque_id': str(ch.id), 'reason': ch.status_reason})
+        return Response(self.get_serializer(ch).data)
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        from .cheques import cancel_cheque
+        ch = cancel_cheque(self.get_object(), request.user, request.data.get('reason') or '')
+        log_activity(request=request, action=f"Cheque {ch.number} cancelled ({ch.party_name})",
+                     op_type=ActivityLog.OperationType.OTHER, details={'cheque_id': str(ch.id), 'reason': ch.status_reason})
+        return Response(self.get_serializer(ch).data)
+
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """The reminder: how many waiting cheques are overdue / due in the next 7 days, and their totals."""
+        from django.db.models import Count, Sum
+        today = tz.localdate()
+        base = Cheque.objects.filter(store=request.user.store, status=Cheque.Status.PENDING)
+        out = {}
+        for key, qs in (('overdue', base.filter(due_date__lt=today)),
+                        ('soon', base.filter(due_date__gte=today, due_date__lte=today + timedelta(days=self.SOON_DAYS)))):
+            for d in (Cheque.Direction.RECEIVED, Cheque.Direction.GIVEN):
+                agg = qs.filter(direction=d).aggregate(n=Count('id'), total=Sum('amount'))
+                out[f'{key}_{d.lower()}'] = {'count': agg['n'] or 0, 'total': str(agg['total'] or Decimal('0'))}
+        return Response(out)

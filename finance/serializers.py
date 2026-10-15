@@ -5,7 +5,7 @@ from django.db.models import Sum
 from inventory.models import ProductUnit
 from .models import (
     SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod, CustomerReceipt,
-    PurchaseInvoice, PurchaseItem, SupplierPayment, PurchaseReturn, PurchaseReturnItem,
+    PurchaseInvoice, PurchaseItem, SupplierPayment, PurchaseReturn, PurchaseReturnItem, Cheque,
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice, RefundItem,
@@ -1097,3 +1097,31 @@ class PurchaseReturnSerializer(serializers.ModelSerializer):
     def get_created_by_name(self, obj):
         u = obj.created_by
         return (u.get_full_name() or u.username) if u else ''
+
+
+# --- CHEQUES (s171, finance/cheques.py) ---
+
+class ChequeSerializer(serializers.ModelSerializer):
+    """Read shape. Writes go through ChequeViewSet → finance/cheques.py (one door)."""
+    party_name = serializers.CharField(read_only=True)
+    method_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    days_to_due = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Cheque
+        fields = ['id', 'direction', 'customer', 'supplier', 'party_name', 'number', 'bank_name', 'amount',
+                  'issue_date', 'due_date', 'days_to_due', 'status', 'method', 'method_name', 'cleared_on',
+                  'customer_receipt', 'supplier_payment', 'status_reason', 'note', 'created_by_name', 'created_at']
+        read_only_fields = fields
+
+    def get_method_name(self, obj):
+        return obj.method.name if obj.method_id else ''
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        return (u.get_full_name() or u.username) if u else ''
+
+    def get_days_to_due(self, obj):
+        from django.utils import timezone as tz
+        return (obj.due_date - tz.localdate()).days

@@ -656,6 +656,59 @@ class PurchaseReturnItem(models.Model):
         return Decimal(str(self.quantity)) * Decimal(str(self.unit_factor or 1))
 
 
+class Cheque(TimestampedModel, SoftDeleteModel):
+    """A cheque the shop RECEIVED from a customer or GAVE to a supplier (PROLINE-PARITY "cheques", the old system's
+    `tb_BankChecks`). While PENDING it moves no money and no balance — it is a promise with a due date. CLEARED =
+    the money really arrived / left: it becomes a normal customer payment (finance/receipts.py) or supplier payment,
+    through the cheque's payment method (so it lands in that method's box when the Treasury is on). BOUNCED after
+    clearing reverses that payment (the debt comes back). One door: finance/cheques.py."""
+    class Direction(models.TextChoices):
+        RECEIVED = 'RECEIVED', _('Received from a customer')
+        GIVEN = 'GIVEN', _('Given to a supplier')
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', _('Waiting')
+        CLEARED = 'CLEARED', _('Cleared')
+        BOUNCED = 'BOUNCED', _('Bounced')
+        CANCELLED = 'CANCELLED', _('Cancelled')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='cheques')
+    direction = models.CharField(max_length=8, choices=Direction.choices)
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, null=True, blank=True, related_name='cheques')
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, null=True, blank=True, related_name='cheques')
+    number = models.CharField(max_length=50)
+    bank_name = models.CharField(max_length=120, blank=True, default='')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    issue_date = models.DateField(default=timezone.localdate)
+    due_date = models.DateField(db_index=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True)
+    # How it is paid when it clears (a non-cash, non-Ajel method of the shop — e.g. "Cheque" landing in the bank).
+    method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    cleared_on = models.DateField(null=True, blank=True)
+    customer_receipt = models.OneToOneField('CustomerReceipt', on_delete=models.PROTECT, null=True, blank=True,
+                                            related_name='cheque')
+    supplier_payment = models.OneToOneField(SupplierPayment, on_delete=models.PROTECT, null=True, blank=True,
+                                            related_name='cheque')
+    status_reason = models.TextField(blank=True, default='')   # why it bounced / was cancelled
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='+')
+
+    objects = TenantSoftDeleteManager()
+
+    class Meta:
+        ordering = ['due_date', 'created_at']
+
+    @property
+    def party_name(self):
+        party = self.customer if self.direction == self.Direction.RECEIVED else self.supplier
+        return party.name if party is not None else ''
+
+    def __str__(self):
+        return f"Cheque {self.number} · {self.amount} · {self.due_date}"
+
+
 def weighted_avg_cost(variant, store):
     """Weighted-average unit cost from RECEIVED purchases of this variant in this store.
 
