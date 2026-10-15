@@ -4,6 +4,7 @@ from django.db.models import Sum
 from core.field_visibility import FieldVisibilityMixin, hides_cost, hides_supplier, request_user
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from inventory.fields import ShopVariantField
 from .models import (
     Product, Category, Supplier, AttributeDefinition,
     ProductVariant, ProductAttribute, ProductUnit, StockLevel, Tax, StockAdjustment,
@@ -720,6 +721,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
 
 # --- STOCK ADJUSTMENT SERIALIZER ---
 class StockAdjustmentSerializer(serializers.ModelSerializer):
+    variant = ShopVariantField()   # s175: this shop's variants only
     variant_sku      = serializers.CharField(source='variant.sku', read_only=True)
     product_name     = serializers.CharField(source='variant.product.name', read_only=True)
     branch_name      = serializers.CharField(source='branch.name', read_only=True)
@@ -763,6 +765,7 @@ class StockAdjustmentSerializer(serializers.ModelSerializer):
 
 # --- STOCK TRANSFER SERIALIZERS ---
 class StockTransferItemSerializer(serializers.ModelSerializer):
+    variant = ShopVariantField()   # s175: this shop's variants only
     variant_sku  = serializers.CharField(source='variant.sku', read_only=True)
     product_name = serializers.CharField(source='variant.product.name', read_only=True)
 

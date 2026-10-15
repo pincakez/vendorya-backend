@@ -3,6 +3,7 @@ from rest_framework import serializers
 from django.db import transaction
 from django.db.models import Sum
 from inventory.models import ProductUnit
+from inventory.fields import ShopVariantField
 from .models import (
     SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod, CustomerReceipt,
     PurchaseInvoice, PurchaseItem, SupplierPayment, PurchaseReturn, PurchaseReturnItem, Cheque,
@@ -153,6 +154,7 @@ def _own_staff(serializer, user):
 
 
 class SalesInvoiceItemSerializer(serializers.ModelSerializer):
+    variant = ShopVariantField()   # s175: this shop's variants only
     # New 7: the serials the till picked for a serial-tracked line (checked + applied at checkout).
     serial_numbers = SerialListField(required=False)
 
@@ -377,6 +379,7 @@ class CustomerReceiptSerializer(serializers.ModelSerializer):
 # --- PURCHASE ---
 
 class PurchaseItemSerializer(serializers.ModelSerializer):
+    variant = ShopVariantField()   # s175: this shop's variants only
     track_expiry = serializers.BooleanField(source='variant.product.track_expiry', read_only=True)
     track_serials = serializers.BooleanField(source='variant.product.track_serials', read_only=True)
 
@@ -816,6 +819,7 @@ class WorkShiftSerializer(serializers.ModelSerializer):
 # --- REFUNDS ---
 
 class RefundItemSerializer(serializers.ModelSerializer):
+    variant = ShopVariantField()   # s175: this shop's variants only
     # s168: the unit the customer brings back (e.g. 1 Pack). Write-only — the line freezes its
     # unit_factor from it (same guard as a sale line: a unit of another product falls back to the
     # base unit), so a returned Pack restocks 30 tablets, not 1. Omitted = the base unit.

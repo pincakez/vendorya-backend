@@ -465,7 +465,7 @@ class RefundItem(models.Model):
                 stock, _ = StockLevel.objects.select_for_update().get_or_create(
                     variant=self.variant, branch=self.refund.branch
                 )
-                stock.quantity += base_qty
+                stock.quantity = Decimal(str(stock.quantity)) + base_qty   # a brand-new row's default is a float (s175)
                 stock.save()
                 # Returned goods re-enter batch stock for tracked products. Origin
                 # batch is unknown from a refund line, so they land in an
