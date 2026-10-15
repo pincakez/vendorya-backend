@@ -82,7 +82,13 @@ SUPPLIER_WORDS = ('مورد', 'supplier', 'vendor')
 CUSTOMER_WORDS = ('عميل', 'عملاء', 'زبون', 'customer', 'client')
 PHONE_COLUMNS = ('Mob', 'Tel1', 'Tel2')
 # tb_Cust columns that land somewhere (the rest are counted as "dropped").
-CUST_USED = {'ID', 'Name', 'Mob', 'Tel1', 'Tel2', 'Email', 'Note', 'LimetAcc', 'city', 'Balance', 'Debit', 'Credit'}
+CUST_USED = {'ID', 'Name', 'Mob', 'Tel1', 'Tel2', 'Email', 'Note', 'LimetAcc', 'city', 'Balance', 'Debit', 'Credit',
+             'Address', 'NID', 'Tax1', 'GUAName', 'GUAID', 'GUATel1', 'GUATel2', 'GUAWork', 'GUAAddress'}
+# s171: tb_Cust column → Customer field (+ max length) for the extra customer fields.
+CUST_EXTRA = (('Address', 'address', 255), ('NID', 'national_id', 30), ('Tax1', 'tax_number', 50),
+              ('GUAName', 'guarantor_name', 255), ('GUAID', 'guarantor_national_id', 30),
+              ('GUATel1', 'guarantor_phone', 20), ('GUATel2', 'guarantor_phone_2', 20),
+              ('GUAWork', 'guarantor_work', 255), ('GUAAddress', 'guarantor_address', 255))
 EXTRA_BARCODES = [f'BarCode{i}' for i in range(2, 10)]
 SKU2_MAX = 8
 
@@ -258,9 +264,9 @@ class ProlineAdapter(Adapter):
                 n = sum(1 for x in rows if has_value(x.get(col)))
                 if n:
                     drop.note(f'dropped: {col}', n)
-            extra_phone = sum(1 for x in rows if len({norm_phone(x.get(c)) for c in PHONE_COLUMNS} - {''}) > 1)
+            extra_phone = sum(1 for x in rows if len({norm_phone(x.get(c)) for c in PHONE_COLUMNS} - {''}) > 2)
             if extra_phone:
-                drop.note('dropped: a 2nd / 3rd phone (Vendorya keeps one phone)', extra_phone)
+                drop.note('dropped: a 3rd phone (Vendorya keeps two)', extra_phone)
 
         self.supplier_keys = {p['key'] for p in self.parties if not p['skip'] and 'supplier' in p['kinds']}
 
@@ -596,6 +602,18 @@ class ProlineAdapter(Adapter):
             x = p['row']
             v = self._party_values(sec, x, 20)
             values = {'name': v['name'], 'email': v['email'], 'notes': v['notes'] or None, 'city': v['city']}
+            # s171: second phone, address, national ID, tax number, guarantor (empty → left out, never blanks a value)
+            phones = list(dict.fromkeys(ph for ph in (norm_phone(x.get(c)) for c in PHONE_COLUMNS) if ph))
+            if len(phones) > 1 and len(phones[1]) <= 20:
+                values['phone_2'] = phones[1]
+            for col, field, size in CUST_EXTRA:
+                val = norm_phone(x.get(col)) if field in ('guarantor_phone', 'guarantor_phone_2') else text(x.get(col))
+                if not val:
+                    continue
+                if len(val) > size:
+                    sec.note(f'{col} longer than {size} characters — not imported')
+                    continue
+                values[field] = val
             try:
                 limit = parse_decimal(x.get('LimetAcc'), 'LimetAcc')
             except BadNumber:
@@ -721,7 +739,13 @@ class ProlineAdapter(Adapter):
                 sell = None
             if sell is None:
                 sec.note('PriceOut1 empty or 0 — a new product gets 0, an existing one keeps its price')
-            var_vals = {'cost_price': cost, 'sell_price': sell, 'reorder_level': pr['MinQty']}
+            # s171 review: a cost or reorder level of 0 is "no value" too — never wipe a real one typed in Vendorya
+            # (a 0 cost would show a 100% profit on the next sale). A new product still gets 0.
+            if cost == 0:
+                cost = None
+                sec.note('PriceIn empty or 0 — a new product gets 0, an existing one keeps its cost')
+            reorder = pr['MinQty'] if pr['MinQty'] not in (0, Decimal('0')) else None
+            var_vals = {'cost_price': cost, 'sell_price': sell, 'reorder_level': reorder}
             with self.row(sec, sample):
                 ref, v = self.refs.target('product', code, ProductVariant)
                 origin, verb = None, None

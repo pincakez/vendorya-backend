@@ -415,8 +415,9 @@ def run_import(adapter_cls, store, folder, options=None, commit=False, user=None
     adapter.commit = commit
     with search_indexing_paused(), transaction.atomic():
         if not commit:
-            # A dry run takes the same row locks as a commit (it really writes, then rolls back): fail fast
-            # instead of making the till wait behind it. Run dry runs outside opening hours.
+            # A dry run takes the same row locks as a commit (it really writes, then rolls back). This timeout only
+            # stops IT from waiting on others' locks; the till can still wait on the locks it holds until the run
+            # ends — so run dry runs (and commits) outside opening hours.
             from django.db import connection
             if connection.vendor == 'postgresql':
                 with connection.cursor() as cur:

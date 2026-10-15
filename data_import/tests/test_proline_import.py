@@ -278,13 +278,19 @@ class ReportTests(_Base):
         self.assertIn('1 codes used in invoices/items match no tb_Cust row (e.g. 999)', text)
         self.assertIn('2 × rows with ANY extra barcode (BarCode2..BarCode9)', text)
         self.assertIn('1 × PriceMini set', text)
-        self.assertIn('dropped: NID', text)
-        self.assertIn('dropped: GUAName', text)
+        self.assertNotIn('dropped: NID', text)          # s171: national ID + guarantor have a home now
+        self.assertNotIn('dropped: GUAName', text)
         self.assertIn('Balance = Debit − Credit on 8 of 8 rows', text)
         self.assertIn('missing columns: web_name', text)
         self.assertIn('extra columns (ignored): FutureColumn', text)
         self.assertIn('bad number in PriceOut1 ("12x")', text)
         self.assertIn('duplicate ItemCode', text)
+
+    def test_extra_customer_fields_land(self):
+        self.run_import(commit=True)
+        c = Customer.objects.get(store=self.store, name='محمد أحمد')
+        self.assertEqual((c.phone_number, c.phone_2, c.national_id), ('01001234567', '0223456789', '29001011234567'))
+        self.assertEqual(Customer.objects.get(store=self.store, name='سارة محمود').guarantor_name, 'ضامن')
 
     def test_forced_codes_override_the_split(self):
         report = self.run_import(commit=False, customer_codes=['12'], type_column='none')
