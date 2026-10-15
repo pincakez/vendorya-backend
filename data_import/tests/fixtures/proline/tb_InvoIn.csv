@@ -1,0 +1,4 @@
+﻿InvoNo,Date,Time,InvoID,StoreCode,StoreName,ComCode,ComName,Note,TotalNoDis,Dis,Total,Payed,Cre,InvoType,Cheeck,Visa,UserAdded,AllItem,AllItemQty,BranchCode,BranchName,RefCode,RefName,discountRate
+1,,,,,,5,مؤسسة الأمل,,,,3000,,,,,,,,,,,,,
+2,,,,,,6,كريم علي,,,,100,,,,,,,,,,,,,
+3,,,,,,2,شركة النور للتوريدات,,,,12000,,,,,,,,,,,,,
