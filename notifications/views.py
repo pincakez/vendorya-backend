@@ -52,6 +52,13 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='unread-count')
     def unread_count(self, request):
+        # s173: payment due dates that reached their day send their reminder now (no scheduler) — never breaks the bell
+        try:
+            from finance.payment_dues import notify_due
+            notify_due(getattr(request.user, 'store', None))
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).exception('payment due reminders failed')
         count = self.get_queryset().filter(read_at__isnull=True).count()
         return Response({'count': count})
 

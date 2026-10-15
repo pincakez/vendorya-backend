@@ -323,6 +323,10 @@ class StoreSettings(TimestampedModel):
     reservations_enabled = models.BooleanField(
         _("Reservations with a deposit"), default=False,
         help_text=_("Hold items for a customer who paid part of the price; turn it into a sale later, or cancel."))
+    # s173 (PAYMENT-DUES.md): dates a customer promised to pay by (one or instalments) + late / due-soon reminders.
+    payment_dues_enabled = models.BooleanField(
+        _("Payment due dates"), default=False,
+        help_text=_("Write when a customer will pay (one date or instalments) and get reminded on the day."))
     # TREASURY.md (Wave 1): money boxes — drawer, safe, bank, e-wallet… with immutable lines. OFF = Vendorya exactly as before
     # (shifts count cash the old way, expenses have no "paid from"). Turning it on runs treasury.ledger.setup().
     treasury_enabled = models.BooleanField(

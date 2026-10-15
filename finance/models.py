@@ -721,6 +721,45 @@ class Cheque(TimestampedModel, SoftDeleteModel):
         return f"Cheque {self.number} · {self.amount} · {self.due_date}"
 
 
+class PaymentDue(TimestampedModel, SoftDeleteModel):
+    """A date a customer promised to pay by (s173, PAYMENT-DUES.md) — one, or one of a set of instalments.
+    A REMINDER, never money: the debt itself is the customer's balance (sales on credit, opening balance), so a due
+    date changes no balance. The money comes in through the normal customer receipt (finance/receipts.py); "paid"
+    links that receipt. Late / due-soon lists + a notification on the day. One door: finance/payment_dues.py."""
+    class Status(models.TextChoices):
+        OPEN = 'OPEN', _('Open')
+        DONE = 'DONE', _('Done')
+        CANCELLED = 'CANCELLED', _('Cancelled')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='payment_dues')
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='payment_dues')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    due_date = models.DateField(db_index=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True)
+    # Instalments made together share one plan id: "2 of 6".
+    plan = models.UUIDField(null=True, blank=True, db_index=True)
+    plan_seq = models.PositiveSmallIntegerField(null=True, blank=True)
+    plan_count = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Optional: the credit sale this promise is about.
+    invoice = models.ForeignKey(SalesInvoice, on_delete=models.SET_NULL, null=True, blank=True, related_name='payment_dues')
+    note = models.TextField(blank=True, default='')
+    done_on = models.DateField(null=True, blank=True)
+    receipt = models.ForeignKey('CustomerReceipt', on_delete=models.SET_NULL, null=True, blank=True, related_name='payment_dues')
+    status_reason = models.TextField(blank=True, default='')   # why it was cancelled / closed without a receipt
+    notified_on = models.DateField(null=True, blank=True)      # the day's reminder was sent (sent once)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='+')
+
+    objects = TenantSoftDeleteManager()
+
+    class Meta:
+        ordering = ['due_date', 'plan_seq', 'created_at']
+
+    def __str__(self):
+        return f"Due {self.amount} · {self.due_date} · {self.customer_id}"
+
+
 class ReservationSequence(models.Model):
     """The last reservation number per shop (1, 2, 3…)."""
     store = models.OneToOneField(Store, on_delete=models.CASCADE, related_name='+')

@@ -27,6 +27,7 @@ class Notification(models.Model):
         SHIFT_DIFFERENCE  = 'SHIFT_DIFFERENCE',   _('Shift Difference')
         INVOICE_VOIDED    = 'INVOICE_VOIDED',     _('Invoice Voided')
         ADMIN_NOTE        = 'ADMIN_NOTE',         _('Admin Note')
+        PAYMENT_DUE       = 'PAYMENT_DUE',        _('Payment Due')
         SYSTEM            = 'SYSTEM',             _('System')
         GENERAL           = 'GENERAL',            _('General')
 

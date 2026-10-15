@@ -1,4 +1,5 @@
 from rest_framework.routers import DefaultRouter
+from .payment_due_views import PaymentDueViewSet
 from .reservation_views import ReservationViewSet
 from .views import (
     PaymentMethodViewSet, SalesInvoiceViewSet, PaymentViewSet, CustomerReceiptViewSet,
@@ -21,5 +22,6 @@ router.register('refunds', RefundInvoiceViewSet, basename='refunds')
 router.register('purchase-returns', PurchaseReturnViewSet, basename='purchase-returns')
 router.register('cheques', ChequeViewSet, basename='cheques')
 router.register('reservations', ReservationViewSet, basename='reservations')
+router.register('payment-dues', PaymentDueViewSet, basename='payment-dues')
 
 urlpatterns = router.urls
