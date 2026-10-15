@@ -113,6 +113,22 @@ class OwnerLockTests(TestCase):
         self.assertEqual(self.c.patch(SETTINGS, {'owner_lock_enabled': False}, format='json').status_code, 200)
         self.assertEqual(self.c.get(API + 'overview/').status_code, 200)
 
+    def test_no_way_around_it_through_the_owner_level_or_the_treasury(self):
+        # s175 (surgeon review): owner level off → lock off (no code asked) → owner level on = open with no code. Closed now.
+        self._lock_on()
+        for body in ({'treasury_owner_level': False}, {'treasury_enabled': False}):
+            r = self.c.patch(SETTINGS, body, format='json')
+            self.assertEqual(r.status_code, 403, body)
+            self.assertEqual(r.data['code'], 'owner_locked')
+        # even if the owner level were already off, the saved lock still needs the code to switch off
+        StoreSettings.objects.filter(store=self.store).update(treasury_owner_level=False)
+        self.assertEqual(self.c.patch(SETTINGS, {'owner_lock_enabled': False}, format='json').status_code, 403)
+        self.assertEqual(self.c.patch(SETTINGS, {'treasury_owner_level': True}, format='json').status_code, 200)
+        self.assertEqual(self.c.get(API + 'overview/').status_code, 403)   # back on = still locked
+        # open with the code → the owner level can be switched off again
+        self.c.post(LOCK + 'open/', {'code': '22222222'}, format='json')
+        self.assertEqual(self.c.patch(SETTINGS, {'treasury_owner_level': False}, format='json').status_code, 200)
+
     def test_minutes_between_1_and_240(self):
         self._enroll()
         self.assertEqual(self.c.patch(SETTINGS, {'owner_unlock_minutes': 0}, format='json').status_code, 400)

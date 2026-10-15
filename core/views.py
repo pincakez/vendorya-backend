@@ -330,17 +330,24 @@ class StoreSettingsView(APIView):
         # s174: the My money lock — only the owner (the person) changes it; ON needs his authenticator set up; while it is on,
         # OFF or new minutes need My money open right now (a fresh code), so nobody at a signed-in screen can switch it off.
         vd, cur = serializer.validated_data, request.user.store.settings
-        if (('owner_lock_enabled' in vd and vd['owner_lock_enabled'] != cur.owner_lock_enabled)
-                or ('owner_unlock_minutes' in vd and vd['owner_unlock_minutes'] != cur.owner_unlock_minutes)):
-            from treasury import owner_lock
+        from treasury import owner_lock
+        lock_change = (('owner_lock_enabled' in vd and vd['owner_lock_enabled'] != cur.owner_lock_enabled)
+                       or ('owner_unlock_minutes' in vd and vd['owner_unlock_minutes'] != cur.owner_unlock_minutes))
+        if lock_change:
             from users.twofa import is_enrolled
             if ledger.owner_for_user(request.user) is None:
                 return Response({'code': 'not_owner', 'detail': 'Only the shop owner can change the My money lock.'}, status=403)
             if vd.get('owner_lock_enabled') and not cur.owner_lock_enabled and not is_enrolled(request.user):
                 return Response({'code': 'authenticator_needed',
                                  'detail': 'Set up your authenticator first (Settings → Security).'}, status=400)
-            if owner_lock.enabled(request.user.store) and not owner_lock.is_open(request):
+            # s175: a lock saved ON is changed only with My money open right now — also while the owner level is off,
+            # else "owner level off → lock off → owner level on" opened My money with no code (surgeon review).
+            if cur.owner_lock_enabled and not owner_lock.is_open(request):
                 return Response({'code': 'owner_locked', 'detail': 'Open My money with your code first.'}, status=403)
+        # s175: …and while the lock is ON and closed, the switches it rides on can't be turned OFF either.
+        switching_off = any(f in vd and not vd[f] and getattr(cur, f) for f in ('treasury_enabled', 'treasury_owner_level'))
+        if switching_off and owner_lock.enabled(request.user.store) and not owner_lock.is_open(request):
+            return Response({'code': 'owner_locked', 'detail': 'Open My money with your code first.'}, status=403)
         with transaction.atomic():
             settings_obj = serializer.save()
             # TREASURY.md § 11: turning the Treasury on makes the shop's boxes (owner + shop part, one drawer per
