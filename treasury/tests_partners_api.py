@@ -371,12 +371,13 @@ class PartnersApiTests(TestCase):
         eid = r.data['id']
         lines = MoneyMove.all_objects.filter(expense_id=eid).count()
         self.assertEqual(lines, 1)
-        r = mgr.patch(f'/api/finance/expenses/{eid}/', {'owner_only': True}, format='json')
+        # only the owner may flip owner_only (s170 review) — a manager is refused, see Wave2ReviewFixTests
+        r = self.c.patch(f'/api/finance/expenses/{eid}/', {'owner_only': True}, format='json')
         self.assertEqual((r.status_code, r.data['owner_only']), (200, True))
         self.assertTrue(mgr.get(f'/api/finance/expenses/{eid}/').data['owner_only'])
         self.assertEqual(MoneyMove.all_objects.filter(expense_id=eid).count(), lines)
         self.assertEqual(ledger.balance(self.safe), D('960'))
-        r = mgr.post('/api/finance/expenses/', {**body, 'owner_only': True}, format='json')
+        r = self.c.post('/api/finance/expenses/', {**body, 'owner_only': True}, format='json')
         self.assertTrue(Expense.objects.get(pk=r.data['id']).owner_only)
 
 
@@ -404,7 +405,7 @@ class Wave2ReviewFixTests(PartnersApiTests):
         self.assertTrue(Expense.objects.get(pk=eid).owner_only)
 
     def test_business_with_a_partner_balance_cannot_close(self):
-        p = self._partner(self.side, '30')
+        p = Partner.objects.get(pk=self._partner(self.side, '30')['id'])
         ledger.partner_put_in(p, '100', self.side_cash)
         ledger.move_between(self.side_cash, self.home_cash, '100')
         self.c.patch(f'{API}boxes/{self.side_cash.id}/', {'is_active': False}, format='json')
