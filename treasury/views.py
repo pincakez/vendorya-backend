@@ -96,6 +96,7 @@ def statement_dates(params):
 # What a statement line may point at (one query for the whole statement).
 STATEMENT_RELATED = ('created_by', 'payment__invoice', 'customer_receipt__customer', 'refund',
                      'supplier_payment__supplier', 'purchase_return', 'expense__category', 'other_income__category', 'shift__user',
+                     'reservation_deposit__reservation__customer',
                      'reverses')
 
 
@@ -410,3 +411,41 @@ class OtherIncomeViewSet(TreasuryMixin, mixins.ListModelMixin, mixins.RetrieveMo
         _log(request, f'Deleted other income: {money(income.amount)}',
              {'other_income_id': str(income.id), 'amount': money(income.amount), 'reason': reason})
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ── Wave 3 reports (TREASURY.md § 8, New 9) ────────────────────────────────────────────────────────────────────────
+def report_date(params, key='date'):
+    """`?date=YYYY-MM-DD` (default today) → (date, error body)."""
+    raw = (params.get(key) or '').strip()
+    if not raw:
+        return timezone.localdate(), None
+    try:
+        d = parse_date(raw)
+    except ValueError:
+        d = None
+    return (d, None) if d else (None, {key: 'Use a date like 2026-01-31.'})
+
+
+class TreasuryReportViewSet(TreasuryMixin, viewsets.ViewSet):
+    """The shop's money reports. GET balances/?date= · movements/?date_from=&date_to=&box= (managers, like the boxes)."""
+    role_map = {'balances': 'MANAGER', 'movements': 'MANAGER'}
+
+    @action(detail=False, methods=['get'])
+    def balances(self, request):
+        from .reports import balances_on
+        on, err = report_date(request.query_params)
+        if err:
+            return Response(err, status=status.HTTP_400_BAD_REQUEST)
+        return Response(balances_on(MoneyBox.objects.filter(store=self.store), on))
+
+    @action(detail=False, methods=['get'])
+    def movements(self, request):
+        from .reports import movements
+        df, dt, err = statement_dates(request.query_params)
+        if err:
+            return Response(err, status=status.HTTP_400_BAD_REQUEST)
+        lines = MoneyMove.objects.filter(store=self.store)
+        box = request.query_params.get('box')
+        if box:
+            lines = lines.filter(box=self.shop_box(box))
+        return Response(movements(lines, df, dt))

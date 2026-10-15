@@ -319,6 +319,10 @@ class StoreSettings(TimestampedModel):
     require_shift_to_sell = models.BooleanField(
         _("Require an open shift to sell"), default=False,
         help_text=_("When on, the till refuses a sale until the seller opens a shift in that branch."))
+    # s172 (RESERVATIONS.md): hold items for a named customer against a deposit; convert to a sale or cancel later.
+    reservations_enabled = models.BooleanField(
+        _("Reservations with a deposit"), default=False,
+        help_text=_("Hold items for a customer who paid part of the price; turn it into a sale later, or cancel."))
     # TREASURY.md (Wave 1): money boxes — drawer, safe, bank, e-wallet… with immutable lines. OFF = Vendorya exactly as before
     # (shifts count cash the old way, expenses have no "paid from"). Turning it on runs treasury.ledger.setup().
     treasury_enabled = models.BooleanField(

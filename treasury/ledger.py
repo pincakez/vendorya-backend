@@ -42,7 +42,7 @@ CENT = Decimal('0.01')
 # Kinds that may hold a negative balance by default (an overdraft); every other kind is cash-like.
 NEGATIVE_OK_KINDS = {MoneyBox.Kind.BANK}
 # What a line can point at (a reversal copies them, so a reversed line drops out of every per-source sum).
-SOURCE_LINKS = ('payment', 'customer_receipt', 'refund', 'supplier_payment', 'purchase_return', 'expense', 'other_income', 'shift',
+SOURCE_LINKS = ('payment', 'customer_receipt', 'refund', 'supplier_payment', 'purchase_return', 'expense', 'other_income', 'reservation_deposit', 'shift',
                 'part_entry', 'loan', 'amana', 'partner')
 # Parts that earn money (a P&L, partners). PERSONAL money is never profit.
 BUSINESS_PARTS = {OwnerPart.Kind.SHOP, OwnerPart.Kind.BUSINESS}

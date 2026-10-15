@@ -172,6 +172,10 @@ def move_ref(m, counterpart_names=None):
         oi = m.other_income
         return {'type': 'other_income', 'id': str(oi.id),
                 'label': oi.category.name if oi.category_id else (oi.description or '')[:80]}
+    if m.reservation_deposit_id:
+        r = m.reservation_deposit.reservation
+        return {'type': 'reservation', 'id': str(r.id),
+                'label': f'{r.number} · {r.customer.name}' if r.customer_id else str(r.number)}
     if m.transfer_id:
         # The label is the OTHER box of the transfer ("→ Safe" / "← Drawer 1" — the screen adds the arrow by kind).
         return {'type': 'transfer', 'id': str(m.transfer_id),

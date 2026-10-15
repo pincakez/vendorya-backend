@@ -24,4 +24,7 @@ router.register('partners', PartnerViewSet, basename='owner-partners')
 router.register('settlements', SettlementViewSet, basename='owner-settlements')
 router.register('pnl', PartPnlViewSet, basename='owner-pnl')
 
+# ── Wave 3 reports ──
+from .owner_views import OwnerReportViewSet  # noqa: E402
+router.register('reports', OwnerReportViewSet, basename='owner-reports')
 urlpatterns = router.urls

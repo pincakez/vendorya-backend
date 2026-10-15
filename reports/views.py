@@ -467,6 +467,18 @@ def compute_pnl(store, df, dt, g='month'):
         periods[_key(r['period'])]['expenses'] += Decimal(r['expenses'] or 0)
     for r in other_income_periods:
         periods[_key(r['period'])]['other_income'] += Decimal(r['other_income'] or 0)
+    # s172 (RESERVATIONS.md): a deposit the shop KEPT when a reservation was cancelled = other income on that day.
+    from finance.models import Reservation
+    kept_periods = (
+        Reservation.objects.filter(store=store, status=Reservation.Status.CANCELLED,
+                                   deposit_outcome=Reservation.DepositOutcome.KEPT,
+                                   cancelled_at__date__gte=df, cancelled_at__date__lte=dt)
+        .annotate(period=_trunc(g, TruncDate('cancelled_at')))
+        .values('period')
+        .annotate(kept=Coalesce(Sum('kept_amount'), Value(ZERO), output_field=DEC))
+    )
+    for r in kept_periods:
+        periods[_key(r['period'])]['other_income'] += Decimal(r['kept'] or 0)
     # Returns (s165, §WALK-S163 B2 — standard accounting): counted WITHOUT tax (revenue is ex-tax too),
     # less the restocking fee the shop keeps (fee = income); the cost of goods put back on the shelf
     # comes back out of COGS. So 'returns' = net returns and 'cogs' = net COGS, and the screen's

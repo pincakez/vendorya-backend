@@ -293,6 +293,9 @@ class MoneyMove(models.Model):
         AMANA_OUT       = 'AMANA_OUT',       _('Held money returned')
         PARTNER_IN      = 'PARTNER_IN',      _('Partner put in')
         PARTNER_OUT     = 'PARTNER_OUT',     _('Paid to a partner')
+        # s172 (RESERVATIONS.md): a reservation's deposit taken / given back. Not income — the sale (or a kept deposit) is.
+        DEPOSIT_IN      = 'DEPOSIT_IN',      _('Reservation deposit')
+        DEPOSIT_OUT     = 'DEPOSIT_OUT',     _('Deposit given back')
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     box = models.ForeignKey(MoneyBox, on_delete=models.PROTECT, related_name='moves')
@@ -317,6 +320,8 @@ class MoneyMove(models.Model):
     purchase_return = models.ForeignKey('finance.PurchaseReturn', on_delete=models.PROTECT, null=True, blank=True,
                                         related_name='+')
     other_income = models.ForeignKey(OtherIncome, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    reservation_deposit = models.ForeignKey('finance.ReservationDeposit', on_delete=models.PROTECT, null=True, blank=True,
+                                            related_name='+')
     # Wave 2 sources (owner level)
     part_entry = models.ForeignKey(PartEntry, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     loan = models.ForeignKey(Loan, on_delete=models.PROTECT, null=True, blank=True, related_name='moves')

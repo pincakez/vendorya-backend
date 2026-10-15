@@ -468,3 +468,64 @@ class AmanaViewSet(OwnerViewSetMixin, mixins.ListModelMixin, mixins.RetrieveMode
     @action(detail=True, methods=['post'])
     def more(self, request, pk=None):
         return self._line(request, ledger.amana_more)
+
+
+# ── Wave 3 reports (TREASURY.md § 8, New 9) — the owner's whole money world ────────────────────────────────────────
+class OwnerReportViewSet(OwnerViewSetMixin, viewsets.ViewSet):
+    """GET balances/?date= · movements/?date_from&date_to&part=&box= · draws/?date_from&date_to ·
+    amanat/?date=&date_from&date_to · partners/?date_from&date_to. Owner only (OwnerMixin)."""
+
+    def _lines(self):
+        lines = MoneyMove.all_objects.filter(box__in=ledger.owner_boxes(self.owner))
+        p = self.request.query_params
+        if p.get('part'):
+            lines = lines.filter(part=self.owner_part(p['part']))
+        if p.get('box'):
+            lines = lines.filter(box=self.owner_box(p['box']))
+        return lines
+
+    def _range(self):
+        df, dt, err = statement_dates(self.request.query_params)
+        if err:
+            raise ValidationError(err)
+        return df, dt
+
+    @action(detail=False, methods=['get'])
+    def balances(self, request):
+        from .reports import balances_on
+        from .views import report_date
+        on, err = report_date(request.query_params)
+        if err:
+            raise ValidationError(err)
+        out = balances_on(ledger.owner_boxes(self.owner), on)
+        from .reports import amanat
+        out['amanat_held'] = amanat(self.owner, on)['total']   # part of the total belongs to other people
+        return Response(out)
+
+    @action(detail=False, methods=['get'])
+    def movements(self, request):
+        from .reports import movements
+        df, dt = self._range()
+        return Response(movements(self._lines(), df, dt))
+
+    @action(detail=False, methods=['get'])
+    def draws(self, request):
+        from .reports import draws
+        df, dt = self._range()
+        return Response(draws(self._lines(), df, dt))
+
+    @action(detail=False, methods=['get'])
+    def amanat(self, request):
+        from .reports import amanat
+        from .views import report_date
+        on, err = report_date(request.query_params)
+        if err:
+            raise ValidationError(err)
+        df, dt = self._range()
+        return Response(amanat(self.owner, on, df, dt))
+
+    @action(detail=False, methods=['get'])
+    def partners(self, request):
+        from .reports import partners
+        df, dt = self._range()
+        return Response(partners(self.owner, df, dt))

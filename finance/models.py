@@ -227,6 +227,10 @@ class Payment(TimestampedModel, SoftDeleteModel):
     # Set when this payment is one invoice's share of a lump-sum CustomerReceipt (s167, Proline "دفع عملاء").
     receipt = models.ForeignKey('CustomerReceipt', on_delete=models.PROTECT, null=True, blank=True,
                                 related_name='payments')
+    # s172 (RESERVATIONS.md): set when this payment is a reservation's deposit carried onto the sale it became. The money
+    # was counted (box line / shift) when the deposit was TAKEN — this row writes no box line and no shift counts it again.
+    deposit_of = models.ForeignKey('Reservation', on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='sale_payments')
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
@@ -325,7 +329,8 @@ class WorkShift(TimestampedModel):
             invoice__store=self.store,
             created_at__gte=self.start_time,
             method__is_cash=True,
-            created_by=self.user
+            created_by=self.user,
+            deposit_of__isnull=True,   # s172: a reservation's deposit carried onto its sale — counted when TAKEN
         ).aggregate(sum=Sum('amount'))['sum'] or Decimal('0')
         received = CustomerReceipt.all_objects.filter(
             store=self.store, is_deleted=False,
@@ -333,12 +338,19 @@ class WorkShift(TimestampedModel):
             method__is_cash=True,
             created_by=self.user,
         ).aggregate(sum=Sum('unallocated'))['sum'] or Decimal('0')
-        return paid + received
+        return paid + received + self._deposits(positive=True)
+
+    def _deposits(self, positive):
+        """s172: cash reservation deposits taken (+) / given back (−, returned as a positive number) in this shift."""
+        qs = ReservationDeposit.objects.filter(shift=self, method__is_cash=True,
+                                               **({'amount__gt': 0} if positive else {'amount__lt': 0}))
+        total = qs.aggregate(sum=Sum('amount'))['sum'] or Decimal('0')
+        return total if positive else -total
 
     def cash_out(self):
-        """Cash refunds paid out of this drawer (s157, §AUDIT A9)."""
-        return (RefundInvoice.all_objects.filter(shift=self, is_deleted=False)
-                .aggregate(sum=Sum('drawer_cash'))['sum'] or Decimal('0'))
+        """Cash refunds paid out of this drawer (s157, §AUDIT A9) + cash deposits given back (s172)."""
+        return ((RefundInvoice.all_objects.filter(shift=self, is_deleted=False)
+                 .aggregate(sum=Sum('drawer_cash'))['sum'] or Decimal('0')) + self._deposits(positive=False))
 
     def close_shift(self, counted_cash):
         """Closes the shift and calculates shortage/overage."""
@@ -707,6 +719,102 @@ class Cheque(TimestampedModel, SoftDeleteModel):
 
     def __str__(self):
         return f"Cheque {self.number} · {self.amount} · {self.due_date}"
+
+
+class ReservationSequence(models.Model):
+    """The last reservation number per shop (1, 2, 3…)."""
+    store = models.OneToOneField(Store, on_delete=models.CASCADE, related_name='+')
+    last_number = models.PositiveIntegerField(default=0)
+
+
+class Reservation(TimestampedModel, SoftDeleteModel):
+    """Items held for a named customer against a deposit (PROLINE-PARITY "reservations"; RESERVATIONS.md).
+
+    OPEN: the lines are HELD — still on the shelf count, but the till's "available" excludes them — and deposits may be
+    taken / given back. CONVERTED: became `sale` (the deposits are Payments on it, `Payment.deposit_of`). CANCELLED: held
+    stock free again; the deposit left was given back / kept (other income) / moved to the customer's store credit.
+    Every state change goes through finance/reservations.py (the one door)."""
+    class Status(models.TextChoices):
+        OPEN = 'OPEN', _('Open')
+        CONVERTED = 'CONVERTED', _('Became a sale')
+        CANCELLED = 'CANCELLED', _('Cancelled')
+
+    class DepositOutcome(models.TextChoices):
+        NONE = '', _('No deposit left')
+        REFUNDED = 'REFUNDED', _('Given back')
+        KEPT = 'KEPT', _('Kept by the shop')
+        TO_CREDIT = 'TO_CREDIT', _('Moved to store credit')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='reservations')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT)
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='reservations')
+    number = models.PositiveIntegerField(editable=False)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True)
+    date = models.DateTimeField(default=timezone.now)
+    hold_until = models.DateField(null=True, blank=True)
+    note = models.TextField(blank=True, default='')
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0'))   # Σ lines (agreed prices)
+    salesperson = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='+')
+    salesperson_name = models.CharField(max_length=150, blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='+')
+    sale = models.OneToOneField(SalesInvoice, on_delete=models.PROTECT, null=True, blank=True, related_name='reservation')
+    converted_at = models.DateTimeField(null=True, blank=True)
+    # The part of the deposit beyond the sale's total, moved to the customer's store credit at conversion.
+    converted_extra_to_credit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0'))
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                     related_name='+')
+    cancel_reason = models.TextField(blank=True, default='')
+    deposit_outcome = models.CharField(max_length=10, choices=DepositOutcome.choices, default='', blank=True)
+    # The deposit KEPT by the shop on cancel — "Other income" in the P&L on `cancelled_at`.
+    kept_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0'))
+
+    objects = TenantSoftDeleteManager()
+
+    class Meta:
+        ordering = ['-date', '-created_at']
+        constraints = [models.UniqueConstraint(fields=['store', 'number'], name='one_reservation_number_per_store')]
+
+    def deposit_balance(self):
+        """Money held for this reservation right now = Σ deposits − Σ given back."""
+        return self.deposits.aggregate(s=Sum('amount'))['s'] or Decimal('0')
+
+    def __str__(self):
+        return f"Reservation {self.number} · {self.customer.name}"
+
+
+class ReservationItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    reservation = models.ForeignKey(Reservation, on_delete=models.CASCADE, related_name='items')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    quantity = models.DecimalField(max_digits=10, decimal_places=3)   # base unit
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)  # the agreed price
+    # Serial-tracked products: the exact unit(s) held (optional). No other sale may take them while OPEN.
+    serial_numbers = models.JSONField(default=list, blank=True)
+
+    @property
+    def total(self):
+        return (self.quantity * self.unit_price).quantize(Decimal('0.01'))
+
+
+class ReservationDeposit(models.Model):
+    """One deposit taken (+) or given back (−). Immutable — a mistake is a give-back line, never an edit."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    reservation = models.ForeignKey(Reservation, on_delete=models.PROTECT, related_name='deposits')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, related_name='+')
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='+')
+    # The drawer session that took / paid the cash (old-formula shifts count it; Treasury shifts read the box line).
+    shift = models.ForeignKey('WorkShift', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    note = models.CharField(max_length=200, blank=True, default='')
+
+    class Meta:
+        ordering = ['created_at']
 
 
 def weighted_avg_cost(variant, store):
