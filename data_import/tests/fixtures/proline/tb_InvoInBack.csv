@@ -1,0 +1,2 @@
+﻿InvoNo,Date,Time,InvoID,StoreCode,StoreName,PriceType,ComCode,ComName,Note,TotalNoDis,Dis,Total,Payed,Cre,InvoType,Cheeck,Visa,UserAdded,AllItem,AllItemQty,BranchCode,BranchName,RefCode,RefName,discountRate
+1,,,,,,,5,,,,,50,,,,,,,,,,,,,

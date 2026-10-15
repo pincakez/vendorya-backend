@@ -1,0 +1,5 @@
+﻿InvoNo,Date,Time,InvoID,StoreCode,StoreName,PriceType,ComCode,ComName,Note,TotalNoDis,Dis,Total,Payed,Cre,InvoType,Cheeck,Visa,ShowNo,UserAdded,UserPayID,UserPayName,AllItem,TaxeS,TaxeG,Servc,Delev,InvoDelev,CurrencyPay,MoneyPay,AllItemQty,InvoMark,InvoType2,BranchCode,BranchName,TableID,Personal,Booking,DateArr,TimeArr,BookingStatus,EndRest,MiniMunPersonal,MinMunOnOff,Dayss,TableGroup,InvoNoDay,MinimumTotal,Printed,MobPrinted,DownPayment,UserSerID,UserSerName,RefCode,RefName,DiscountUnit,DiscountTotal,VoucherCode
+1,,,,,,,1,,,,,2000,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+2,,,,,,,6,,,,,800,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+3,,,,,,,3,,,,,100,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+4,,,,,,,999,,,,,10,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,

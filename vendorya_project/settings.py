@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     'treasury',
     'public_api',
     'search',
+    'data_import',
 ]
 
 MIDDLEWARE = [
