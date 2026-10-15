@@ -16,6 +16,13 @@ from inventory.models import (
 )
 from users.models import Customer
 
+def person_name(user):
+    """The name a document freezes for a person (full name, else the login name)."""
+    if user is None:
+        return ''
+    return ((user.get_full_name() or '').strip() or user.username or '')[:150]
+
+
 # --- 1. SEQUENCING ---
 class InvoiceSequence(models.Model):
     """Tracks the last invoice number for each store."""
@@ -122,10 +129,19 @@ class SalesInvoice(TimestampedModel, SoftDeleteModel):
     # Cash handed back at the till when the customer paid more cash than was due (s167, split payment). The
     # cash Payment stores only the money KEPT; this is printed on the receipt as "Change".
     change_given = models.DecimalField(max_digits=12, decimal_places=2, default=0.00, editable=False)
+    # s171 (PROLINE-PARITY "salesman per line"): who SOLD it — not who took the money (Payment.created_by). Defaults
+    # to the signed-in person; the name is frozen so old / imported history keeps a name even when the login is gone.
+    salesperson = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='sales_made')
+    salesperson_name = models.CharField(max_length=150, blank=True, default='')
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
     def save(self, *args, **kwargs):
+        if self._state.adding and self.salesperson_id is None and not self.salesperson_name:
+            self.salesperson = _request_user()
+        if self.salesperson_id and not self.salesperson_name:
+            self.salesperson_name = person_name(self.salesperson)
         if self.status == self.Status.POSTED and not self.invoice_number:
             with transaction.atomic():
                 seq = InvoiceSequence.objects.select_for_update().get_or_create(store=self.store)[0]
@@ -168,8 +184,18 @@ class SalesInvoiceItem(models.Model):
     condition = models.CharField(max_length=20, blank=True, default='')
     warranty_months = models.PositiveSmallIntegerField(default=0)
     warranty_ends_on = models.DateField(null=True, blank=True)
+    # s171: who sold THIS line (several sellers on one invoice, e.g. a service line by the technician). Empty →
+    # the invoice's salesperson at creation; the name is frozen like the invoice's.
+    salesperson = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='sale_lines_made')
+    salesperson_name = models.CharField(max_length=150, blank=True, default='')
 
     def save(self, *args, **kwargs):
+        if self._state.adding and self.salesperson_id is None and not self.salesperson_name:
+            self.salesperson_id = self.invoice.salesperson_id
+            self.salesperson_name = self.invoice.salesperson_name
+        if self.salesperson_id and not self.salesperson_name:
+            self.salesperson_name = person_name(self.salesperson)
         discount = Decimal(str(self.discount_amount or '0'))
         tax = Decimal(str(self.tax_amount or '0'))
         self.total = (self.quantity * self.unit_price) - discount + tax

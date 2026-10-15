@@ -138,6 +138,17 @@ class SerialListField(serializers.ListField):
         return clean_list(super().to_internal_value(data))
 
 
+def _own_staff(serializer, user):
+    """A salesperson must be a staff login of the SAME shop (never another shop's person, never sudo)."""
+    if user is None:
+        return None
+    request = serializer.context.get('request')
+    store = getattr(getattr(request, 'user', None), 'store', None)
+    if store is None or user.store_id != store.id or getattr(user, 'is_superadmin', False):
+        raise serializers.ValidationError('Choose a person of this shop.')
+    return user
+
+
 class SalesInvoiceItemSerializer(serializers.ModelSerializer):
     # New 7: the serials the till picked for a serial-tracked line (checked + applied at checkout).
     serial_numbers = SerialListField(required=False)
@@ -146,10 +157,14 @@ class SalesInvoiceItemSerializer(serializers.ModelSerializer):
         model = SalesInvoiceItem
         fields = ['id', 'variant', 'unit', 'unit_factor', 'quantity', 'unit_price',
                   'discount_amount', 'tax_amount', 'total',
-                  'serial_numbers', 'condition', 'warranty_months', 'warranty_ends_on']
+                  'serial_numbers', 'condition', 'warranty_months', 'warranty_ends_on',
+                  'salesperson', 'salesperson_name']
         # condition + warranty are frozen from the product when the sale is posted (New 8).
         read_only_fields = ['id', 'unit_factor', 'tax_amount', 'total',
-                            'condition', 'warranty_months', 'warranty_ends_on']
+                            'condition', 'warranty_months', 'warranty_ends_on', 'salesperson_name']
+
+    def validate_salesperson(self, value):
+        return _own_staff(self, value)
 
 
 class SalesInvoiceSerializer(serializers.ModelSerializer):
@@ -162,12 +177,15 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'branch', 'customer', 'customer_name', 'invoice_number', 'status', 'date',
             'subtotal', 'tax_total', 'discount', 'grand_total', 'paid_amount', 'change_given',
-            'items', 'created_at',
+            'items', 'created_at', 'salesperson', 'salesperson_name',
         ]
         read_only_fields = [
             'id', 'invoice_number', 'subtotal', 'tax_total',
-            'grand_total', 'paid_amount', 'change_given', 'created_at',
+            'grand_total', 'paid_amount', 'change_given', 'created_at', 'salesperson_name',
         ]
+
+    def validate_salesperson(self, value):
+        return _own_staff(self, value)
 
     def validate_status(self, value):
         # 2026-10-14: a sale is BORN a draft. Creating it already POSTED skipped every checkout rule (open shift,
@@ -205,6 +223,8 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)
         with transaction.atomic():
+            if 'salesperson' in validated_data and validated_data['salesperson'] != instance.salesperson:
+                instance.salesperson_name = ''        # re-frozen from the new person in save()
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             instance.save()

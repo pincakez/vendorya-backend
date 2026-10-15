@@ -791,8 +791,17 @@ class CashierPerformanceView(_StoreMixin, APIView):
                 diff=Coalesce(Sum('difference'), Value(ZERO), output_field=DEC),
                 count=Count('id'))
 
+            # s171: what this person SOLD (lines with them as salesperson, posted sales in the range) — not the same
+            # as the money they took at the till above (another person may have taken the payment).
+            sold = SalesInvoiceItem.objects.filter(
+                invoice__store=store, invoice__status=SalesInvoice.Status.POSTED, invoice__is_deleted=False,
+                salesperson=u, invoice__date__date__gte=df, invoice__date__date__lte=dt,
+            ).aggregate(value=Coalesce(Sum('total'), Value(ZERO), output_field=DEC),
+                        invoices=Count('invoice', distinct=True))
+
             sales_count = pay_agg['invoices'] or 0
-            if (sales_count == 0 and ref_agg['count'] == 0 and shift_agg['count'] == 0):
+            if (sales_count == 0 and ref_agg['count'] == 0 and shift_agg['count'] == 0
+                    and not sold['invoices']):
                 continue
             rows.append({
                 'user_id': str(u.id),
@@ -803,6 +812,8 @@ class CashierPerformanceView(_StoreMixin, APIView):
                 'returns_value': _q(ref_agg['value']),
                 'shifts': shift_agg['count'] or 0,
                 'cash_difference': _q(shift_agg['diff']),
+                'sold_count': sold['invoices'] or 0,
+                'sold_value': _q(sold['value']),
             })
         rows.sort(key=lambda r: Decimal(r['sales_value']), reverse=True)
         totals = {
@@ -811,6 +822,8 @@ class CashierPerformanceView(_StoreMixin, APIView):
             'returns_count': sum(r['returns_count'] for r in rows),
             'returns_value': _q(sum(Decimal(r['returns_value']) for r in rows)),
             'cash_difference': _q(sum(Decimal(r['cash_difference']) for r in rows)),
+            'sold_count': sum(r['sold_count'] for r in rows),
+            'sold_value': _q(sum(Decimal(r['sold_value']) for r in rows)),
         }
         return Response({'date_from': df, 'date_to': dt, 'rows': rows, 'totals': totals})
 

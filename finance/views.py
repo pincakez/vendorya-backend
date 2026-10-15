@@ -458,6 +458,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'grand_total': str(invoice.grand_total),
                 'paid_amount': str(invoice.paid_amount),
                 'change_given': str(invoice.change_given),
+                'salesperson_name': invoice.salesperson_name,   # s171: who sold it
             },
             'store': {
                 'name': store.name,
