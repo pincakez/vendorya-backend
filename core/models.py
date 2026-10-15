@@ -319,6 +319,11 @@ class StoreSettings(TimestampedModel):
     require_shift_to_sell = models.BooleanField(
         _("Require an open shift to sell"), default=False,
         help_text=_("When on, the till refuses a sale until the seller opens a shift in that branch."))
+    # TREASURY.md (Wave 1): money boxes — drawer, safe, bank, e-wallet… with immutable lines. OFF = Vendorya exactly as before
+    # (shifts count cash the old way, expenses have no "paid from"). Turning it on runs treasury.ledger.setup().
+    treasury_enabled = models.BooleanField(
+        _("Treasury (money boxes)"), default=False,
+        help_text=_("Track where the money is: drawers, safe, bank, e-wallets — every movement written automatically."))
 
     class CreditPolicy(models.TextChoices):
         ALLOW = 'ALLOW', _('Allow — no enforcement')

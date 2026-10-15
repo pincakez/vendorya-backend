@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     'reports',
     'pos',
     'services',
+    'treasury',
     'public_api',
     'search',
 ]

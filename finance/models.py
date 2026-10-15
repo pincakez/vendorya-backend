@@ -58,6 +58,8 @@ class Expense(TimestampedModel, SoftDeleteModel):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     description = models.TextField(blank=True)
     date = models.DateField()
+    # TREASURY.md (Upgrade 7): the box the money left from. Empty = "before the Treasury" (counts in the P&L, never in a box).
+    paid_from = models.ForeignKey('treasury.MoneyBox', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
@@ -73,6 +75,9 @@ class PaymentMethod(TimestampedModel, SoftDeleteModel):
     # (nobody edits or picks it by id) — the till sends {"method": "STORE_CREDIT"}. Never cash: it never
     # touches the drawer. A Payment with it = wallet money spent on that sale (auditable, reversible on return).
     is_store_credit = models.BooleanField(default=False, editable=False)
+    # TREASURY.md § 4.1: the money box this method's money lands in (InstaPay → the e-wallet box, card → the bank…).
+    # Cash never needs it (cash lands in the drawer of the open shift). Empty → the shop's "not sorted yet" box.
+    lands_in = models.ForeignKey('treasury.MoneyBox', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
@@ -258,6 +263,14 @@ class WorkShift(TimestampedModel):
     expected_cash = models.DecimalField(_("Expected Cash"), max_digits=12, decimal_places=2, default=0.00)
     difference = models.DecimalField(_("Difference"), max_digits=12, decimal_places=2, default=0.00)
 
+    # TREASURY.md § 4.2: with the Treasury on, a shift is a session on a DRAWER box (its balance carries over). LEGACY = the old
+    # formula (cash_in − cash_out) — every shift opened before the switch, and every shift of a shop with it off.
+    class Ledger(models.TextChoices):
+        LEGACY = 'LEGACY', _('Old formula')
+        BOX    = 'BOX',    _('Money box')
+    drawer = models.ForeignKey('treasury.MoneyBox', on_delete=models.PROTECT, null=True, blank=True, related_name='shifts')
+    ledger = models.CharField(max_length=6, choices=Ledger.choices, default=Ledger.LEGACY)
+
     objects     = TenantScopedManager()   # secure-by-default
     all_objects = models.Manager()        # unscoped escape hatch (sudo/audit/commands)
 
@@ -267,6 +280,9 @@ class WorkShift(TimestampedModel):
             # both counting the same sales as cash in → a false "cash short" on close.
             models.UniqueConstraint(fields=['user'], condition=models.Q(status='OPEN'),
                                     name='one_open_shift_per_user'),
+            # One open shift per drawer box (Treasury on): two cashiers never count the same drawer at once.
+            models.UniqueConstraint(fields=['drawer'], condition=models.Q(status='OPEN', drawer__isnull=False),
+                                    name='one_open_shift_per_drawer'),
         ]
 
     def __str__(self):
@@ -519,6 +535,8 @@ class SupplierPayment(TimestampedModel, SoftDeleteModel):
     # How the shop paid: one of the shop's OWN payment methods (the till's list), never Ajel / store credit.
     payment_method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, null=True, blank=True,
                                        related_name='supplier_payments')
+    # TREASURY.md: the box the money left from (defaults to the method's box; may be changed, e.g. "from the safe").
+    paid_from = models.ForeignKey('treasury.MoneyBox', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     note = models.TextField(blank=True, default='')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
                                    null=True, blank=True, related_name='supplier_payments')
