@@ -145,6 +145,12 @@ class MoneyBoxViewSet(TreasuryMixin, viewsets.ModelViewSet):
             raise TreasuryError('box_default_drawer', "A branch's main till drawer cannot be closed.")
         if WorkShift.objects.filter(store=self.store, drawer=box, status=WorkShift.Status.OPEN).exists():
             raise TreasuryError('drawer_busy', 'A shift is open on this drawer — close the shift first.')
+        # A payment method still sends its money here → the next card/e-wallet sale would be refused (box_closed).
+        from finance.models import PaymentMethod
+        users = list(PaymentMethod.objects.filter(store=self.store, lands_in=box).values_list('name', flat=True))
+        if users:
+            raise TreasuryError('box_in_use', 'A payment method still sends its money to this box — choose another box '
+                                'for it first.', methods=', '.join(users))
         ledger._lock(box)
         bal = ledger.balance(box)
         if bal != 0:

@@ -275,6 +275,13 @@ class StoreSettingsView(APIView):
         from treasury import ledger
         serializer = StoreSettingsSerializer(request.user.store.settings, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        # Turning the Treasury ON while a shift is open would start that drawer's book at 0 under real cash (refunds and
+        # cash expenses then refused as "not enough money"). Close every shift first; each drawer is counted at its next open.
+        if serializer.validated_data.get('treasury_enabled') and not request.user.store.settings.treasury_enabled:
+            from finance.models import WorkShift
+            if WorkShift.all_objects.filter(store=request.user.store, status=WorkShift.Status.OPEN).exists():
+                return Response({'code': 'shifts_open',
+                                 'detail': 'Close every open shift before turning the Treasury on.'}, status=400)
         with transaction.atomic():
             settings_obj = serializer.save()
             # TREASURY.md § 11: turning the Treasury on makes the shop's boxes (owner + shop part, one drawer per

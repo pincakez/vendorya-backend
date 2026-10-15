@@ -172,6 +172,28 @@ class TreasuryApiTests(TestCase):
         r = self.c_own.patch(API + f'boxes/{till.id}/', {'is_active': False}, format='json')
         self.assertEqual(r.data['code'], 'drawer_busy')
 
+    def test_box_a_payment_method_lands_in_cannot_close(self):
+        from finance.models import PaymentMethod
+        card = PaymentMethod.objects.create(store=self.store, name='Card', lands_in=self.bank)
+        r = self.c_own.patch(API + f'boxes/{self.bank.id}/', {'is_active': False}, format='json')
+        self.assertEqual((r.status_code, r.data['code'], r.data['methods']), (400, 'box_in_use', 'Card'))
+        card.lands_in = None
+        card.save()
+        r = self.c_own.patch(API + f'boxes/{self.bank.id}/', {'is_active': False}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+
+    def test_switch_on_refused_while_a_shift_is_open(self):
+        from finance.models import WorkShift
+        own = User.objects.create_user(username='ta_own5', password='x', role='OWNER')
+        store, branch = _shop('305', own, treasury=False)
+        shift = WorkShift.objects.create(store=store, branch=branch, user=own)
+        c = _client(own)
+        r = c.patch('/api/core/settings/', {'treasury_enabled': True}, format='json')
+        self.assertEqual((r.status_code, r.data['code']), (400, 'shifts_open'))
+        self.assertFalse(MoneyBox.all_objects.filter(store=store).exists())
+        WorkShift.objects.filter(pk=shift.pk).update(status=WorkShift.Status.CLOSED)
+        self.assertEqual(c.patch('/api/core/settings/', {'treasury_enabled': True}, format='json').status_code, 200)
+
     # ── tenant isolation ────────────────────────────────────────────────────────────────────────────────────────
     def test_another_shops_box_is_invisible(self):
         oid = self.other_box.id
