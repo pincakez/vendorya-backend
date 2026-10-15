@@ -80,3 +80,9 @@ class WeightedAvgCostIgnoresImportedHistory(_Base):
         PurchaseReturnItem.objects.create(purchase_return=ret, variant=self.variant, purchase_item=old.items.get(),
                                           quantity=D('10'), unit_cost=D('10'), total_cost=D('100'))
         self.assertEqual(weighted_avg_cost(self.variant, self.store), D('90'))   # an imported return doesn't count
+        # s173 2nd review: a return made TODAY (no source number) against the IMPORTED purchase line doesn't count either
+        today = PurchaseReturn.all_objects.create(store=self.store, branch=self.branch, supplier=self.sup,
+                                                  return_number=2, total_amount=D('10'))
+        PurchaseReturnItem.objects.create(purchase_return=today, variant=self.variant, purchase_item=old.items.get(),
+                                          quantity=D('1'), unit_cost=D('10'), total_cost=D('10'))
+        self.assertEqual(weighted_avg_cost(self.variant, self.store), D('90'))

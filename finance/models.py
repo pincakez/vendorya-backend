@@ -895,6 +895,8 @@ def weighted_avg_cost(variant, store):
         variant=variant, purchase_return__store=store,
         purchase_return__status=PurchaseReturn.Status.POSTED, purchase_return__is_deleted=False,
         purchase_return__source_number='',
+    ).filter(   # s173 review: a return made TODAY against an imported purchase line left the average with the old price
+        models.Q(purchase_item__isnull=True) | models.Q(purchase_item__invoice__source_number=''),
     ).aggregate(total_cost=Sum('total_cost'), total_qty=Sum(F('quantity') * F('unit_factor')))
     total_cost -= back['total_cost'] or Decimal('0')
     total_qty -= back['total_qty'] or Decimal('0')
