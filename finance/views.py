@@ -1347,16 +1347,24 @@ class PurchaseReturnViewSet(viewsets.ReadOnlyModelViewSet):
                     .select_related('supplier', 'branch').first())
         if purchase is None:
             return Response({'purchase': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        from django.db.models import Q
+        from inventory.models import SerialUnit
         lines = []
         for it in purchase.items.select_related('variant__product', 'unit').order_by('id'):
             back = returned_qty(it)
+            # Serial-tracked: the units that can really go back now — on the shelf at the purchase's branch, brought
+            # in by THIS line or registered later with no purchase line (inventory.serials.supplier_return).
+            on_shelf = list(SerialUnit.objects.filter(
+                store=request.user.store, variant=it.variant, branch=purchase.branch,
+                status=SerialUnit.Status.IN_STOCK).filter(Q(purchase_item=it) | Q(purchase_item__isnull=True))
+                .order_by('serial').values_list('serial', flat=True)) if it.variant.product.track_serials else []
             lines.append({
                 'purchase_item': it.id, 'variant': str(it.variant_id), 'product_name': it.variant.product.name,
                 'sku': it.variant.sku, 'unit': str(it.unit_id) if it.unit_id else None,
                 'unit_name': it.unit.name if it.unit_id else '', 'unit_factor': str(it.unit_factor),
                 'bought': str(it.quantity), 'returned': str(back), 'left': str(Decimal(str(it.quantity)) - back),
                 'unit_cost': str(it.unit_cost), 'track_serials': bool(it.variant.product.track_serials),
-                'serial_numbers': list(it.serial_numbers or []),
+                'serial_numbers': on_shelf,
             })
         return Response({'purchase': str(purchase.id), 'status': purchase.status,
                          'supplier': str(purchase.supplier_id) if purchase.supplier_id else None,

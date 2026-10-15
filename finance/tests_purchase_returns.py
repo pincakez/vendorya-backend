@@ -184,6 +184,19 @@ class PurchaseReturnTests(TestCase):
         u.refresh_from_db()
         self.assertEqual((u.status, self._stock(self.lvar)), ('IN_STOCK', D('3')))
 
+    def test_unit_registered_later_can_go_back_on_the_purchase(self):
+        from inventory import serials as serial_engine
+        pid = self._buy([{'variant': str(self.lvar.id), 'quantity': '1', 'base_price': '15000',
+                          'serial_numbers': ['S-1']}])
+        # one more unit on the shelf that came before tracking → registered with no purchase line
+        StockLevel.objects.filter(variant=self.lvar, branch=self.branch).update(quantity=2)
+        serial_engine.register(self.store, self.lvar, self.branch, ['OLD-1'], user=self.manager)
+        line = self._returnable(pid)[0]
+        self.assertEqual(sorted(line['serial_numbers']), ['OLD-1', 'S-1'])
+        r = self._return(pid, 1, line={'serial_numbers': ['OLD-1']})
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._returnable(pid)[0]['serial_numbers'], ['S-1'])
+
     # ── average cost ────────────────────────────────────────────────────────
     def test_returned_goods_leave_the_average_cost(self):
         self._buy([{'variant': str(self.variant.id), 'quantity': '10', 'base_price': '100'}])

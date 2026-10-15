@@ -432,7 +432,9 @@ def supplier_return(item, user=None):
     lock_shop_serials(ret.store)
     units = _in_stock_units(ret.store, variant, ret.branch, serials, name)
     if item.purchase_item_id:
-        foreign = [u.serial for u in units if u.purchase_item_id != item.purchase_item_id]
+        # A unit registered later on stock that was here before tracking ("Register serials") has no purchase
+        # line — it may go back on any purchase of this product; a unit another purchase brought in may not.
+        foreign = [u.serial for u in units if u.purchase_item_id not in (None, item.purchase_item_id)]
         if foreign:
             raise _err('serial_not_from_purchase', f'Not received on this purchase: {", ".join(foreign)}.',
                        serials=foreign, product=name)
