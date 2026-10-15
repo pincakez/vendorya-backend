@@ -74,6 +74,26 @@ class ServiceDonePaymentTests(TestCase):
         self.assertEqual(job.invoice.paid_amount, Decimal('300'))
         self.assertEqual(job.invoice.payments.get().created_by, self.cashier)
 
+    def test_voiding_the_bill_reopens_the_job_and_it_bills_again(self):
+        """s170: a job whose sale was voided stayed DONE with a VOID invoice and Done refused it forever."""
+        from finance.models import SalesInvoice
+        manager = User.objects.create_user(username='mgr_d', password='x', role='MANAGER', store=self.store)
+        job = self._job()
+        self.assertEqual(self._done(job, self.cash).status_code, 200)
+        job.refresh_from_db()
+        first = job.invoice
+        api = APIClient()
+        api.credentials(HTTP_AUTHORIZATION='Bearer ' + str(RefreshToken.for_user(manager).access_token))
+        r = api.post(f'/api/finance/invoices/{first.id}/void/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        job.refresh_from_db()
+        self.assertEqual((job.status, job.invoice_id), (Service.Status.OPEN, None))
+        self.assertIn(str(first.invoice_number), job.notes.get().body)
+        self.assertEqual(self._done(job, self.cash).status_code, 200)
+        job.refresh_from_db()
+        self.assertNotEqual(job.invoice_id, first.id)
+        self.assertEqual(SalesInvoice.objects.get(pk=first.pk).status, SalesInvoice.Status.VOID)
+
     def test_done_without_method_refused(self):
         job = self._job()
         self.assertEqual(self._done(job).status_code, 400)

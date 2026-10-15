@@ -186,6 +186,15 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 # gets it back). A cash box that hasn't got it → 400 not_enough_money and the void is undone.
                 from .treasury_flows import reverse_sale
                 reverse_sale(invoice, request.user)
+                # A repair job billed by this sale goes back to OPEN (s170): its bill is gone, so it can be billed
+                # again with the normal Done button. The voided sale stays in the job's timeline as a note.
+                from services.models import Service, ServiceNote
+                for job in Service.objects.select_for_update().filter(store=invoice.store, invoice=invoice,
+                                                                      status=Service.Status.DONE):
+                    job.status, job.invoice = Service.Status.OPEN, None
+                    job.save(update_fields=['status', 'invoice', 'updated_at'])
+                    ServiceNote.objects.create(store=invoice.store, service=job, user=request.user,
+                                               body=f'Invoice #{invoice.invoice_number} voided — job reopened.')
         if was_draft:
             # Discarding an unfinished cart (till hold/resume) is routine — no alert, no log noise (s156).
             return Response(SalesInvoiceSerializer(invoice).data)
