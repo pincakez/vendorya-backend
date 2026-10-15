@@ -525,6 +525,28 @@ class ReviewFixTests(_Base):
         self.assertEqual(r.status_code, 200, r.content)
         self.assertEqual((self.bal(self.bank), self.bal(self.drawer)), (D('100'), D('0')))
 
+    def test_cash_refund_leaves_the_refunders_own_drawer_never_a_colleagues(self):
+        b2 = Branch.objects.create(store=self.store, name='Second',
+                                   address=Address.objects.create(store=self.store, street_1='2', city='C'))
+        ledger.setup(self.store)
+        drawer2 = ledger.default_drawer(b2)
+        self.assertEqual(self.open_shift(self.cashier, '0').status_code, 201)
+        inv = self.sell(self.cashier, [(self.cash, '100')])
+        r = self.api(self.manager).post('/api/finance/shifts/', {'branch': str(b2.id), 'starting_cash': '100',
+                                                                 'count_reason': 'float'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self.refund(self.manager, inv, '40').status_code, 201)    # refund made in the sale's branch
+        self.assertEqual((self.bal(self.drawer), self.bal(drawer2)), (D('100'), D('60')))
+
+    def test_a_completed_sale_cannot_be_deleted_only_voided(self):
+        inv = self.sell(self.cashier, [(self.cash, '100')])
+        r = self.api(self.manager).delete(f'/api/finance/invoices/{inv.id}/')
+        self.assertEqual((r.status_code, r.data['code']), (400, 'void_not_delete'))
+        inv.refresh_from_db()
+        self.assertFalse(inv.is_deleted)
+        draft = self.draft()
+        self.assertEqual(self.api(self.manager).delete(f'/api/finance/invoices/{draft.id}/').status_code, 204)
+
     def test_payment_lands_in_the_payers_drawer_in_any_branch(self):
         b2 = Branch.objects.create(store=self.store, name='Second',
                                    address=Address.objects.create(store=self.store, street_1='2', city='C'))

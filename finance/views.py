@@ -96,6 +96,14 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['date', 'created_at', 'grand_total', 'invoice_number']
 
+    def perform_destroy(self, instance):
+        # Only a draft cart may be deleted. A POSTED / VOID sale moved stock and money — deleting it would hide it
+        # without giving the stock back or reversing its payments and money-box lines (s169 review). Void it instead.
+        if instance.status != SalesInvoice.Status.DRAFT:
+            raise ValidationError({'code': 'void_not_delete',
+                                   'detail': 'A completed sale cannot be deleted — void it instead.'})
+        instance.delete()
+
     def get_queryset(self):
         qs = SalesInvoice.objects.filter(
             store=self.request.user.store

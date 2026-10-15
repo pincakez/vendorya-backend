@@ -921,10 +921,17 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                      .exclude(pk=refund.pk).aggregate(s=Sum('drawer_cash'))['s'] or Decimal('0'))
             cash = min(cash, taken - given)
         refund.drawer_cash = max(cash, Decimal('0'))
-        open_shifts = WorkShift.objects.filter(store=refund.store, branch=refund.branch,
-                                               status=WorkShift.Status.OPEN)
-        refund.shift = (open_shifts.filter(user=refund.created_by).first()
-                        or open_shifts.order_by('-start_time').first())
+        from treasury import ledger
+        if ledger.is_on(refund.store):
+            # Treasury on: the cash leaves the refunder's OWN drawer (any branch — one open shift per person, the same
+            # rule as sales + receipts), never a colleague's; no shift → the refund branch's default drawer (post_refund).
+            refund.shift = WorkShift.objects.filter(store=refund.store, user=refund.created_by,
+                                                    status=WorkShift.Status.OPEN).first()
+        else:
+            open_shifts = WorkShift.objects.filter(store=refund.store, branch=refund.branch,
+                                                   status=WorkShift.Status.OPEN)
+            refund.shift = (open_shifts.filter(user=refund.created_by).first()
+                            or open_shifts.order_by('-start_time').first())
         refund.save(update_fields=['drawer_cash', 'shift'])
 
     @staticmethod
