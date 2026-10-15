@@ -62,6 +62,9 @@ def receive_customer_payment(*, store, customer, amount, method, user, date=None
         receipt.unallocated = left
         receipt.advance = beyond
         receipt.save(update_fields=['unallocated', 'advance', 'updated_at'])
+        # TREASURY.md: ONE line for the whole amount (its sale shares above are not posted again). No-op when off.
+        from .treasury_flows import post_receipt
+        post_receipt(receipt)
 
         summary = {
             'allocations': allocations,
@@ -74,11 +77,14 @@ def receive_customer_payment(*, store, customer, amount, method, user, date=None
     return receipt, summary
 
 
-def reverse_customer_receipt(receipt):
+def reverse_customer_receipt(receipt, user=None):
     """Soft-delete a receipt AND its Payments — each sale's paid_amount is rebuilt by Payment.save,
-    and the unallocated part drops out of customer_outstanding with the receipt itself."""
+    and the unallocated part drops out of customer_outstanding with the receipt itself.
+    Treasury on: its box line is reversed (a cash box that no longer holds the money refuses → nothing changes)."""
     with transaction.atomic():
         Customer.all_objects.select_for_update().get(pk=receipt.customer_id)
         for p in Payment.all_objects.filter(receipt=receipt, is_deleted=False).select_related('invoice'):
             p.delete()
         receipt.delete()
+        from .treasury_flows import reverse_receipt
+        reverse_receipt(receipt, user)
