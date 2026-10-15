@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import models, transaction
 from django.utils import timezone as tz
 from rest_framework import viewsets, filters, status
@@ -137,7 +138,12 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             require_open_shift(self.request.user.store, self.request.user, branch)
             from billing.quota import enforce_quota
             enforce_quota(self.request.user.store, 'invoices')   # a manager posting by edit uses the quota too (s166)
-        serializer.save()
+        was_posted = serializer.instance.status == SalesInvoice.Status.POSTED
+        with transaction.atomic():
+            invoice = serializer.save()
+            if was_posted and invoice.status == SalesInvoice.Status.VOID:
+                from .treasury_flows import reverse_sale   # TREASURY.md: the voided sale's money leaves its boxes
+                reverse_sale(invoice, self.request.user)
 
     def perform_create(self, serializer):
         from billing.quota import enforce_quota
@@ -164,8 +170,14 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         self._guard_posted(invoice)
         refuse_void_with_returns(invoice)
         was_draft = invoice.status == SalesInvoice.Status.DRAFT
-        invoice.status = SalesInvoice.Status.VOID
-        invoice.save()
+        with transaction.atomic():
+            invoice.status = SalesInvoice.Status.VOID
+            invoice.save()
+            if not was_draft:
+                # TREASURY.md: the money this sale took goes back out of the boxes it went into (the customer
+                # gets it back). A cash box that hasn't got it → 400 not_enough_money and the void is undone.
+                from .treasury_flows import reverse_sale
+                reverse_sale(invoice, request.user)
         if was_draft:
             # Discarding an unfinished cart (till hold/resume) is routine — no alert, no log noise (s156).
             return Response(SalesInvoiceSerializer(invoice).data)
@@ -339,8 +351,10 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                     raise ValidationError({'detail': f'{cust.name} has only {cust.store_credit:.2f} store credit.'})
                 cust.store_credit = cust.store_credit - plan.store_credit
                 cust.save(update_fields=['store_credit'])
+            from .treasury_flows import post_sale_payment
             for pay_method, amount in plan.lines:
-                Payment.objects.create(invoice=invoice, method=pay_method, amount=amount, created_by=request.user)
+                pay = Payment.objects.create(invoice=invoice, method=pay_method, amount=amount, created_by=request.user)
+                post_sale_payment(pay)   # TREASURY.md: + the box this money lands in (no-op with the Treasury off)
             if plan.lines:
                 invoice.refresh_from_db()
 
@@ -466,7 +480,10 @@ class PaymentViewSet(viewsets.ModelViewSet):
         return Payment.objects.filter(invoice__store=self.request.user.store)
 
     def perform_create(self, serializer):
-        payment = serializer.save(created_by=self.request.user)
+        from .treasury_flows import post_sale_payment
+        with transaction.atomic():
+            payment = serializer.save(created_by=self.request.user)
+            post_sale_payment(payment)   # TREASURY.md: money taken later on a sale lands in its box too
         invoice = payment.invoice
         log_activity(
             request=self.request,
@@ -536,7 +553,7 @@ class CustomerReceiptViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         from .receipts import reverse_customer_receipt
-        reverse_customer_receipt(instance)
+        reverse_customer_receipt(instance, user=self.request.user)
         log_activity(
             request=self.request,
             action=f"Deleted customer payment {instance.amount} from {instance.customer.name}",
@@ -755,8 +772,27 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Expense.objects.filter(store=self.request.user.store)
 
+    # TREASURY.md Upgrade 7: an expense leaves the box it was paid from (EXPENSE_OUT); an edit of amount / box
+    # reverses the old line and writes the new one; a delete reverses it. All no-ops with the Treasury off.
+    def _sync(self, expense, created=False):
+        from .treasury_flows import sync_paid_out
+        from treasury.models import MoneyMove
+        sync_paid_out(expense, kind=MoneyMove.Kind.EXPENSE_OUT, link='expense', user=self.request.user,
+                      created=created, reason_edit='Expense edited', reason_delete='Expense deleted')
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            self._sync(serializer.save())
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            instance.delete()
+            self._sync(instance)
+
     def perform_create(self, serializer):
-        expense = serializer.save(store=self.request.user.store)
+        with transaction.atomic():
+            expense = serializer.save(store=self.request.user.store)
+            self._sync(expense, created=True)
         log_activity(
             request=self.request,
             action=f"Recorded Expense: {expense.description or expense.category.name}",
@@ -794,8 +830,28 @@ class SupplierPaymentViewSet(viewsets.ModelViewSet):
             qs = qs.filter(supplier_id=supplier)
         return qs
 
+    # TREASURY.md: a supplier payment leaves its `paid_from` box (SUPPLIER_OUT); an edit of amount / box reverses the
+    # old line and writes the new one; a delete reverses it. All no-ops with the Treasury off.
+    def _sync(self, payment, created=False):
+        from .treasury_flows import sync_paid_out
+        from treasury.models import MoneyMove
+        sync_paid_out(payment, kind=MoneyMove.Kind.SUPPLIER_OUT, link='supplier_payment', user=self.request.user,
+                      created=created, reason_edit='Supplier payment edited',
+                      reason_delete='Supplier payment deleted')
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            self._sync(serializer.save())
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            instance.delete()
+            self._sync(instance)
+
     def perform_create(self, serializer):
-        payment = serializer.save(store=self.request.user.store, created_by=self.request.user)
+        with transaction.atomic():
+            payment = serializer.save(store=self.request.user.store, created_by=self.request.user)
+            self._sync(payment, created=True)
         log_activity(
             request=self.request,
             action=f"Recorded Supplier Payment: {payment.amount} → {payment.supplier.name}",
@@ -823,6 +879,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         'close':          'CASHIER',
         'summary':        'CASHIER',
         'drawer':         'CASHIER',
+        'drawers':        'CASHIER',   # TREASURY.md: the open-shift screen's drawer picker (book balance + busy)
     }
 
     def get_queryset(self):
@@ -841,13 +898,41 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         already = {'detail': 'You already have an open shift.', 'code': 'shift_already_open'}
         if open_shift:
             raise ValidationError(already)
+        from treasury import ledger
+        from .treasury_flows import guarded, refuse, _default_drawer
+        store = self.request.user.store
+        vd = serializer.validated_data
+        count_reason = vd.pop('count_reason', '') or ''
+        drawer = vd.pop('drawer', None)
+        extra = {}
+        box_mode = ledger.is_on(store)
+        if box_mode:
+            # TREASURY.md § 4.2: the shift opens on a DRAWER box of its branch (default = the branch's default
+            # drawer). starting_cash = what was counted; ≠ the drawer's book → a COUNT_ADJUST line with the reason.
+            from treasury.models import MoneyBox
+            branch = vd.get('branch')
+            if drawer is None:
+                with guarded():
+                    drawer = _default_drawer(store, branch)
+            if (drawer.store_id != store.id or drawer.kind != MoneyBox.Kind.DRAWER or not drawer.is_active
+                    or drawer.branch_id != getattr(branch, 'id', None)):
+                refuse('bad_drawer', "Choose one of this branch's till drawers.")
+            if (vd.get('starting_cash') or 0) < 0:
+                refuse('bad_amount', 'Counted cash cannot be negative.')
+            extra ={'drawer': drawer, 'ledger': WorkShift.Ledger.BOX}
         # Two requests at once (double-click) both pass the check above — the DB's one_open_shift_per_user
         # constraint stops the second; answer it with the same clean 400 (2026-10-14).
         from django.db import IntegrityError
         try:
             with transaction.atomic():
-                shift = serializer.save(store=self.request.user.store, user=self.request.user)
+                shift = serializer.save(store=store, user=self.request.user, **extra)
+                if box_mode:
+                    with guarded():
+                        ledger.count(drawer, shift.starting_cash, user=self.request.user, reason=count_reason,
+                                     shift=shift)
         except IntegrityError as exc:
+            if 'one_open_shift_per_drawer' in str(exc):
+                refuse('drawer_busy', 'Someone already has an open shift on this drawer.')
             if 'one_open_shift_per_user' not in str(exc):
                 raise
             raise ValidationError(already)
@@ -875,7 +960,11 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
             return Response({'counted_cash': 'Enter the cash you counted as a number.'}, status=status.HTTP_400_BAD_REQUEST)
         if counted_cash < 0:
             return Response({'counted_cash': 'Counted cash cannot be negative.'}, status=status.HTTP_400_BAD_REQUEST)
-        shift.close_shift(counted_cash)
+        from treasury import ledger
+        if shift.ledger == WorkShift.Ledger.BOX and shift.drawer_id and ledger.is_on(shift.store):
+            shift = self._close_on_box(request, shift, counted_cash)
+        else:
+            shift.close_shift(counted_cash)
         if shift.difference != 0:
             direction = "over" if shift.difference > 0 else "short"
             send_notification(
@@ -902,14 +991,82 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         )
         return Response(WorkShiftSerializer(shift).data)
 
+    def _close_on_box(self, request, shift, counted_cash):
+        """TREASURY.md § 4.2 — close a shift that runs on a DRAWER box: expected = the drawer's book balance;
+        counted ≠ expected → a COUNT_ADJUST line (`count_reason` required); then optionally `move_to_box` +
+        `move_amount` = a transfer from the drawer (e.g. the takings to the safe). All or nothing."""
+        from treasury import ledger
+        from treasury.models import MoneyBox
+        from .treasury_flows import guarded, refuse
+        reason = str(request.data.get('count_reason') or '')
+        move_to, move_amount = request.data.get('move_to_box'), request.data.get('move_amount')
+        target = None
+        if move_to not in (None, ''):
+            try:
+                target = MoneyBox.all_objects.filter(pk=move_to, store=shift.store).first()
+            except (ValueError, TypeError, DjangoValidationError):
+                target = None
+            if target is None:
+                refuse('box_not_found', 'This money box was not found in your shop.')
+            try:
+                move_amount = Decimal(str(move_amount))
+            except (ArithmeticError, ValueError, TypeError):
+                refuse('bad_amount', 'Enter the amount to move as a number.')
+        with transaction.atomic():
+            shift = WorkShift.all_objects.select_for_update().get(pk=shift.pk)
+            if shift.status == WorkShift.Status.CLOSED:
+                refuse('shift_closed', 'Shift already closed.')
+            drawer = MoneyBox.all_objects.select_for_update().get(pk=shift.drawer_id)
+            with guarded():
+                expected = ledger.balance(drawer)
+                ledger.count(drawer, counted_cash, user=request.user, reason=reason, shift=shift)
+                shift.expected_cash = expected
+                shift.closing_cash = counted_cash
+                shift.difference = counted_cash - expected
+                shift.end_time = tz.now()
+                shift.status = WorkShift.Status.CLOSED
+                shift.save()
+                if target is not None:
+                    ledger.transfer(drawer, target, move_amount, user=request.user)
+        return shift
+
+    @action(detail=False, methods=['get'])
+    def drawers(self, request):
+        """TREASURY.md § 4.2: the shop's till drawers (?branch=<id>) for the open-shift screen — each with its book
+        balance (what the cashier should find) and whether someone already has an open shift on it."""
+        from treasury import ledger
+        store = request.user.store
+        if not ledger.is_on(store):
+            return Response({'code': 'treasury_off', 'detail': 'The Treasury is off for this shop.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        branch = None
+        if request.query_params.get('branch'):
+            try:
+                branch = Branch.objects.filter(store=store, pk=request.query_params['branch']).first()
+            except (ValueError, TypeError, DjangoValidationError):
+                branch = None
+            if branch is None:
+                return Response({'code': 'branch_not_found', 'detail': 'Branch not found.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+        from treasury.models import MoneyBox
+        branches = [branch] if branch is not None else list(Branch.objects.filter(store=store, is_deleted=False))
+        if any(not MoneyBox.all_objects.filter(branch=b, is_default_drawer=True).exists() for b in branches):
+            ledger.setup(store)   # a branch added after the switch was turned on gets its drawer
+        from .treasury_flows import drawers_with_balance
+        return Response(drawers_with_balance(store, branch))
+
     @action(detail=False, methods=['get'])
     def drawer(self, request):
         """s157 (§AUDIT A10): the caller's open drawer — cash in (cash payments they took), cash out (cash
-        refunds paid from this drawer), expected balance, and each move. Same rules as closing the shift."""
+        refunds paid from this drawer), expected balance, and each move. Same rules as closing the shift.
+        TREASURY.md: a shift on a DRAWER box answers from the box's lines since the shift opened (same shape)."""
         shift = (WorkShift.objects.filter(store=request.user.store, user=request.user,
                                           status=WorkShift.Status.OPEN).first())
         if shift is None:
             return Response({'shift': None, 'cash_in': '0', 'cash_out': '0', 'expected_balance': '0', 'moves': []})
+        from treasury import ledger
+        if shift.ledger == WorkShift.Ledger.BOX and shift.drawer_id and ledger.is_on(shift.store):
+            return Response(self._box_drawer(shift))
         pays = (Payment.objects.filter(invoice__store=shift.store, created_at__gte=shift.start_time,
                                        method__is_cash=True, created_by=shift.user)
                 .values('created_at', 'amount', 'invoice__invoice_number'))
@@ -933,6 +1090,39 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
             'expected_balance': str(shift.starting_cash + cash_in - cash_out),
             'moves': moves,
         })
+
+    @staticmethod
+    def _box_drawer(shift):
+        """The `drawer` answer for a shift on a DRAWER box: every line on the drawer since the shift opened (sales,
+        receipts, refunds, cash expenses, supplier cash, transfers, counts) — same keys as the old answer, plus
+        `line_kind` (the line's kind) and `note`. expected_balance = the drawer's book balance."""
+        from treasury import ledger
+        from .treasury_flows import drawer_lines
+        moves, cash_in, cash_out = [], Decimal('0'), Decimal('0')
+        for m in drawer_lines(shift):
+            if m.amount > 0:
+                cash_in += m.amount
+            else:
+                cash_out -= m.amount
+            refund = m.refund
+            moves.append({
+                'time': m.at,
+                'kind': 'IN' if m.amount > 0 else 'OUT',
+                'line_kind': m.kind,
+                'invoice_number': (m.payment.invoice.invoice_number if m.payment_id else
+                                   (refund.original_invoice.invoice_number
+                                    if refund is not None and refund.original_invoice_id else None)),
+                'refund_number': refund.refund_number if refund is not None else None,
+                'customer': m.customer_receipt.customer.name if m.customer_receipt_id else None,
+                'amount': str(abs(m.amount)),
+                'note': m.note or m.reason or '',
+            })
+        return {
+            'shift': WorkShiftSerializer(shift).data,
+            'cash_in': str(cash_in), 'cash_out': str(cash_out),
+            'expected_balance': str(ledger.balance(shift.drawer)),
+            'moves': moves,
+        }
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
@@ -989,6 +1179,13 @@ class RefundInvoiceViewSet(viewsets.ModelViewSet):
         return RefundInvoice.objects.filter(
             store=self.request.user.store
         ).prefetch_related('items').select_related('customer', 'branch', 'original_invoice')
+
+    def perform_destroy(self, instance):
+        # TREASURY.md: a deleted return's payout comes back into the boxes it left (no-op with the Treasury off).
+        from .treasury_flows import reverse_refund
+        with transaction.atomic():
+            instance.delete()
+            reverse_refund(instance, self.request.user)
 
     def perform_create(self, serializer):
         refund = serializer.save(store=self.request.user.store, created_by=self.request.user)

@@ -162,7 +162,7 @@ def reverse(move, *, user=None, reason=''):
         raise TreasuryError('cannot_reverse_reversal', 'A reversal line cannot be reversed.')
     if MoneyMove.all_objects.filter(reverses=move).exists():
         raise TreasuryError('already_reversed', 'This line is already reversed.')
-    links = {f: getattr(move, f + '_id') for f in ('payment', 'customer_receipt', 'refund', 'supplier_payment',
+    links = {f + '_id': getattr(move, f + '_id') for f in ('payment', 'customer_receipt', 'refund', 'supplier_payment',
                                                     'expense', 'other_income', 'shift')}
     # Taking back money that came IN must respect the floor; putting back money that went OUT never can fail.
     return post(move.box, -move.amount, MoneyMove.Kind.REVERSAL, user=user, reason=reason, reverses=move,

@@ -64,11 +64,50 @@ def enforce_credit_policy(invoice, paid_amount=None):
         )
 
 
+def _request_store(serializer):
+    request = serializer.context.get('request')
+    return getattr(getattr(request, 'user', None), 'store', None)
+
+
+def _treasury_on(serializer):
+    from treasury import ledger
+    return ledger.is_on(_request_store(serializer))
+
+
+def _box_field():
+    """A money box picked by id. Unscoped queryset on purpose: the tenant check is done in validate() with a clean
+    `code` (another shop's box answers "not found", exactly like a box that doesn't exist)."""
+    from treasury.models import MoneyBox
+    return serializers.PrimaryKeyRelatedField(queryset=MoneyBox.all_objects.all(), required=False, allow_null=True)
+
+
 class PaymentMethodSerializer(serializers.ModelSerializer):
+    # TREASURY.md § 4.1: the box this method's money lands in (Treasury on only; never cash / Ajel / store credit).
+    lands_in = _box_field()
+    lands_in_name = serializers.CharField(source='lands_in.name', read_only=True, default=None)
+
     class Meta:
         model = PaymentMethod
-        fields = ['id', 'name', 'is_cash', 'is_agel']
-        read_only_fields = ['id']
+        fields = ['id', 'name', 'is_cash', 'is_agel', 'is_store_credit', 'lands_in', 'lands_in_name']
+        read_only_fields = ['id', 'is_store_credit']
+
+    def validate(self, attrs):
+        box = attrs.get('lands_in')
+        if box is None:
+            return attrs
+        from .treasury_flows import check_box, refuse
+        from treasury.models import MoneyBox
+        if not _treasury_on(self):
+            refuse('treasury_off', "Turn the Treasury on to choose where a payment method's money lands.")
+        check_box(box, _request_store(self), 'lands_in')
+        if box.kind == MoneyBox.Kind.DRAWER:
+            refuse('drawer_not_allowed', 'Cash lands in the till drawer by itself — choose another box.')
+        inst = self.instance
+        is_cash = attrs.get('is_cash', getattr(inst, 'is_cash', False))
+        is_agel = attrs.get('is_agel', getattr(inst, 'is_agel', False))
+        if is_cash or is_agel or getattr(inst, 'is_store_credit', False):
+            refuse('lands_in_not_allowed', "Cash, Ajel and store credit don't land in a chosen box.")
+        return attrs
 
 
 # --- SALES ---
@@ -582,9 +621,13 @@ class SupplierPaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupplierPayment
         fields = ['id', 'supplier', 'amount', 'date', 'payment_method', 'payment_method_name',
-                  'method', 'method_display', 'note', 'created_by_name', 'created_at']
+                  'method', 'method_display', 'paid_from', 'paid_from_name', 'note', 'created_by_name', 'created_at']
         read_only_fields = ['id', 'payment_method_name', 'method_display', 'created_by_name', 'created_at']
         extra_kwargs = {'method': {'required': False}}
+
+    # TREASURY.md: the box the money left from (Treasury on: required — defaults to the method's box).
+    paid_from = _box_field()
+    paid_from_name = serializers.CharField(source='paid_from.name', read_only=True, default=None)
 
     def get_fields(self):
         # Tenant guard (defence in depth): an id from the body resolves ONLY among the caller's shop's
@@ -618,7 +661,7 @@ class SupplierPaymentSerializer(serializers.ModelSerializer):
         if method is None:
             if self.instance is None or 'payment_method' in attrs:   # new payment, or clearing it
                 raise serializers.ValidationError({'payment_method': 'Choose how you paid the supplier.'})
-            return attrs
+            return _validate_paid_from(self, attrs)
         if method.store_id != store_id or method.is_deleted:
             raise serializers.ValidationError({'payment_method': 'This payment method was not found in your shop.'})
         if method.is_agel:
@@ -628,7 +671,7 @@ class SupplierPaymentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'payment_method': 'Store credit belongs to customers — it cannot pay a supplier.'})
         attrs['method'] = legacy_code_for(method)   # keep the old column truthful for anything still reading it
-        return attrs
+        return _validate_paid_from(self, attrs, default=lambda: _supplier_default_box(self, method))
 
     def validate_amount(self, value):
         if value is None or value <= 0:
@@ -652,26 +695,82 @@ class ExpenseCategorySerializer(serializers.ModelSerializer):
         read_only_fields = ['id']
 
 
+def _supplier_default_box(serializer, method):
+    from .treasury_flows import default_box_for_supplier
+    request = serializer.context.get('request')
+    return default_box_for_supplier(method, getattr(request, 'user', None), _request_store(serializer))
+
+
+def _validate_paid_from(serializer, attrs, default=None):
+    """`paid_from` for an expense / supplier payment (TREASURY.md § 4). Off: ignored (today's behaviour). On: a new
+    row needs one (from the body, else `default()`), it must be one of the shop's open boxes, it can't be cleared,
+    and a row made before the Treasury can't be put in a box afterwards."""
+    if not _treasury_on(serializer):
+        attrs.pop('paid_from', None)
+        return attrs
+    from .treasury_flows import check_box, refuse
+    inst = serializer.instance
+    if inst is None:
+        if attrs.get('paid_from') is None and default is not None:
+            attrs['paid_from'] = default()
+        if attrs.get('paid_from') is None:
+            refuse('paid_from_required', 'Choose the money box this was paid from.')
+    elif 'paid_from' in attrs:
+        if attrs['paid_from'] is None:
+            refuse('paid_from_required', 'Choose the money box this was paid from.')
+        if inst.paid_from_id is None:
+            refuse('before_treasury', 'This was recorded before the Treasury was on — it stays out of the boxes.')
+    check_box(attrs.get('paid_from'), _request_store(serializer), 'paid_from')
+    return attrs
+
+
 class ExpenseSerializer(serializers.ModelSerializer):
+    # TREASURY.md Upgrade 7: the box the money left from (Treasury on: required).
+    paid_from = _box_field()
+    paid_from_name = serializers.CharField(source='paid_from.name', read_only=True, default=None)
+
     class Meta:
         model = Expense
-        fields = ['id', 'branch', 'category', 'amount', 'description', 'date', 'created_at']
+        fields = ['id', 'branch', 'category', 'amount', 'description', 'date', 'paid_from', 'paid_from_name',
+                  'created_at']
         read_only_fields = ['id', 'created_at']
+
+    def validate(self, attrs):
+        return _validate_paid_from(self, attrs)
 
 
 # --- SHIFTS ---
 
 class WorkShiftSerializer(serializers.ModelSerializer):
+    # TREASURY.md § 4.2 (Treasury on): the shift is a session on a DRAWER box. `drawer` is chosen when opening
+    # (default = the branch's default drawer); `book_balance` = what the drawer's book said when the shift opened
+    # (carried over); `starting_cash` = what was counted; a difference needs `count_reason` (write-only).
+    drawer = _box_field()
+    drawer_name = serializers.CharField(source='drawer.name', read_only=True, default=None)
+    book_balance = serializers.SerializerMethodField()
+    count_reason = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
     class Meta:
         model = WorkShift
         fields = [
             'id', 'branch', 'user', 'start_time', 'end_time', 'status',
             'starting_cash', 'closing_cash', 'expected_cash', 'difference',
+            'ledger', 'drawer', 'drawer_name', 'book_balance', 'count_reason',
         ]
         read_only_fields = [
             'id', 'user', 'start_time', 'end_time', 'status',
-            'expected_cash', 'difference', 'closing_cash',
+            'expected_cash', 'difference', 'closing_cash', 'ledger',
         ]
+
+    def get_book_balance(self, obj):
+        from .treasury_flows import carried_over
+        bal = carried_over(obj)
+        return None if bal is None else str(bal)
+
+    def update(self, instance, validated_data):
+        validated_data.pop('drawer', None)          # the drawer is fixed once the shift is open
+        validated_data.pop('count_reason', None)
+        return super().update(instance, validated_data)
 
 
 # --- REFUNDS ---
@@ -760,6 +859,9 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
             self._record_store_credit_back(refund, original)
             if refund.refund_method == RefundInvoice.RefundMethod.CASH:
                 self._record_drawer_cash(refund, original)
+            # TREASURY.md § 4: the money handed back leaves its boxes (a no-op with the Treasury off).
+            from .treasury_flows import post_refund
+            post_refund(refund, original, validated_data.get('created_by'))
             # The wallet part of the payout accrues to the customer's store credit — only what is really paid
             # back (s165): all of it on a Store Credit refund; on a Cash / Original refund, the share of the
             # sale that was paid WITH store credit (s167).
