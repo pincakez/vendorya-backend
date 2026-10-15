@@ -25,31 +25,28 @@ class _ShopVariantField(serializers.PrimaryKeyRelatedField):
 
 class ServicePartSerializer(serializers.ModelSerializer):
     """A part on a job. `unit_price` defaults to the variant's sell price. `unit_cost` (the variant's average
-    cost) is only sent to roles that may see cost — never to a cashier by default."""
+    cost) is only sent to roles that may see cost — never to a cashier by default. `serial_numbers` = the
+    unit(s) of a serial-tracked product, one per unit (checked by ServiceSerializer.validate, against the whole
+    parts list)."""
     id = serializers.UUIDField(required=False)
     variant = _ShopVariantField()
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, min_value=Decimal('0'))
+    serial_numbers = serializers.ListField(child=serializers.CharField(max_length=120, allow_blank=True),
+                                           required=False)
     product_name = serializers.CharField(source='variant.product.name', read_only=True)
     sku = serializers.CharField(source='variant.sku', read_only=True)
+    track_serials = serializers.BooleanField(source='variant.product.track_serials', read_only=True)
     line_total = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     unit_cost = serializers.DecimalField(source='variant.cost_price', max_digits=12, decimal_places=2, read_only=True)
 
     class Meta:
         model = ServicePart
-        fields = ['id', 'variant', 'product_name', 'sku', 'quantity', 'unit_price', 'line_total', 'unit_cost']
+        fields = ['id', 'variant', 'product_name', 'sku', 'quantity', 'unit_price', 'serial_numbers',
+                  'track_serials', 'line_total', 'unit_cost']
 
     def validate_quantity(self, value):
         if value <= 0:
             raise serializers.ValidationError('Quantity must be more than zero.')
-        return value
-
-    def validate_variant(self, value):
-        # A serial-tracked product needs its unit's serial on the sale — the desk's Done can't ask for one, so it
-        # would refuse the whole job (s169 batch review). Sell such a unit at the till instead.
-        if value.product.track_serials:
-            raise serializers.ValidationError(
-                f'"{value.product.name}" tracks serial numbers — sell it at the till (with its serial), '
-                'not as a repair part.', code='part_tracks_serials')
         return value
 
     def to_representation(self, instance):
@@ -272,17 +269,58 @@ class ServiceSerializer(serializers.ModelSerializer):
             if changed:
                 raise serializers.ValidationError(
                     {'detail': 'This job is no longer open — its charges and parts can no longer change.'})
+        elif data.get('parts') is not None:
+            self._check_part_serials(data['parts'])
         return data
+
+    def _check_part_serials(self, rows):
+        """An open job's parts: a serial-tracked product names exactly one serial per whole unit, each an IN_STOCK
+        unit of THAT product in the caller's shop, no serial on two parts; an untracked one names none. Same rules
+        + error codes as the till (inventory.serials); the branch is checked again at Done by the sale posting."""
+        from inventory.models import SerialUnit
+        from inventory.serials import _check_count, _err, clean_list, is_tracked, whole_units
+        seen, wanted = set(), []
+        for row in rows:
+            variant = row['variant']
+            name = variant.product.name
+            serials = clean_list(row.get('serial_numbers'), name)
+            if is_tracked(variant):
+                _check_count(name, serials, whole_units(name, row['quantity']))
+                twice = sorted(seen & set(serials))
+                if twice:
+                    raise _err('serial_duplicate', f'Serial {", ".join(twice)} is on two parts.',
+                               serials=twice, product=name)
+                seen |= set(serials)
+                wanted += [(s, variant, name) for s in serials]
+            elif serials:
+                raise _err('serial_off', f'{name} does not track serial numbers.', product=name)
+            row['serial_numbers'] = serials
+        if not wanted:
+            return
+        store = getattr(request_user(self), 'store', None)
+        on_shelf = dict(SerialUnit.all_objects.filter(
+            store=store, serial__in=[s for s, _v, _n in wanted], status=SerialUnit.Status.IN_STOCK, is_deleted=False,
+        ).values_list('serial', 'variant_id'))
+        missing = [(s, n) for s, v, n in wanted if on_shelf.get(s) != v.pk]
+        if missing:
+            serials = sorted(s for s, _n in missing)
+            raise _err('serial_not_available', f'Not in stock in this shop: {", ".join(serials)}.',
+                       serials=serials, product=missing[0][1], branch='')
 
     @staticmethod
     def _parts_differ(inst, rows):
         """True when the sent parts list is not the job's current one (a form re-sending it unchanged is fine)."""
-        def key(variant_id, qty, price):
+        from inventory.serials import normalize
+
+        def key(variant_id, qty, price, serials):
             return (str(variant_id), Decimal(str(qty)).normalize(),
-                    None if price is None else Decimal(str(price)).normalize())
-        now = sorted(key(p.variant_id, p.quantity, p.unit_price) for p in inst.parts.filter(is_deleted=False))
+                    None if price is None else Decimal(str(price)).normalize(),
+                    tuple(sorted({normalize(s) for s in serials or []} - {''})))
+        now = sorted(key(p.variant_id, p.quantity, p.unit_price, p.serial_numbers)
+                     for p in inst.parts.filter(is_deleted=False))
         sent = sorted(key(r['variant'].pk, r['quantity'],
-                          r['unit_price'] if r.get('unit_price') is not None else r['variant'].sell_price)
+                          r['unit_price'] if r.get('unit_price') is not None else r['variant'].sell_price,
+                          r.get('serial_numbers'))
                       for r in rows)
         return now != sent
 
@@ -297,9 +335,10 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         parts = validated_data.pop('parts', None)
+        is_open = instance.status == Service.Status.OPEN and not instance.invoice_id
         with transaction.atomic():
             service = super().update(instance, validated_data)
-            if parts is not None:
+            if parts is not None and is_open:   # a closed job's list was only re-sent unchanged (validate)
                 self._save_parts(service, parts)
         return service
 
@@ -315,13 +354,15 @@ class ServiceSerializer(serializers.ModelSerializer):
                 price = row['variant'].sell_price or Decimal('0')
             pid = row.get('id')
             part = existing.get(pid) if pid else None
+            serials = row.get('serial_numbers') or []   # normalised + checked in validate
             if part is not None:
                 part.variant, part.quantity, part.unit_price = row['variant'], row['quantity'], price
-                part.save(update_fields=['variant', 'quantity', 'unit_price', 'updated_at'])
+                part.serial_numbers = serials
+                part.save(update_fields=['variant', 'quantity', 'unit_price', 'serial_numbers', 'updated_at'])
                 keep.add(part.id)
             else:
                 ServicePart.objects.create(store=service.store, service=service, variant=row['variant'],
-                                           quantity=row['quantity'], unit_price=price)
+                                           quantity=row['quantity'], unit_price=price, serial_numbers=serials)
         for pid, part in existing.items():
             if pid not in keep:
                 part.delete()   # soft delete
