@@ -343,6 +343,11 @@ class StoreSettings(TimestampedModel):
         _("Owner level (other businesses + personal money)"), default=False,
         help_text=_("The owner's own money world: other businesses, personal money, draws, loans, partners, money held for others."))
 
+    # s174 (Yakot): pick who SOLD it at the till ("Sold by") — the cashier (who takes the money) never changes. Off = the
+    # signed-in person, as before. The invoice page shows both names.
+    salesperson_picker_enabled = models.BooleanField(
+        _("Pick the salesperson at the till"), default=False,
+        help_text=_("The till gets a 'Sold by' list, so a sale can count for the person who helped the customer."))
     # s174 (Yakot): "My money" behind the owner's authenticator — opening the tree shows the app's lock screen and asks the
     # 6-digit code; it then stays open owner_unlock_minutes. Kept by the server (treasury/owner_lock.py).
     owner_lock_enabled = models.BooleanField(

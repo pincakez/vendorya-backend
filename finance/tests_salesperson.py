@@ -18,6 +18,9 @@ class SalespersonTests(_TillBase):
         self.seller = User.objects.create_user(username='sell_t', password='x', role='CASHIER', store=self.store,
                                                first_name='Mona', last_name='Seller')
         self.manager = User.objects.create_user(username='mgr_sp', password='x', role='MANAGER', store=self.store)
+        # s174: picking someone else needs the shop's "Sold by" switch
+        from core.models import StoreSettings
+        StoreSettings.objects.filter(store=self.store).update(salesperson_picker_enabled=True)
 
     def _cart(self, **extra):
         body = {'branch': str(self.branch.id), 'customer': str(self.customer.id), 'status': 'DRAFT',
@@ -66,3 +69,34 @@ class SalespersonTests(_TillBase):
         self.assertEqual((rows['Mona Seller']['sold_count'], rows['Mona Seller']['sold_value']), (1, '100.00'))
         self.assertEqual(rows['Mona Seller']['sales_count'], 0)      # the cashier took the money, not her
         self.assertEqual(rows['csh_t']['sales_count'], 1)
+
+    # ── s174: the till's "Sold by" picker ──
+    def test_switch_off_only_the_signed_in_person(self):
+        from core.models import StoreSettings
+        StoreSettings.objects.filter(store=self.store).update(salesperson_picker_enabled=False)
+        body = {'branch': str(self.branch.id), 'customer': str(self.customer.id), 'status': 'DRAFT',
+                'date': timezone.now().isoformat(), 'salesperson': str(self.seller.id), 'items': []}
+        r = self.client.post('/api/finance/invoices/', body, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('salesperson', r.data)
+        self.assertEqual(self._cart()['salesperson_name'], 'csh_t')          # the default still works
+        self.assertEqual(self.client.get('/api/finance/invoices/salespeople/').json(), [])
+
+    def test_salespeople_list_is_this_shops_staff_only(self):
+        other = User.objects.create_user(username='oth_sp', password='x', role='OWNER')
+        names = {p['name'] for p in self.client.get('/api/finance/invoices/salespeople/').json()}
+        self.assertIn('Mona Seller', names)
+        self.assertIn('csh_t', names)
+        self.assertNotIn('oth_sp', names)
+
+    def test_new_seller_moves_the_lines_that_followed_the_sale(self):
+        d = self._cart()
+        r = self.client.patch(f"/api/finance/invoices/{d['id']}/", {'salesperson': str(self.seller.id)}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((r.data['salesperson_name'], r.data['items'][0]['salesperson_name']), ('Mona Seller', 'Mona Seller'))
+
+    def test_invoice_page_shows_seller_and_cashier(self):
+        d = self._cart(salesperson=str(self.seller.id))
+        self.client.post(self.URL.format(d['id']), {'method': str(self.cash.id)}, format='json')
+        inv = self.client.get(f"/api/finance/invoices/{d['id']}/print-data/").json()['invoice']
+        self.assertEqual((inv['salesperson_name'], inv['cashier_name']), ('Mona Seller', 'csh_t'))

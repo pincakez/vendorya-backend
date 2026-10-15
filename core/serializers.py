@@ -117,6 +117,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             'allow_negative_stock', 'enable_agel_selling', 'require_shift_to_sell', 'reservations_enabled',
             'payment_dues_enabled', 'cheques_enabled',
             'treasury_enabled', 'treasury_owner_level', 'owner_lock_enabled', 'owner_unlock_minutes',
+            'salesperson_picker_enabled',
             'expiry_tracking_enabled', 'expired_sale_policy', 'expiry_alert_days',
             'multi_unit_enabled', 'weight_selling_enabled', 'default_weight_unit',
             'autocomplete_source', 'mb_auto_register',

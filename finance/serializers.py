@@ -146,6 +146,9 @@ def _own_staff(serializer, user):
     store = getattr(getattr(request, 'user', None), 'store', None)
     if store is None or user.store_id != store.id or getattr(user, 'is_superadmin', False):
         raise serializers.ValidationError('Choose a person of this shop.')
+    # s174: picking someone else needs the shop's "Sold by" switch (Settings → Capabilities); off = the signed-in person
+    if user.pk != request.user.pk and not getattr(getattr(store, 'settings', None), 'salesperson_picker_enabled', False):
+        raise serializers.ValidationError('The salesperson picker is switched off for this shop.')
     return user
 
 
@@ -223,11 +226,16 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)
         with transaction.atomic():
-            if 'salesperson' in validated_data and validated_data['salesperson'] != instance.salesperson:
+            old_seller = instance.salesperson_id
+            seller_changed = 'salesperson' in validated_data and validated_data['salesperson'] != instance.salesperson
+            if seller_changed:
                 instance.salesperson_name = ''        # re-frozen from the new person in save()
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             instance.save()
+            if seller_changed and items_data is None:   # s174: lines that followed the sale follow the new person
+                instance.items.filter(salesperson_id=old_seller).update(
+                    salesperson=instance.salesperson, salesperson_name=instance.salesperson_name)
             if items_data is not None:
                 instance.items.all().delete()
                 for item_data in items_data:

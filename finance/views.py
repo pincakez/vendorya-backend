@@ -103,9 +103,20 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
         'void':           'CASHIER',
         'checkout':       'CASHIER',
         'print_data':     'CASHIER',
+        'salespeople':    'CASHIER',
     }
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ['date', 'created_at', 'grand_total', 'invoice_number']
+
+    @action(detail=False, methods=['get'])
+    def salespeople(self, request):
+        """s174: the till's "Sold by" list — this shop's active staff (never sudo). Empty while the switch is off."""
+        from .models import person_name
+        store = request.user.store
+        if store is None or not getattr(getattr(store, 'settings', None), 'salesperson_picker_enabled', False):
+            return Response([])
+        people = User.objects.filter(store=store, is_active=True, is_superadmin=False).order_by('first_name', 'username')
+        return Response([{'id': str(u.id), 'name': person_name(u)} for u in people])
 
     def perform_destroy(self, instance):
         # Only a draft cart may be deleted. A POSTED / VOID sale moved stock and money — deleting it would hide it
@@ -327,6 +338,11 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             'is_store_credit': p.method.is_store_credit,
         } for p in invoice.payments.select_related('method').order_by('created_at')]
 
+        # s174: the cashier = whoever took the money (the first payment's person); '' for a sale with no payment yet
+        from .models import person_name
+        first_pay = invoice.payments.select_related('created_by').order_by('created_at').first()
+        cashier_name = person_name(first_pay.created_by) if first_pay and first_pay.created_by_id else ''
+
         # Tax ID only travels to the client when the store opts in — off means
         # it is omitted entirely, not blanked to "N/A".
         show_tax_id = bool(settings_obj and settings_obj.print_tax_id)
@@ -343,6 +359,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'paid_amount': str(invoice.paid_amount),
                 'change_given': str(invoice.change_given),
                 'salesperson_name': invoice.salesperson_name,   # s171: who sold it
+                'cashier_name': cashier_name,                   # s174: who took the money (the invoice page shows both)
                 'source_number': invoice.source_number,         # PROLINE-IMPORT-B.md: the old system's number
             },
             'store': {
