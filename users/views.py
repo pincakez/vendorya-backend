@@ -283,7 +283,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         'statement':      'MANAGER',   # same as the supplier statement + the customer receipts list (s167)
     }
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['name', 'phone_number']
+    search_fields = ['name', 'phone_number', 'phone_2']   # never national_id: a cashier could probe IDs
     # 'balance' is computed live (not a real DB column to order by), so it's
     # intentionally absent here — the Customers table shows it un-sortable.
     ordering_fields = ['name', 'phone_number', 'store_credit', 'created_at']

@@ -107,7 +107,8 @@ def _customers(store):
     for c in qs.iterator(chunk_size=CHUNK):
         yield [c.id, c.name, c.phone_number, c.whatsapp_number, c.email, c.gender, c.country, c.city,
                c.instagram, c.website, c.notes, c.is_walk_in, c.balance, c.live_balance, c.credit_limit,
-               c.store_credit, c.created_at]
+               c.store_credit, c.created_at, c.phone_2, c.address, c.national_id, c.tax_number, c.guarantor_name,
+               c.guarantor_national_id, c.guarantor_phone, c.guarantor_phone_2, c.guarantor_work, c.guarantor_address]
 
 
 def _suppliers(store):
@@ -356,6 +357,9 @@ TABLES = [
         ('balance', 'What the customer owes you today (negative = you owe them), same number as the Customers page'),
         ('credit_limit', 'Empty = the shop default'), ('store_credit', 'Credit the customer can spend'),
         ('created_at', ''),
+        ('phone_2', 'Second phone'), ('address', ''), ('national_id', ''), ('tax_number', ''),
+        ('guarantor_name', ''), ('guarantor_national_id', ''), ('guarantor_phone', ''), ('guarantor_phone_2', ''),
+        ('guarantor_work', ''), ('guarantor_address', ''),
     ], _customers),
     ('suppliers.csv', 'Your suppliers.', [
         ('supplier_id', 'Unique id (join key for purchases and supplier payments)'),

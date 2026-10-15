@@ -95,6 +95,18 @@ class Customer(TimestampedModel, SoftDeleteModel):
     website         = models.URLField(blank=True, default='')
     country         = models.CharField(max_length=100, blank=True, default='Egypt')
     city            = models.CharField(max_length=100, blank=True, default='')
+    # s171 (PROLINE-PARITY "customer fields"): what a shop selling on credit keeps on file. National ID + the
+    # guarantor block are personal data → hidden from cashiers by default (core/field_visibility.py).
+    phone_2         = models.CharField(_("Second phone"), max_length=20, blank=True, default='')
+    address         = models.CharField(_("Address"), max_length=255, blank=True, default='')
+    national_id     = models.CharField(_("National ID"), max_length=30, blank=True, default='')
+    tax_number      = models.CharField(_("Tax number"), max_length=50, blank=True, default='')
+    guarantor_name        = models.CharField(_("Guarantor name"), max_length=255, blank=True, default='')
+    guarantor_national_id = models.CharField(_("Guarantor national ID"), max_length=30, blank=True, default='')
+    guarantor_phone       = models.CharField(_("Guarantor phone"), max_length=20, blank=True, default='')
+    guarantor_phone_2     = models.CharField(_("Guarantor second phone"), max_length=20, blank=True, default='')
+    guarantor_work        = models.CharField(_("Guarantor work"), max_length=255, blank=True, default='')
+    guarantor_address     = models.CharField(_("Guarantor address"), max_length=255, blank=True, default='')
 
     # The store's default "Walk-in" customer for anonymous POS sales. One per store,
     # auto-created on store creation. Not user-editable/deletable; POS auto-selects it.

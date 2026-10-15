@@ -1,3 +1,4 @@
+from core.field_visibility import FieldVisibilityMixin
 from django.utils.crypto import get_random_string
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -54,7 +55,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return name or obj.username
 
 
-class CustomerSerializer(serializers.ModelSerializer):
+class CustomerSerializer(FieldVisibilityMixin, serializers.ModelSerializer):
+    # s171: national ID + guarantor = personal data → the shop's field_visibility for 'people_customers'
+    # (default: hidden from CASHIER, core/field_visibility.py DEFAULT_HIDDEN).
+    table_id = 'people_customers'
     # Live balance = opening-balance seed + Σ posted-invoice AR. Computed, never
     # stored (the `balance` column holds only the opening seed). Positive = owes us.
     balance = serializers.SerializerMethodField()
@@ -66,6 +70,9 @@ class CustomerSerializer(serializers.ModelSerializer):
         model = Customer
         fields = ['id', 'name', 'phone_number', 'email', 'gender', 'notes',
                   'whatsapp_number', 'instagram', 'website', 'country', 'city',
+                  'phone_2', 'address', 'national_id', 'tax_number',
+                  'guarantor_name', 'guarantor_national_id', 'guarantor_phone', 'guarantor_phone_2',
+                  'guarantor_work', 'guarantor_address',
                   'balance', 'opening_balance', 'credit_limit', 'store_credit', 'is_walk_in']
         read_only_fields = ['id', 'store_credit', 'is_walk_in']
 

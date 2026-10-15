@@ -11,6 +11,11 @@ DEFAULT_HIDDEN = {
     'inventory_products': {
         'CASHIER': ['cost_display', 'profit_display'],
     },
+    # s171: personal data a cashier doesn't need at the till.
+    'people_customers': {
+        'CASHIER': ['national_id', 'guarantor_name', 'guarantor_national_id', 'guarantor_phone',
+                    'guarantor_phone_2', 'guarantor_work', 'guarantor_address'],
+    },
 }
 
 # Roles that always see everything (they manage visibility; can't be locked out).
