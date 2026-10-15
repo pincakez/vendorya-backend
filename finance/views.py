@@ -880,6 +880,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         'summary':        'CASHIER',
         'drawer':         'CASHIER',
         'drawers':        'CASHIER',   # TREASURY.md: the open-shift screen's drawer picker (book balance + busy)
+        'move_targets':   'CASHIER',   # TREASURY.md: the close screen's "move the takings to" picker
     }
 
     def get_queryset(self):
@@ -997,7 +998,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         `move_amount` = a transfer from the drawer (e.g. the takings to the safe). All or nothing."""
         from treasury import ledger
         from treasury.models import MoneyBox
-        from .treasury_flows import guarded, refuse
+        from .treasury_flows import guarded, refuse, check_move_target
         reason = str(request.data.get('count_reason') or '')
         move_to, move_amount = request.data.get('move_to_box'), request.data.get('move_amount')
         target = None
@@ -1006,8 +1007,8 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
                 target = MoneyBox.all_objects.filter(pk=move_to, store=shift.store).first()
             except (ValueError, TypeError, DjangoValidationError):
                 target = None
-            if target is None:
-                refuse('box_not_found', 'This money box was not found in your shop.')
+            # Same shop, open, never a drawer / a box with an open shift; below MANAGER only cash-like boxes.
+            check_move_target(target, shift.store, request.user)
             try:
                 move_amount = Decimal(str(move_amount))
             except (ArithmeticError, ValueError, TypeError):
@@ -1030,6 +1031,19 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
                     ledger.transfer(drawer, target, move_amount, user=request.user)
         return shift
 
+    @action(detail=False, methods=['get'], url_path='move-targets')
+    def move_targets(self, request):
+        """TREASURY.md § 4.2: the boxes the CALLER may move the takings to when closing — exactly the close rule
+        (same shop, open, never a drawer / a box with an open shift; below MANAGER only cash-like boxes).
+        `[{id, name, kind}]` (+ `balance` for MANAGER+)."""
+        from treasury import ledger
+        from .treasury_flows import move_targets
+        store = request.user.store
+        if not ledger.is_on(store):
+            return Response({'code': 'treasury_off', 'detail': 'The Treasury is off for this shop.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        return Response(move_targets(store, request.user))
+
     @action(detail=False, methods=['get'])
     def drawers(self, request):
         """TREASURY.md § 4.2: the shop's till drawers (?branch=<id>) for the open-shift screen — each with its book
@@ -1039,7 +1053,13 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         if not ledger.is_on(store):
             return Response({'code': 'treasury_off', 'detail': 'The Treasury is off for this shop.'},
                             status=status.HTTP_403_FORBIDDEN)
+        from .treasury_flows import drawers_with_balance, is_manager
+        manager = is_manager(request.user)
         branch = None
+        if not manager and not request.query_params.get('branch'):
+            # Below MANAGER: one branch at a time (the one being opened in), never the whole shop's drawers.
+            return Response({'code': 'branch_required', 'detail': 'Choose the branch.'},
+                            status=status.HTTP_400_BAD_REQUEST)
         if request.query_params.get('branch'):
             try:
                 branch = Branch.objects.filter(store=store, pk=request.query_params['branch']).first()
@@ -1052,8 +1072,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         branches = [branch] if branch is not None else list(Branch.objects.filter(store=store, is_deleted=False))
         if any(not MoneyBox.all_objects.filter(branch=b, is_default_drawer=True).exists() for b in branches):
             ledger.setup(store)   # a branch added after the switch was turned on gets its drawer
-        from .treasury_flows import drawers_with_balance
-        return Response(drawers_with_balance(store, branch))
+        return Response(drawers_with_balance(store, branch, show_who=manager))
 
     @action(detail=False, methods=['get'])
     def drawer(self, request):

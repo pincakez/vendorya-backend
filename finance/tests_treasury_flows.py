@@ -173,8 +173,15 @@ class ShiftDrawerTests(_Base):
         self.assertEqual((adj.amount, adj.reason, str(adj.shift_id)), (D('-5'), '5 short', r.data['id']))
         self.assertEqual(self.bal(self.drawer), D('35'))
         # the drawer is busy now: nobody else opens on it
-        d = self.api(self.cashier).get('/api/finance/shifts/drawers/').data
+        # privacy: a cashier must name the branch, and sees THAT it is busy, never who holds it
+        r = self.api(self.cashier).get('/api/finance/shifts/drawers/')
+        self.assertEqual((r.status_code, r.data['code']), (400, 'branch_required'))
+        d = self.api(self.cashier).get(f'/api/finance/shifts/drawers/?branch={self.branch.id}').data
         self.assertTrue(d[0]['busy'])
+        self.assertEqual(d[0]['book_balance'], '35.00')
+        self.assertNotIn('busy_by', d[0])
+        d = self.api(self.owner).get('/api/finance/shifts/drawers/').data
+        self.assertEqual(d[0]['busy_by'], self.manager.username)
         r = self.open_shift(self.cashier, '35')
         self.assertEqual((r.status_code, r.data['code']), (400, 'drawer_busy'), r.content)
 
@@ -437,7 +444,7 @@ class IsolationTests(_Base):
         self.sell(self.cashier, [(self.cash, '100')])
         r = self.api(self.cashier).post(f'/api/finance/shifts/{sid}/close/', {
             'counted_cash': '100', 'move_to_box': str(self.foreign.id), 'move_amount': '50'}, format='json')
-        self.assertEqual((r.status_code, r.data['code']), (400, 'box_not_found'), r.content)
+        self.assertEqual((r.status_code, r.data['code']), (400, 'move_target_not_allowed'), r.content)
         self.assertEqual(ledger.balance(self.foreign), D('500'))
         self.assertEqual([x['id'] for x in self.api(self.manager).get('/api/finance/shifts/drawers/').data],
                          [str(self.drawer.id)])
@@ -476,4 +483,123 @@ class SwitchOffTests(_Base):
         self.assertEqual(MoneyMove.all_objects.count(), 0)
         self.assertEqual(MoneyBox.all_objects.count(), 0)
         r = self.api(self.manager).get('/api/finance/shifts/drawers/')
+        self.assertEqual((r.status_code, r.data['code']), (403, 'treasury_off'))
+
+    def test_trash_restore_still_works_for_a_record_that_never_moved_money(self):
+        e = Expense.all_objects.create(store=self.store, branch=self.branch, category=self.cat, amount=D('20'),
+                                       date=date.today(), is_deleted=True)
+        sudo = User.objects.create_user(username='sudo302', password='x', is_superadmin=True)
+        r = self.api(sudo).post('/api/admin/trash/restore/', {'model': 'expense', 'id': str(e.id)}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+
+
+class ReviewFixTests(_Base):
+    """surgeon-reviewer (s169c) fixes: move-takings target, the payer's drawer, trash restore, off→on corrections."""
+    CODE = '303'
+
+    def _close(self, user, sid, target, amount='50'):
+        return self.api(user).post(f'/api/finance/shifts/{sid}/close/', {
+            'counted_cash': '100', 'move_to_box': str(target.id), 'move_amount': amount}, format='json')
+
+    def test_move_takings_target_rules(self):
+        sid = self.open_shift(self.cashier, '0').data['id']
+        self.sell(self.cashier, [(self.cash, '100')])
+        wallet = ledger.open_box(part=self.part, name='Wallet', kind=MoneyBox.Kind.WALLET)
+        for target in (self.bank, wallet, self.drawer, ledger.unsorted_box(self.store)):
+            r = self._close(self.cashier, sid, target)
+            self.assertEqual((r.status_code, r.data['code']), (400, 'move_target_not_allowed'), target.name)
+        self.safe.is_active = False
+        self.safe.save(update_fields=['is_active'])
+        r = self._close(self.cashier, sid, self.safe)
+        self.assertEqual((r.status_code, r.data['code']), (400, 'move_target_not_allowed'))
+        self.safe.is_active = True
+        self.safe.save(update_fields=['is_active'])
+        self.assertEqual(WorkShift.all_objects.get(pk=sid).status, 'OPEN')
+        r = self._close(self.cashier, sid, self.safe)                    # a cashier may move to the safe
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.bal(self.safe), D('1050'))
+        # a manager may also move to the bank / an e-wallet
+        sid = self.open_shift(self.manager, '50').data['id']
+        self.sell(self.manager, [(self.cash, '50')], total='50')
+        r = self._close(self.manager, sid, self.bank, amount='100')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((self.bal(self.bank), self.bal(self.drawer)), (D('100'), D('0')))
+
+    def test_payment_lands_in_the_payers_drawer_in_any_branch(self):
+        b2 = Branch.objects.create(store=self.store, name='Second',
+                                   address=Address.objects.create(store=self.store, street_1='2', city='C'))
+        ledger.setup(self.store)
+        drawer2 = ledger.default_drawer(b2)
+        r = self.api(self.cashier).post('/api/finance/shifts/', {'branch': str(b2.id), 'starting_cash': '0'},
+                                        format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.data['drawer'], drawer2.id)
+        inv = self.sell(self.cashier, [(self.cash, '100')])              # a sale of the FIRST branch
+        r = self.api(self.cashier).post('/api/finance/payments/', {
+            'invoice': str(self.sell(self.cashier, [(self.agel, '1')]).id), 'method': str(self.cash.id),
+            'amount': '40'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(inv.branch_id, self.branch.id)
+        self.assertEqual((self.bal(drawer2), self.bal(self.drawer)), (D('140'), D('0')))
+        # no open shift → the sale's branch default drawer
+        self.sell(self.manager, [(self.cash, '10')], total='10')
+        self.assertEqual(self.bal(self.drawer), D('10'))
+
+    def test_trash_restore_of_a_money_record_is_refused(self):
+        sudo = User.objects.create_user(username='sudo303', password='x', is_superadmin=True)
+        eid = self.expense(self.manager, '100', self.safe).data['id']
+        self.assertEqual(self.api(self.owner).delete(f'/api/finance/expenses/{eid}/').status_code, 204)
+        r = self.api(sudo).post('/api/admin/trash/restore/', {'model': 'expense', 'id': str(eid)}, format='json')
+        self.assertEqual((r.status_code, r.data['code']), (400, 'restore_blocked_treasury'), r.content)
+        self.assertTrue(Expense.all_objects.get(pk=eid).is_deleted)
+        # even after the switch goes off, a row that had a box line stays deleted
+        StoreSettings.objects.filter(store=self.store).update(treasury_enabled=False)
+        r = self.api(sudo).post('/api/admin/trash/restore/', {'model': 'expense', 'id': str(eid)}, format='json')
+        self.assertEqual((r.status_code, r.data['code']), (400, 'restore_blocked_treasury'), r.content)
+
+    def test_switch_off_then_on_keeps_the_boxes_right(self):
+        api, owner = self.api(self.manager), self.api(self.owner)
+        e1 = self.expense(self.manager, '100', self.safe).data['id']
+        e2 = self.expense(self.manager, '50', self.safe).data['id']
+        self.assertEqual(self.bal(self.safe), D('850'))
+        StoreSettings.objects.filter(store=self.store).update(treasury_enabled=False)
+        self.assertEqual(owner.delete(f'/api/finance/expenses/{e1}/').status_code, 204)        # reversed while off
+        r = api.patch(f'/api/finance/expenses/{e2}/', {'amount': '70'}, format='json')          # reversed, no new line
+        self.assertEqual(r.status_code, 200, r.content)
+        e3 = self.expense(self.manager, '10').data['id']                                        # off: no line at all
+        self.assertEqual(self.bal(self.safe), D('1000'))
+        StoreSettings.objects.filter(store=self.store).update(treasury_enabled=True)
+        self.assertEqual(self.bal(self.safe), D('1000'))
+        self.assertEqual(MoneyMove.all_objects.filter(expense_id=e3).count(), 0)
+        # back on: the old rows stay out of the boxes; new ones go in
+        api.patch(f'/api/finance/expenses/{e2}/', {'amount': '75'}, format='json')
+        self.assertEqual(self.bal(self.safe), D('1000'))
+        self.expense(self.manager, '1', self.safe)
+        self.assertEqual(self.bal(self.safe), D('999'))
+
+    def test_void_while_off_still_reverses_even_below_zero(self):
+        self.open_shift(self.cashier, '0')
+        inv = self.sell(self.cashier, [(self.cash, '100')])
+        ledger.transfer(self.drawer, self.safe, '100')
+        StoreSettings.objects.filter(store=self.store).update(treasury_enabled=False)
+        r = self.api(self.manager).post(f'/api/finance/invoices/{inv.id}/void/')
+        self.assertEqual(r.status_code, 200, r.content)                 # off: never blocked by the box floor
+        self.assertEqual(self.bal(self.drawer), D('-100'))              # the book follows what really happened
+
+    def test_move_targets_follow_the_close_rule_per_role(self):
+        wallet = ledger.open_box(part=self.part, name='Wallet', kind=MoneyBox.Kind.WALLET)
+        reserve = ledger.open_box(part=self.part, name='Set aside', kind=MoneyBox.Kind.RESERVED)
+        closed = ledger.open_box(part=self.part, name='Old safe', kind=MoneyBox.Kind.CASH)
+        closed.is_active = False
+        closed.save(update_fields=['is_active'])
+        r = self.api(self.cashier).get('/api/finance/shifts/move-targets/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual({x['id'] for x in r.data}, {str(self.safe.id), str(reserve.id)})
+        self.assertNotIn('balance', r.data[0])                          # a cashier never sees what a box holds
+        r = self.api(self.manager).get('/api/finance/shifts/move-targets/')
+        self.assertEqual({x['id'] for x in r.data},
+                         {str(self.safe.id), str(reserve.id), str(self.bank.id), str(wallet.id)})
+        self.assertEqual({x['name']: x['balance'] for x in r.data}['Safe'], '1000.00')
+        StoreSettings.objects.filter(store=self.store).update(treasury_enabled=False)
+        r = self.api(self.cashier).get('/api/finance/shifts/move-targets/')
         self.assertEqual((r.status_code, r.data['code']), (403, 'treasury_off'))

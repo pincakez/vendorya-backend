@@ -95,6 +95,14 @@ class AdminTrashRestoreView(APIView):
             return Response({'detail': 'Record not found or not deleted.'},
                             status=status.HTTP_404_NOT_FOUND)
 
+        # TREASURY.md: deleting a money record reversed its box line — un-deleting it would leave the books wrong.
+        from finance.treasury_flows import restore_blocked
+        if restore_blocked(obj):
+            return Response({'code': 'restore_blocked_treasury',
+                             'detail': "This record moved money in the shop's Treasury — it can't be restored. "
+                                       'The shop enters it again instead.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         obj.restore()
         log_activity(
             request=request,

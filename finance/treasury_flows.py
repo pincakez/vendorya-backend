@@ -1,12 +1,15 @@
 """The money flows → the Treasury Ledger's boxes (TREASURY.md § 4 + § 11 part B).
 
-Every function here is a no-op unless the shop turned the Treasury on (`ledger.is_on`): OFF = today's Vendorya exactly.
-ON: each business event writes its box line(s) through `treasury.ledger` (the ONE door) inside the caller's transaction,
-so a refused line (e.g. a cash box that would go below zero) rolls the whole event back. A refusal reaches the API as a
-clean 400 `{"code", "detail", ...params}` (`treasury_400`).
+NEW lines are written only while the shop's Treasury is on (`ledger.is_on`): a shop that never turned it on gets
+today's Vendorya exactly. ON: each business event writes its box line(s) through `treasury.ledger` (the ONE door) inside
+the caller's transaction, so a refused line (e.g. a cash box that would go below zero) rolls the whole event back. A
+refusal reaches the API as a clean 400 `{"code", "detail", ...params}` (`treasury_400`).
+CORRECTIONS always happen: an edit / delete / void of something that already has a live line reverses it even while the
+switch is off (then without the below-zero check, and without writing a new line) — so turning it off and on never
+leaves a box wrong.
 
-Where money lands (one rule, `_box_for`): cash → the drawer of the person's open shift in that branch, else the branch's
-default drawer; card / e-wallet / bank → the method's "lands in" box, else the shop's "not sorted yet" box; Ajel and
+Where money lands (one rule, `_box_for`): cash → the drawer of the person's open shift (any branch — one per person),
+else the default drawer of the event's branch; card / e-wallet / bank → the method's "lands in" box, else the shop's "not sorted yet" box; Ajel and
 store credit → no line (no money moved).
 """
 from contextlib import contextmanager
@@ -108,9 +111,16 @@ def _live(**filters):
             .filter(reversed_by__isnull=True).order_by('at', 'created_at'))
 
 
-def _reverse_all(qs, user, reason):
-    for move in qs:
-        ledger.reverse(move, user=user, reason=reason)
+def _reverse_all(qs, user, reason, store=None):
+    """Reverse every live line in `qs`. A correction always happens: with the switch ON the cash floor applies (a
+    drawer that no longer holds the money refuses → the event is undone); with it OFF the event is not ours to block,
+    so the book just follows it (it may show below zero — honest: money left a box nobody was tracking)."""
+    lines = list(qs)
+    if not lines:
+        return
+    off = not ledger.is_on(store if store is not None else lines[0].store)
+    for move in lines:
+        ledger.reverse(move, user=user, reason=reason, allow_below_zero=off)
 
 
 def check_box(box, store, field):
@@ -132,7 +142,9 @@ def post_sale_payment(payment):
     if not ledger.is_on(store) or payment.receipt_id:
         return None
     with guarded():
-        shift = open_shift_of(payment.created_by, store, invoice.branch)
+        # The payer's open shift in ANY branch (one per person) — the drawer that really took the cash; the sale's
+        # branch default drawer only when they have no open shift.
+        shift = open_shift_of(payment.created_by, store)
         box = _box_for(payment.method, store, shift=shift, branch=invoice.branch)
         if box is None:
             return None
@@ -143,10 +155,8 @@ def post_sale_payment(payment):
 def reverse_sale(invoice, user):
     """A POSTED sale is voided: the money it took goes back out of the boxes it went into (the payments stay as
     they are — the sale's history is not rewritten). Receipt shares have no line of their own (see post_receipt)."""
-    if not ledger.is_on(invoice.store):
-        return
     with guarded():
-        _reverse_all(_live(payment__invoice=invoice, kind=K.SALE_IN), user, 'Sale voided')
+        _reverse_all(_live(payment__invoice=invoice, kind=K.SALE_IN), user, 'Sale voided', invoice.store)
 
 
 # ── customer receipts (a customer pays a debt) ─────────────────────────────────────────────────────────────────
@@ -166,10 +176,9 @@ def post_receipt(receipt):
 
 
 def reverse_receipt(receipt, user):
-    if not ledger.is_on(receipt.store):
-        return
     with guarded():
-        _reverse_all(_live(customer_receipt=receipt, kind=K.RECEIPT_IN), user, 'Customer payment deleted')
+        _reverse_all(_live(customer_receipt=receipt, kind=K.RECEIPT_IN), user, 'Customer payment deleted',
+                     receipt.store)
 
 
 # ── refunds ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -245,10 +254,8 @@ def post_refund(refund, original, user):
 
 def reverse_refund(refund, user):
     """A return is deleted (soft): the money it paid out comes back into the same boxes."""
-    if not ledger.is_on(refund.store):
-        return
     with guarded():
-        _reverse_all(_live(refund=refund, kind=K.REFUND_OUT), user, 'Return deleted')
+        _reverse_all(_live(refund=refund, kind=K.REFUND_OUT), user, 'Return deleted', refund.store)
 
 
 # ── money paid out from a chosen box (expense, supplier payment) ───────────────────────────────────────────────
@@ -269,21 +276,24 @@ def has_line(obj, kind, link):
 
 def sync_paid_out(obj, *, kind, link, user, created=False, reason_edit='Edited', reason_delete='Deleted'):
     """Keep ONE live line for an expense / supplier payment: created → post; amount or box changed → reverse the old
-    line + post the new one; deleted (soft) → reverse. A row made before the Treasury (no line) is never put in a box."""
+    line + post the new one; deleted (soft) → reverse. A row made before the Treasury (no line) is never put in a box.
+    Switch OFF: an existing line is still corrected (reversed on delete or on a changed amount) but no new line is
+    written — the row then stays out of the boxes."""
     store = obj.store
-    if not ledger.is_on(store):
-        return
+    on = ledger.is_on(store)
     with guarded():
         live = list(_live(**{link: obj}, kind=kind))
         if obj.is_deleted:
-            _reverse_all(live, user, reason_delete)
+            _reverse_all(live, user, reason_delete, store)
             return
         if live:
             if len(live) == 1 and live[0].box_id == obj.paid_from_id and -live[0].amount == obj.amount:
                 return
-            _reverse_all(live, user, reason_edit)
-        elif not created:
-            return                                      # made before the Treasury: stays out of every box
+            _reverse_all(live, user, reason_edit, store)
+            if not on:
+                return
+        elif not (created and on):
+            return                                      # made before the Treasury / while it is off: no box
         if obj.paid_from_id is None:
             raise TreasuryError('paid_from_required', 'Choose the money box this was paid from.')
         box = obj.paid_from
@@ -307,7 +317,9 @@ def drawer_lines(shift):
             .order_by('-at', '-created_at'))
 
 
-def drawers_with_balance(store, branch=None):
+def drawers_with_balance(store, branch=None, show_who=False):
+    """The open-shift picker's drawers. `show_who` (MANAGER+) adds WHO holds a busy drawer; staff below see only
+    that it is busy."""
     from .models import WorkShift
     qs = MoneyBox.all_objects.filter(store=store, kind=MoneyBox.Kind.DRAWER, is_active=True).select_related('branch')
     if branch is not None:
@@ -320,12 +332,72 @@ def drawers_with_balance(store, branch=None):
     out = []
     for b in boxes:
         s = busy.get(b.pk)
-        out.append({
+        row = {
             'id': str(b.pk), 'name': b.name, 'branch': str(b.branch_id) if b.branch_id else None,
             'branch_name': b.branch.name if b.branch_id else None, 'is_default_drawer': b.is_default_drawer,
             'book_balance': str((sums.get(b.pk) or ZERO).quantize(CENT)),
             'busy': s is not None,
-            'busy_by': (s.user.get_full_name() or s.user.username) if s is not None else None,
-            'busy_shift': str(s.pk) if s is not None else None,
-        })
+        }
+        if show_who:
+            row['busy_by'] = (s.user.get_full_name() or s.user.username) if s is not None else None
+            row['busy_shift'] = str(s.pk) if s is not None else None
+        out.append(row)
     return out
+
+
+# ── close: "move the takings to …" ─────────────────────────────────────────────────────────────────────────────
+# Where takings may go at close, by the closer's role (below MANAGER: cash-like boxes only; MANAGER+: + bank / e-wallet).
+MOVE_KINDS_BELOW_MANAGER = {MoneyBox.Kind.CASH, MoneyBox.Kind.RESERVED, MoneyBox.Kind.SAVINGS}
+MOVE_KINDS_MANAGER = MOVE_KINDS_BELOW_MANAGER | {MoneyBox.Kind.BANK, MoneyBox.Kind.WALLET}
+
+
+def is_manager(user):
+    from users.models import User
+    from users.permissions import ROLE_RANK, _user_rank
+    return _user_rank(user) >= ROLE_RANK[User.Role.MANAGER]
+
+
+def check_move_target(box, store, user):
+    """The box a closing cashier moves the takings to: one of THIS shop's open boxes, never a drawer (nor any box with
+    an open shift), never the "not sorted yet" box, and only the kinds the closer's role may move money into."""
+    if box is None or not _move_target_ok(box, store, user, _busy_box_ids(store)):
+        refuse('move_target_not_allowed', "The takings can't be moved to this box.")
+
+
+def _busy_box_ids(store):
+    from .models import WorkShift
+    return set(WorkShift.all_objects.filter(store=store, status=WorkShift.Status.OPEN, drawer__isnull=False)
+               .values_list('drawer_id', flat=True))
+
+
+def _move_target_ok(box, store, user, busy_ids):
+    allowed = MOVE_KINDS_MANAGER if is_manager(user) else MOVE_KINDS_BELOW_MANAGER
+    return (box.store_id == getattr(store, 'id', None) and box.is_active
+            and box.kind != MoneyBox.Kind.DRAWER and box.system_role != MoneyBox.Role.UNSORTED
+            and box.kind in allowed and box.pk not in busy_ids)
+
+
+def move_targets(store, user):
+    """The boxes THIS caller may move takings to at close (the same rule as check_move_target). Balances only for
+    MANAGER+ (a cashier never sees what the safe or the bank holds)."""
+    busy = _busy_box_ids(store)
+    boxes = [b for b in MoneyBox.all_objects.filter(store=store, is_active=True).order_by('kind', 'name')
+             if _move_target_ok(b, store, user, busy)]
+    show = is_manager(user)
+    return [{'id': str(b.pk), 'name': b.name, 'kind': b.kind,
+             **({'balance': str(ledger.balance(b).quantize(CENT))} if show else {})} for b in boxes]
+
+
+# ── sudo trash: restoring a deleted money record ───────────────────────────────────────────────────────────────
+_LINK_FOR = {'Expense': 'expense', 'RefundInvoice': 'refund', 'SupplierPayment': 'supplier_payment',
+             'CustomerReceipt': 'customer_receipt', 'OtherIncome': 'other_income'}
+
+
+def restore_blocked(obj):
+    """A deleted expense / return / supplier payment / customer receipt / other income must not come back by an
+    un-delete: its box line was reversed when it was deleted, so a restore would leave the books wrong. Blocked when
+    the shop's Treasury is on, or the row ever had a box line."""
+    link = _LINK_FOR.get(type(obj).__name__)
+    if link is None:
+        return False
+    return ledger.is_on(getattr(obj, 'store', None)) or MoneyMove.all_objects.filter(**{link: obj}).exists()

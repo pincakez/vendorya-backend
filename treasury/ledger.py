@@ -153,8 +153,9 @@ def post(box, amount, kind, *, user=None, at=None, note='', reason='', check_flo
 
 
 @transaction.atomic
-def reverse(move, *, user=None, reason=''):
-    """The opposite line. Once only; a reversal can't be reversed (write a new line instead)."""
+def reverse(move, *, user=None, reason='', allow_below_zero=False):
+    """The opposite line. Once only; a reversal can't be reversed (write a new line instead). `allow_below_zero` = a
+    correction made while the shop's switch is OFF (the business event already happened; the book must follow it)."""
     if not (reason or '').strip():
         raise TreasuryError('reason_required', 'Write why this line is reversed.')
     move = MoneyMove.all_objects.select_for_update().get(pk=move.pk)
@@ -166,7 +167,7 @@ def reverse(move, *, user=None, reason=''):
                                                     'expense', 'other_income', 'shift')}
     # Taking back money that came IN must respect the floor; putting back money that went OUT never can fail.
     return post(move.box, -move.amount, MoneyMove.Kind.REVERSAL, user=user, reason=reason, reverses=move,
-                transfer_id=move.transfer_id, check_floor=move.amount > 0, **links)
+                transfer_id=move.transfer_id, check_floor=move.amount > 0 and not allow_below_zero, **links)
 
 
 @transaction.atomic
