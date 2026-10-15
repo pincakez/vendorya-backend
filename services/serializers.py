@@ -298,14 +298,20 @@ class ServiceSerializer(serializers.ModelSerializer):
         if not wanted:
             return
         store = getattr(request_user(self), 'store', None)
-        on_shelf = dict(SerialUnit.all_objects.filter(
+        rows_ = SerialUnit.all_objects.filter(
             store=store, serial__in=[s for s, _v, _n in wanted], status=SerialUnit.Status.IN_STOCK, is_deleted=False,
-        ).values_list('serial', 'variant_id'))
+        ).values_list('serial', 'variant_id', 'branch_id', 'branch__name')
+        on_shelf = {s: v for s, v, _b, _bn in rows_}
         missing = [(s, n) for s, v, n in wanted if on_shelf.get(s) != v.pk]
         if missing:
             serials = sorted(s for s, _n in missing)
             raise _err('serial_not_available', f'Not in stock in this shop: {", ".join(serials)}.',
                        serials=serials, product=missing[0][1], branch='')
+        # Done sells from the branch these units sit in (services.views.done) — so they must all sit in ONE branch.
+        branches = sorted({bn or '' for _s, _v, _b, bn in rows_})
+        if len({b for _s, _v, b, _bn in rows_}) > 1:
+            raise _err('serial_branch_mix', 'The parts\' units sit in different branches — move them to one branch first.',
+                       branch=branches)
 
     @staticmethod
     def _parts_differ(inst, rows):

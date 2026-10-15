@@ -103,6 +103,18 @@ def quote(service):
     }
 
 
+def job_parts_branch(service):
+    """The branch the job's serial-tracked parts sit in (IN_STOCK units), or None when it has none. Done sells from
+    it, so whoever clicks Done, the units are found where they are. The job form keeps them in ONE branch."""
+    from inventory.models import SerialUnit
+    serials = [s for p in service.parts.filter(is_deleted=False) for s in (p.serial_numbers or [])]
+    if not serials:
+        return None
+    unit = (SerialUnit.all_objects.filter(store=service.store, serial__in=serials, status=SerialUnit.Status.IN_STOCK,
+                                          is_deleted=False).select_related('branch').first())
+    return unit.branch if unit else None
+
+
 def add_job_lines(service, invoice):
     """Put the job on its DRAFT sale (the caller then prices it with the normal sale rule). A tracked part's
     serials ride on its line, so the posting (inventory.serials.post_sale) sells exactly those units."""

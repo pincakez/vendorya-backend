@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from core.activity import log_activity
 from core.models import ActivityLog
 from users.permissions import RoleScopedPermission
-from .desk import add_job_lines, labour_variant, quote, refund_lines
+from .desk import add_job_lines, job_parts_branch, labour_variant, quote, refund_lines
 from .models import Service
 from .serializers import ServiceSerializer, ServiceNoteSerializer, device_unit_info
 
@@ -176,8 +176,11 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 if not customer:
                     raise _Refuse('No walk-in customer found for this store.', status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-                # Resolve branch (user default or store primary)
-                branch = getattr(request.user, 'default_branch', None)
+                # Resolve branch: where the job's serial parts sit (s170 — the form checks they share ONE branch),
+                # else the user's default, else the store's first branch.
+                branch = job_parts_branch(service)
+                if branch is None:
+                    branch = getattr(request.user, 'default_branch', None)
                 if branch is not None and branch.store_id != store.id:
                     branch = None
                 if not branch:

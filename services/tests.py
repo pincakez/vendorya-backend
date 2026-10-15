@@ -760,7 +760,9 @@ class ServicePartSerialTests(TestCase):
         self.assertEqual(self.ssd_stock.quantity, Decimal('2'))                             # only the till's sale
         self.assertEqual(self._unit('SN-A').sale_item.invoice_id, till.id)
 
-    def test_unit_at_another_branch_refused_at_done(self):
+    def test_unit_moved_without_its_stock_refused_at_done(self):
+        # s170: Done sells from the branch the unit sits in. A unit whose row says another branch while that branch
+        # holds no stock of it (a broken move) → refused by the normal posting, nothing kept.
         from core.models import Branch, Address
         from inventory.models import SerialUnit
         far = Branch.objects.create(store=self.store, name='Far',
@@ -768,9 +770,10 @@ class ServicePartSerialTests(TestCase):
         job = self._job()
         SerialUnit.all_objects.filter(serial='SN-A').update(branch=far)
         r = self._done(job)
-        self.assertEqual((r.status_code, self._code(r)), (400, 'serial_not_available'), r.content[:400])
+        self.assertEqual(r.status_code, 400, r.content[:400])
         job.refresh_from_db()
-        self.assertEqual(job.status, Service.Status.OPEN)
+        self.assertEqual((job.status, job.invoice_id), (Service.Status.OPEN, None))
+        self.assertEqual(self._unit('SN-A').status, SerialUnit.Status.IN_STOCK)
 
     def test_serials_frozen_after_done(self):
         job = self._job()
@@ -832,3 +835,51 @@ class ServicePartSerialTests(TestCase):
         self.assertEqual(job.refund.items.get(variant=self.ssd).serial_numbers, ['SN-A'])
         for s in ('SN-A', 'SN-B'):
             self.assertEqual(self._unit(s).status, SerialUnit.Status.IN_STOCK)
+
+    # ── s170 batch review: one branch per job · void → reopen → Done again ──
+    def _second_branch_unit(self, serial='SN-Z'):
+        from core.models import Branch, Address
+        from inventory.models import SerialUnit, StockLevel
+        b2 = Branch.objects.create(store=self.store, name='Second',
+                                   address=Address.objects.create(store=self.store, street_1='3', city='Cairo'))
+        StockLevel.objects.create(variant=self.ssd, branch=b2, quantity=Decimal('1'))
+        SerialUnit.all_objects.create(store=self.store, variant=self.ssd, branch=b2, serial=serial,
+                                      status=SerialUnit.Status.IN_STOCK)
+        return b2
+
+    def test_units_from_two_branches_refused(self):
+        self._second_branch_unit()
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 2, 'serial_numbers': ['SN-A', 'SN-Z']}],
+                      'serial_branch_mix')
+
+    def test_done_sells_from_the_branch_the_units_sit_in(self):
+        """A unit at branch 2, Done clicked by someone whose default branch is the main one → sold at branch 2."""
+        from inventory.models import SerialUnit
+        b2 = self._second_branch_unit()
+        self.cashier.default_branch = self.branch
+        self.cashier.save(update_fields=['default_branch'])
+        job = self._job([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-Z']}])
+        r = self._done(job)
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        job.refresh_from_db()
+        self.assertEqual(job.invoice.branch_id, b2.id)
+        self.assertEqual(self._unit('SN-Z').status, SerialUnit.Status.SOLD)
+
+    def test_void_reopens_and_done_again_sells_the_same_units(self):
+        from inventory.models import SerialUnit
+        job = self._job()
+        self.assertEqual(self._done(job).status_code, 200)
+        job.refresh_from_db()
+        first = job.invoice
+        manager = User.objects.create_user(username='mgr_sv', password='x', role='MANAGER', store=self.store)
+        r = self._api(manager).post(f'/api/finance/invoices/{first.id}/void/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        self.assertEqual(self._unit('SN-A').status, SerialUnit.Status.IN_STOCK)
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.OPEN)
+        self.assertEqual(self._done(job).status_code, 200)
+        job.refresh_from_db()
+        unit = self._unit('SN-A')
+        self.assertEqual(unit.status, SerialUnit.Status.SOLD)
+        self.assertEqual(unit.sale_item.invoice_id, job.invoice_id)
+        self.assertNotEqual(job.invoice_id, first.id)
