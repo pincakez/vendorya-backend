@@ -4,6 +4,9 @@ Order: authentication + role (role_map, OWNER for everything; sudo refused like 
 (else 403 `owner_level_off`) → the login IS the owner (else 403 `not_owner`). Data is then scoped by `self.owner`, NEVER by
 `request.user.store` alone: business and personal rows have no shop. Another owner's row = 404, never revealed.
 """
+import uuid
+
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
@@ -36,9 +39,16 @@ class OwnerMixin:
             return treasury_error_response(exc)
         return super().handle_exception(exc)
 
-    # ── scoped lookups (404 for anything not the owner's) ──
+    # ── scoped lookups (404 for anything not the owner's — and for an id that isn't a UUID at all) ──
     def owner_part(self, part_id):
-        return get_object_or_404(ledger.owner_parts(self.owner), pk=part_id)
+        return get_object_or_404(ledger.owner_parts(self.owner), pk=_uuid_or_404(part_id))
 
     def owner_box(self, box_id):
-        return get_object_or_404(ledger.owner_boxes(self.owner).select_related('part'), pk=box_id)
+        return get_object_or_404(ledger.owner_boxes(self.owner).select_related('part'), pk=_uuid_or_404(box_id))
+
+
+def _uuid_or_404(value):
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        raise Http404

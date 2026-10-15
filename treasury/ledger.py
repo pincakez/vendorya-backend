@@ -334,10 +334,15 @@ def move_between(src, dst, amount, *, user=None, note='', at=None):
 
 
 # ── loans ─────────────────────────────────────────────────────────────────────────────────────────────────────
+def owed_from_sum(direction, line_sum):
+    """THE rule from a loan's signed line sum to what is owed (lists + overview pass a pre-summed value)."""
+    line_sum = line_sum or ZERO
+    return line_sum if direction == Loan.Direction.BORROWED else -line_sum
+
+
 def loan_owed(loan):
     """Always ≥ 0 in normal use. BORROWED: what we still owe. LENT: what they still owe us."""
-    s = MoneyMove.all_objects.filter(loan=loan).aggregate(s=Sum('amount'))['s'] or ZERO
-    return s if loan.direction == Loan.Direction.BORROWED else -s
+    return owed_from_sum(loan.direction, MoneyMove.all_objects.filter(loan=loan).aggregate(s=Sum('amount'))['s'])
 
 
 def _sync_closed(obj, owed_fn):
@@ -571,7 +576,7 @@ def settle(part, date_from, date_to, *, user=None):
     part = OwnerPart.all_objects.select_for_update().get(pk=part.pk)
     if part.kind not in BUSINESS_PARTS:
         raise TreasuryError('personal_no_pnl', 'Personal money has no profit and loss.')
-    if date_to > timezone.localdate():
+    if date_to >= timezone.localdate():   # today is not over yet — its later sales would miss the split
         raise TreasuryError('settlement_future', 'A period can be settled only once it has ended.')
     if not Partner.objects.filter(part=part, is_active=True).exists():
         raise TreasuryError('no_partners', 'This part has no partners to settle with.')

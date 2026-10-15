@@ -24,7 +24,7 @@ from core.models import ActivityLog, Branch
 
 from . import ledger
 from .ledger import TreasuryError, ZERO
-from .models import OwnerPart, MoneyBox, MoneyMove, PartEntry, Loan, Amana
+from .models import OwnerPart, MoneyBox, MoneyMove, PartEntry, Loan, Amana, Partner
 from .owner_base import OwnerMixin
 from .owner_serializers import (
     OwnerPartSerializer, OwnerPartCreateSerializer, OwnerPartPatchSerializer, OwnerBoxSerializer,
@@ -112,8 +112,8 @@ class OverviewViewSet(OwnerViewSetMixin, viewsets.ViewSet):
             'personal_total': money(personal_total),
             'business_total': money(business_total),     # shops + businesses
             'amanat_held': money(amanat),
-            'loans_owed_by_me': money(sums.get(Loan.Direction.BORROWED, ZERO)),
-            'loans_owed_to_me': money(-sums.get(Loan.Direction.LENT, ZERO)),
+            'loans_owed_by_me': money(ledger.owed_from_sum(Loan.Direction.BORROWED, sums.get(Loan.Direction.BORROWED))),
+            'loans_owed_to_me': money(ledger.owed_from_sum(Loan.Direction.LENT, sums.get(Loan.Direction.LENT))),
         })
 
 
@@ -156,8 +156,10 @@ class OwnerPartViewSet(OwnerViewSetMixin, mixins.ListModelMixin, mixins.Retrieve
                 # A closed part disappears with its boxes: nothing may still hold money or a live debt.
                 if (MoneyBox.all_objects.filter(part=part, is_active=True).exists()
                         or Loan.objects.filter(part=part, is_closed=False).exists()
-                        or Amana.objects.filter(part=part, is_closed=False).exists()):
-                    raise TreasuryError('part_not_empty', 'Close every box (and settle its loans and amanat) first.')
+                        or Amana.objects.filter(part=part, is_closed=False).exists()
+                        or any(ledger.partner_account(p) != 0 for p in Partner.objects.filter(part=part))):
+                    raise TreasuryError('part_not_empty', 'Close every box (and settle its loans, amanat and '
+                                                          'partner accounts) first.')
                 part.delete()   # soft
         part.refresh_from_db()
         return Response(OwnerPartSerializer(part).data)

@@ -380,6 +380,50 @@ class PartnersApiTests(TestCase):
         self.assertTrue(Expense.objects.get(pk=r.data['id']).owner_only)
 
 
+class Wave2ReviewFixTests(PartnersApiTests):
+    """s170 batch review fixes (surgeon-reviewer on A + B + C)."""
+
+    def test_only_the_owner_may_flip_owner_only(self):
+        cat = ExpenseCategory.objects.create(store=self.store, name='Cat one')
+        r = _client(self.manager).post('/api/finance/expenses/', {
+            'branch': str(self.branch.id), 'category': str(cat.id), 'amount': '20', 'date': str(self.day),
+            'paid_from': str(self.safe.id), 'owner_only': True}, format='json')
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('owner_only', r.data)
+        r = self.c.post('/api/finance/expenses/', {
+            'branch': str(self.branch.id), 'category': str(cat.id), 'amount': '20', 'date': str(self.day),
+            'paid_from': str(self.safe.id), 'owner_only': True}, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:300])
+        eid = r.data['id']
+        # a manager editing the amount (form re-sends the same flag) is fine; clearing it is not
+        mgr = _client(self.manager)
+        self.assertEqual(mgr.patch(f'/api/finance/expenses/{eid}/', {'description': 'x', 'owner_only': True},
+                                   format='json').status_code, 200)
+        self.assertEqual(mgr.patch(f'/api/finance/expenses/{eid}/', {'owner_only': False},
+                                   format='json').status_code, 400)
+        self.assertTrue(Expense.objects.get(pk=eid).owner_only)
+
+    def test_business_with_a_partner_balance_cannot_close(self):
+        p = self._partner(self.side, '30')
+        ledger.partner_put_in(p, '100', self.side_cash)
+        ledger.move_between(self.side_cash, self.home_cash, '100')
+        self.c.patch(f'{API}boxes/{self.side_cash.id}/', {'is_active': False}, format='json')
+        r = self.c.patch(f'{API}parts/{self.side.id}/', {'is_active': False}, format='json')
+        self.assertEqual((r.status_code, r.data.get('code')), (400, 'part_not_empty'), r.content[:300])
+
+    def test_today_cannot_be_settled(self):
+        self._partner(self.side, '30')
+        today = timezone.localdate()
+        r = self.c.post(f'{API}settlements/', {'part': str(self.side.id), 'date_from': str(today),
+                                                'date_to': str(today)}, format='json')
+        self.assertEqual((r.status_code, r.data.get('code')), (400, 'settlement_future'), r.content[:300])
+
+    def test_not_a_uuid_is_404_not_500(self):
+        self.assertEqual(self.c.get(f'{API}boxes/not-a-uuid/statement/').status_code, 404)
+        r = self.c.post(f'{API}moves/', {'from_box': 'x', 'to_box': 'y', 'amount': '1'}, format='json')
+        self.assertIn(r.status_code, (400, 404))
+
+
 class ShopStaffPrivacyTests(TestCase):
     """Owner-level lines in SHOP boxes, as shop staff read them (Wave 1 endpoints): a generic label only."""
     SECRETS = ('Personal box zq', 'Lender zq', 'Neighbour zq', 'Partner one zq', 'secret zq')

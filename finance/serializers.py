@@ -738,6 +738,16 @@ class ExpenseSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
     def validate(self, attrs):
+        # Who carries an expense moves money between the owner and the partners at the next settlement → only the
+        # owner (the person, TREASURY.md § 12.0) may set or clear it. Re-sending the current value is fine.
+        if 'owner_only' in attrs:
+            current = self.instance.owner_only if self.instance is not None else False
+            if attrs['owner_only'] != current:
+                from treasury import ledger
+                request = self.context.get('request')
+                if request is None or ledger.owner_for_user(request.user) is None:
+                    raise serializers.ValidationError(
+                        {'owner_only': 'Only the owner decides who carries an expense.', 'code': 'not_owner'})
         return _validate_paid_from(self, attrs)
 
 

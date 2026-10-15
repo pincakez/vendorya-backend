@@ -124,7 +124,7 @@ class LoanSerializer(serializers.ModelSerializer):
         s = getattr(obj, 'line_sum', None)
         if s is None:
             return money(ledger.loan_owed(obj))
-        return money(s if obj.direction == Loan.Direction.BORROWED else -s)
+        return money(ledger.owed_from_sum(obj.direction, s))
 
 
 class AmanaSerializer(serializers.ModelSerializer):
