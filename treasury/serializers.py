@@ -111,11 +111,42 @@ class OtherIncomeSerializer(serializers.ModelSerializer):
 
 
 # ── statement lines ─────────────────────────────────────────────────────────────────────────────────────────────
+# Owner-level lines (TREASURY.md § 12.4) as shop staff see them: a generic type only — never the personal box, the
+# counterparty, the person money is held for or the partner's name. The kind tells draw vs put-in on screen.
+_K = MoneyMove.Kind
+OWNER_LEVEL_REF = {
+    _K.DRAW_OUT: 'owner', _K.DRAW_IN: 'owner', _K.PUT_OUT: 'owner', _K.PUT_IN: 'owner',
+    _K.LOAN_IN: 'loan', _K.LOAN_REPAY: 'loan', _K.LOAN_OUT: 'loan', _K.LOAN_BACK: 'loan',
+    _K.AMANA_IN: 'amana', _K.AMANA_OUT: 'amana',
+    _K.PARTNER_IN: 'partner', _K.PARTNER_OUT: 'partner',
+}
+
+
+def owner_level_type(m):
+    """'owner' / 'loan' / 'amana' / 'partner' for an owner-level line (or the reversal of one), else None."""
+    if m.kind in OWNER_LEVEL_REF:
+        return OWNER_LEVEL_REF[m.kind]
+    if m.kind == _K.REVERSAL:
+        if m.loan_id:
+            return 'loan'
+        if m.amana_id:
+            return 'amana'
+        if m.partner_id:
+            return 'partner'
+        if m.transfer_id and m.reverses_id:
+            return OWNER_LEVEL_REF.get(m.reverses.kind)
+    return None
+
+
 def move_ref(m, counterpart_names=None):
     """What caused a line: {type, id, label}. type = sale · receipt · refund · supplier_payment · expense · other_income
     · transfer · shift · opening · count (or None for a line with nothing to point at). A reversal carries its
     original's links, so it points at the same source. For a sale payment `id` is the SALE (what the screen opens),
-    the label its invoice number. A count at a shift's open/close points at the shift."""
+    the label its invoice number. A count at a shift's open/close points at the shift. Owner-level lines: generic
+    (`owner_level_type`, no id, no label)."""
+    olt = owner_level_type(m)
+    if olt:
+        return {'type': olt, 'id': None, 'label': ''}
     if m.payment_id:
         inv = m.payment.invoice
         return {'type': 'sale', 'id': str(inv.id),

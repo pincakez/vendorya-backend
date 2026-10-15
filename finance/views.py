@@ -1124,6 +1124,7 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
         receipts, refunds, cash expenses, supplier cash, transfers, counts) — same keys as the old answer, plus
         `line_kind` (the line's kind) and `note`. expected_balance = the drawer's book balance."""
         from treasury import ledger
+        from treasury.serializers import owner_level_type
         from .treasury_flows import drawer_lines
         moves, cash_in, cash_out = [], Decimal('0'), Decimal('0')
         for m in drawer_lines(shift):
@@ -1142,7 +1143,8 @@ class WorkShiftViewSet(viewsets.ModelViewSet):
                 'refund_number': refund.refund_number if refund is not None else None,
                 'customer': m.customer_receipt.customer.name if m.customer_receipt_id else None,
                 'amount': str(abs(m.amount)),
-                'note': m.note or m.reason or '',
+                # An owner draw / loan / partner line: the owner's own words stay private (TREASURY.md § 12.4).
+                'note': '' if owner_level_type(m) else (m.note or m.reason or ''),
             })
         return {
             'shift': WorkShiftSerializer(shift).data,

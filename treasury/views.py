@@ -28,7 +28,7 @@ from .ledger import TreasuryError, ZERO
 from .models import MoneyBox, MoneyMove, IncomeCategory, OtherIncome
 from .serializers import (
     MoneyBoxSerializer, MoneyBoxCreateSerializer, CountSerializer, TransferSerializer, ReverseSerializer,
-    IncomeCategorySerializer, OtherIncomeSerializer, move_line, transfer_counterparts, money,
+    IncomeCategorySerializer, OtherIncomeSerializer, move_line, transfer_counterparts, money, owner_level_type,
 )
 
 # Lines a person may reverse from the Treasury: they have no business source. Everything else (a sale, a refund,
@@ -201,7 +201,11 @@ class MoneyBoxViewSet(TreasuryMixin, viewsets.ModelViewSet):
                 total_in += m.amount
             else:
                 total_out -= m.amount
-            lines.append(move_line(m, running, names))
+            line = move_line(m, running, names)
+            if owner_level_type(m):
+                # The owner typed these for themself (§ 12.4 privacy) — shop staff see only the generic label.
+                line['note'] = line['reason'] = ''
+            lines.append(line)
         return Response({
             'box': self.get_serializer(box).data,
             'date_from': df, 'date_to': dt,
