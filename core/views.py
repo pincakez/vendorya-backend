@@ -282,6 +282,14 @@ class StoreSettingsView(APIView):
             if WorkShift.all_objects.filter(store=request.user.store, status=WorkShift.Status.OPEN).exists():
                 return Response({'code': 'shifts_open',
                                  'detail': 'Close every open shift before turning the Treasury on.'}, status=400)
+        # …and OFF while a shift runs on a drawer box (it would close the old way, its count never reaching the box).
+        if ('treasury_enabled' in serializer.validated_data and not serializer.validated_data['treasury_enabled']
+                and request.user.store.settings.treasury_enabled):
+            from finance.models import WorkShift
+            if WorkShift.all_objects.filter(store=request.user.store, status=WorkShift.Status.OPEN,
+                                            ledger=WorkShift.Ledger.BOX).exists():
+                return Response({'code': 'shifts_open',
+                                 'detail': 'Close every open shift before turning the Treasury off.'}, status=400)
         with transaction.atomic():
             settings_obj = serializer.save()
             # TREASURY.md § 11: turning the Treasury on makes the shop's boxes (owner + shop part, one drawer per

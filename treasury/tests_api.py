@@ -194,6 +194,16 @@ class TreasuryApiTests(TestCase):
         WorkShift.objects.filter(pk=shift.pk).update(status=WorkShift.Status.CLOSED)
         self.assertEqual(c.patch('/api/core/settings/', {'treasury_enabled': True}, format='json').status_code, 200)
 
+    def test_switch_off_refused_while_a_drawer_shift_is_open(self):
+        from finance.models import WorkShift
+        shift = WorkShift.objects.create(store=self.store, branch=self.branch, user=self.cashier, drawer=self.drawer,
+                                         ledger=WorkShift.Ledger.BOX)
+        r = self.c_own.patch('/api/core/settings/', {'treasury_enabled': False}, format='json')
+        self.assertEqual((r.status_code, r.data['code']), (400, 'shifts_open'))
+        WorkShift.objects.filter(pk=shift.pk).update(status=WorkShift.Status.CLOSED)
+        self.assertEqual(self.c_own.patch('/api/core/settings/', {'treasury_enabled': False},
+                                          format='json').status_code, 200)
+
     # ── tenant isolation ────────────────────────────────────────────────────────────────────────────────────────
     def test_another_shops_box_is_invisible(self):
         oid = self.other_box.id
