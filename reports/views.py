@@ -408,6 +408,95 @@ def _returns_by_period(store, df, dt, g):
         yield r.period, ex_tax, (r.restocking_fee or ZERO), cost_back
 
 
+def compute_pnl(store, df, dt, g='month'):
+    """The shop P&L for [df, dt] (local dates) → (rows, totals). ONE place for the maths: the P&L report below and the
+    Treasury's partner settlements (`treasury.ledger.part_profit`) both use it, so they can never disagree."""
+    # Revenue (ex-tax) + COGS per period from posted sales
+    inv_periods = (
+        SalesInvoice.objects.filter(
+            store=store, status=SalesInvoice.Status.POSTED, is_deleted=False,
+            date__date__gte=df, date__date__lte=dt)
+        .annotate(period=_trunc(g, 'date'))
+        .values('period')
+        .annotate(revenue=Coalesce(Sum(F('grand_total') - F('tax_total')), Value(ZERO), output_field=DEC))
+    )
+    cogs_periods = (
+        SalesInvoiceItem.objects.filter(
+            invoice__store=store, invoice__status=SalesInvoice.Status.POSTED,
+            invoice__is_deleted=False,
+            invoice__date__date__gte=df, invoice__date__date__lte=dt)
+        .annotate(period=_trunc(g, 'invoice__date'))
+        .values('period')
+        .annotate(cogs=Coalesce(Sum(F('quantity') * F('cost_at_sale')), Value(ZERO), output_field=DEC))
+    )
+    expense_periods = (
+        Expense.objects.filter(store=store, is_deleted=False, date__gte=df, date__lte=dt)
+        .annotate(period=_trunc(g, 'date'))
+        .values('period')
+        .annotate(expenses=Coalesce(Sum('amount'), Value(ZERO), output_field=DEC))
+    )
+    # Other income (Treasury, TREASURY.md § 4.4): money in that isn't a sale — live rows by their own date.
+    # Transfers between boxes never appear here (they are neither income nor expense).
+    other_income_periods = (
+        OtherIncome.objects.filter(store=store, is_deleted=False, date__gte=df, date__lte=dt)
+        .annotate(period=_trunc(g, 'date'))
+        .values('period')
+        .annotate(other_income=Coalesce(Sum('amount'), Value(ZERO), output_field=DEC))
+    )
+    periods = defaultdict(lambda: {'revenue': ZERO, 'cogs': ZERO, 'expenses': ZERO, 'returns': ZERO,
+                                   'returns_ex_tax': ZERO, 'restock_fees': ZERO, 'cogs_returned': ZERO,
+                                   'other_income': ZERO})
+
+    def _key(p):
+        return p.isoformat() if p else None
+    for r in inv_periods:
+        periods[_key(r['period'])]['revenue'] += Decimal(r['revenue'] or 0)
+    for r in cogs_periods:
+        periods[_key(r['period'])]['cogs'] += Decimal(r['cogs'] or 0)
+    for r in expense_periods:
+        periods[_key(r['period'])]['expenses'] += Decimal(r['expenses'] or 0)
+    for r in other_income_periods:
+        periods[_key(r['period'])]['other_income'] += Decimal(r['other_income'] or 0)
+    # Returns (s165, §WALK-S163 B2 — standard accounting): counted WITHOUT tax (revenue is ex-tax too),
+    # less the restocking fee the shop keeps (fee = income); the cost of goods put back on the shelf
+    # comes back out of COGS. So 'returns' = net returns and 'cogs' = net COGS, and the screen's
+    # net = revenue − cogs − expenses − returns stays true.
+    for p, ex_tax, fee, cost_back in _returns_by_period(store, df, dt, g):
+        v = periods[_key(p)]
+        v['returns_ex_tax'] += ex_tax
+        v['restock_fees'] += fee
+        v['cogs_returned'] += cost_back
+    for v in periods.values():
+        v['returns'] = v['returns_ex_tax'] - v['restock_fees']
+        v['cogs'] -= v['cogs_returned']
+
+    keys = ('revenue', 'cogs', 'expenses', 'returns', 'returns_ex_tax', 'restock_fees', 'cogs_returned',
+            'other_income')
+    rows = []
+    tot = {k: ZERO for k in keys + ('net',)}
+    for period in sorted(k for k in periods if k is not None):
+        v = periods[period]
+        net = v['revenue'] - v['cogs'] - v['expenses'] - v['returns'] + v['other_income']
+        for k in keys:
+            tot[k] += v[k]
+        tot['net'] += net
+        rows.append({
+            'period': period,
+            **{k: _q(v[k]) for k in keys},
+            'gross_profit': _q(v['revenue'] - v['returns'] - v['cogs']),
+            'net': _q(net),
+        })
+    totals = {
+        **{k: _q(tot[k]) for k in keys},
+        'gross_profit': _q(tot['revenue'] - tot['returns'] - tot['cogs']),
+        'net': _q(tot['net']),
+    }
+    # Reconciliation guard: revenue - cogs - expenses - returns + other_income must equal net.
+    check = tot['revenue'] - tot['cogs'] - tot['expenses'] - tot['returns'] + tot['other_income']
+    totals['reconciles'] = (check == tot['net'])
+    return rows, totals
+
+
 class ProfitLossView(_StoreMixin, APIView):
     def get(self, request):
         store = self.get_store(request)
@@ -415,90 +504,7 @@ class ProfitLossView(_StoreMixin, APIView):
             return _no_store()
         df, dt = self.date_range(request)
         g = self.granularity(request)
-
-        # Revenue (ex-tax) + COGS per period from posted sales
-        inv_periods = (
-            SalesInvoice.objects.filter(
-                store=store, status=SalesInvoice.Status.POSTED, is_deleted=False,
-                date__date__gte=df, date__date__lte=dt)
-            .annotate(period=_trunc(g, 'date'))
-            .values('period')
-            .annotate(revenue=Coalesce(Sum(F('grand_total') - F('tax_total')), Value(ZERO), output_field=DEC))
-        )
-        cogs_periods = (
-            SalesInvoiceItem.objects.filter(
-                invoice__store=store, invoice__status=SalesInvoice.Status.POSTED,
-                invoice__is_deleted=False,
-                invoice__date__date__gte=df, invoice__date__date__lte=dt)
-            .annotate(period=_trunc(g, 'invoice__date'))
-            .values('period')
-            .annotate(cogs=Coalesce(Sum(F('quantity') * F('cost_at_sale')), Value(ZERO), output_field=DEC))
-        )
-        expense_periods = (
-            Expense.objects.filter(store=store, is_deleted=False, date__gte=df, date__lte=dt)
-            .annotate(period=_trunc(g, 'date'))
-            .values('period')
-            .annotate(expenses=Coalesce(Sum('amount'), Value(ZERO), output_field=DEC))
-        )
-        # Other income (Treasury, TREASURY.md § 4.4): money in that isn't a sale — live rows by their own date.
-        # Transfers between boxes never appear here (they are neither income nor expense).
-        other_income_periods = (
-            OtherIncome.objects.filter(store=store, is_deleted=False, date__gte=df, date__lte=dt)
-            .annotate(period=_trunc(g, 'date'))
-            .values('period')
-            .annotate(other_income=Coalesce(Sum('amount'), Value(ZERO), output_field=DEC))
-        )
-        periods = defaultdict(lambda: {'revenue': ZERO, 'cogs': ZERO, 'expenses': ZERO, 'returns': ZERO,
-                                       'returns_ex_tax': ZERO, 'restock_fees': ZERO, 'cogs_returned': ZERO,
-                                       'other_income': ZERO})
-
-        def _key(p):
-            return p.isoformat() if p else None
-        for r in inv_periods:
-            periods[_key(r['period'])]['revenue'] += Decimal(r['revenue'] or 0)
-        for r in cogs_periods:
-            periods[_key(r['period'])]['cogs'] += Decimal(r['cogs'] or 0)
-        for r in expense_periods:
-            periods[_key(r['period'])]['expenses'] += Decimal(r['expenses'] or 0)
-        for r in other_income_periods:
-            periods[_key(r['period'])]['other_income'] += Decimal(r['other_income'] or 0)
-        # Returns (s165, §WALK-S163 B2 — standard accounting): counted WITHOUT tax (revenue is ex-tax too),
-        # less the restocking fee the shop keeps (fee = income); the cost of goods put back on the shelf
-        # comes back out of COGS. So 'returns' = net returns and 'cogs' = net COGS, and the screen's
-        # net = revenue − cogs − expenses − returns stays true.
-        for p, ex_tax, fee, cost_back in _returns_by_period(store, df, dt, g):
-            v = periods[_key(p)]
-            v['returns_ex_tax'] += ex_tax
-            v['restock_fees'] += fee
-            v['cogs_returned'] += cost_back
-        for v in periods.values():
-            v['returns'] = v['returns_ex_tax'] - v['restock_fees']
-            v['cogs'] -= v['cogs_returned']
-
-        keys = ('revenue', 'cogs', 'expenses', 'returns', 'returns_ex_tax', 'restock_fees', 'cogs_returned',
-                'other_income')
-        rows = []
-        tot = {k: ZERO for k in keys + ('net',)}
-        for period in sorted(k for k in periods if k is not None):
-            v = periods[period]
-            net = v['revenue'] - v['cogs'] - v['expenses'] - v['returns'] + v['other_income']
-            for k in keys:
-                tot[k] += v[k]
-            tot['net'] += net
-            rows.append({
-                'period': period,
-                **{k: _q(v[k]) for k in keys},
-                'gross_profit': _q(v['revenue'] - v['returns'] - v['cogs']),
-                'net': _q(net),
-            })
-        totals = {
-            **{k: _q(tot[k]) for k in keys},
-            'gross_profit': _q(tot['revenue'] - tot['returns'] - tot['cogs']),
-            'net': _q(tot['net']),
-        }
-        # Reconciliation guard: revenue - cogs - expenses - returns + other_income must equal net.
-        check = tot['revenue'] - tot['cogs'] - tot['expenses'] - tot['returns'] + tot['other_income']
-        totals['reconciles'] = (check == tot['net'])
+        rows, totals = compute_pnl(store, df, dt, g)
         return Response({'granularity': g, 'date_from': df, 'date_to': dt,
                          'rows': rows, 'totals': totals})
 

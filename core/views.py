@@ -290,6 +290,12 @@ class StoreSettingsView(APIView):
                                             ledger=WorkShift.Ledger.BOX).exists():
                 return Response({'code': 'shifts_open',
                                  'detail': 'Close every open shift before turning the Treasury off.'}, status=400)
+        # TREASURY.md § 12: the owner level rides on the Treasury — it can't be turned on while the Treasury is (or stays) off.
+        if serializer.validated_data.get('treasury_owner_level') and not request.user.store.settings.treasury_owner_level:
+            treasury_after = serializer.validated_data.get('treasury_enabled', request.user.store.settings.treasury_enabled)
+            if not treasury_after:
+                return Response({'code': 'treasury_off',
+                                 'detail': 'Turn the Treasury on before the owner level.'}, status=400)
         with transaction.atomic():
             settings_obj = serializer.save()
             # TREASURY.md § 11: turning the Treasury on makes the shop's boxes (owner + shop part, one drawer per
@@ -297,6 +303,9 @@ class StoreSettingsView(APIView):
             # Turning it off only hides the Treasury; nothing is deleted.
             if serializer.validated_data.get('treasury_enabled') and settings_obj.treasury_enabled:
                 ledger.setup(request.user.store, user=request.user)
+            # …and the owner level makes the owner's ONE personal part (idempotent). Off only hides it; nothing deleted.
+            if settings_obj.treasury_enabled and settings_obj.treasury_owner_level:
+                ledger.setup_owner_level(request.user.store)
         return Response(serializer.data)
 
 

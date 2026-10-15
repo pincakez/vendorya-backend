@@ -51,6 +51,9 @@ class OwnerPart(TimestampedModel, SoftDeleteModel):
         constraints = [
             models.UniqueConstraint(fields=['store'], condition=models.Q(store__isnull=False, is_deleted=False),
                                     name='one_live_part_per_shop'),
+            # Wave 2: an owner has ONE personal pocket (made by the owner-level switch).
+            models.UniqueConstraint(fields=['owner'], condition=models.Q(kind='PERSONAL', is_deleted=False),
+                                    name='one_personal_part_per_owner'),
         ]
 
     def __str__(self):
@@ -136,6 +139,116 @@ class OtherIncome(TimestampedModel, SoftDeleteModel):
         return f'{self.amount} ({self.date})'
 
 
+# ── Wave 2: the owner level (TREASURY.md § 12) ─────────────────────────────────────────────────────────────────────
+# Everything below belongs to an OWNER (the person), not to a shop: no `store` column, never in any shop query. The money
+# lines live in MoneyMove (written only by `treasury.ledger`); these rows only name what the lines are about.
+
+class PartEntry(TimestampedModel, SoftDeleteModel):
+    """Income or spending of a light BUSINESS part or of PERSONAL money (a shop uses its own expenses / other income).
+    Its box line is written by `treasury.ledger`; deleting it (soft) writes the reversal."""
+    class Direction(models.TextChoices):
+        IN  = 'IN',  _('Income')
+        OUT = 'OUT', _('Spending')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(Owner, on_delete=models.PROTECT, related_name='part_entries')
+    part = models.ForeignKey(OwnerPart, on_delete=models.PROTECT, related_name='entries')
+    direction = models.CharField(max_length=3, choices=Direction.choices)
+    category = models.CharField(max_length=100, blank=True, default='')   # typed by the owner
+    amount = models.DecimalField(max_digits=14, decimal_places=2)          # always > 0; direction gives the sign
+    date = models.DateField(default=timezone.localdate)
+    box = models.ForeignKey(MoneyBox, on_delete=models.PROTECT, related_name='part_entries')
+    description = models.TextField(blank=True, default='')
+    # A business with partners: spending only the owner carries (partners' profit share ignores it).
+    owner_only = models.BooleanField(default=False)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='+')
+
+    class Meta(TimestampedModel.Meta):
+        ordering = ['-date', '-created_at']
+
+
+class Loan(TimestampedModel, SoftDeleteModel):
+    """Money borrowed from someone (BORROWED) or lent to someone (LENT). No principal column — the lines ARE the history:
+    owed = the signed sum of the loan's lines (see `ledger.loan_owed`). Never income, never expense."""
+    class Direction(models.TextChoices):
+        BORROWED = 'BORROWED', _('Borrowed')
+        LENT     = 'LENT',     _('Lent')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(Owner, on_delete=models.PROTECT, related_name='loans')
+    part = models.ForeignKey(OwnerPart, on_delete=models.PROTECT, related_name='loans')
+    direction = models.CharField(max_length=8, choices=Direction.choices)
+    counterparty = models.CharField(max_length=150)   # typed by the owner
+    note = models.TextField(blank=True, default='')
+    opened_on = models.DateField(default=timezone.localdate)
+    is_closed = models.BooleanField(default=False)
+
+    class Meta(TimestampedModel.Meta):
+        ordering = ['is_closed', '-opened_on', '-created_at']
+
+
+class Amana(TimestampedModel, SoftDeleteModel):
+    """Money held for someone else (أمانة): it sits in our box but is not ours. Held = the signed sum of its lines."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(Owner, on_delete=models.PROTECT, related_name='amanat')
+    part = models.ForeignKey(OwnerPart, on_delete=models.PROTECT, related_name='amanat')
+    held_for = models.CharField(max_length=150)   # typed by the owner
+    note = models.TextField(blank=True, default='')
+    opened_on = models.DateField(default=timezone.localdate)
+    is_closed = models.BooleanField(default=False)
+
+    class Meta(TimestampedModel.Meta):
+        ordering = ['is_closed', '-opened_on', '-created_at']
+
+
+class Partner(TimestampedModel):
+    """A partner in a SHOP or BUSINESS part, with a profit share. The owner keeps 100 − Σ active shares. A partner is a
+    typed name today; `gid_subject` is the GATES ID slot (empty until GATES ID sign-in exists)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(Owner, on_delete=models.PROTECT, related_name='partners')
+    part = models.ForeignKey(OwnerPart, on_delete=models.PROTECT, related_name='partners')
+    name = models.CharField(max_length=150)
+    share_pct = models.DecimalField(max_digits=5, decimal_places=2)
+    gid_subject = models.UUIDField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    joined_on = models.DateField(default=timezone.localdate)
+
+    class Meta(TimestampedModel.Meta):
+        ordering = ['-is_active', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class PartnerSettlement(TimestampedModel):
+    """One period's profit split between the partners of a part. Figures are frozen when saved; a mistake = cancel
+    (never delete) and settle again."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(Owner, on_delete=models.PROTECT, related_name='settlements')
+    part = models.ForeignKey(OwnerPart, on_delete=models.PROTECT, related_name='settlements')
+    date_from = models.DateField()
+    date_to = models.DateField()
+    profit = models.DecimalField(max_digits=14, decimal_places=2)
+    owner_only_expenses = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='+')
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancel_reason = models.TextField(blank=True, default='')
+
+    class Meta(TimestampedModel.Meta):
+        ordering = ['-date_to', '-created_at']
+
+
+class PartnerSettlementLine(models.Model):
+    """One share of a settlement. `partner` empty = the owner's own share (the rest after the partners)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    settlement = models.ForeignKey(PartnerSettlement, on_delete=models.CASCADE, related_name='lines')
+    partner = models.ForeignKey(Partner, on_delete=models.PROTECT, null=True, blank=True, related_name='settlement_lines')
+    share_pct = models.DecimalField(max_digits=5, decimal_places=2)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)   # signed: a loss is negative
+
+
 class MoneyMoveQuerySet(TenantScopedQuerySet):
     def update(self, **kwargs):
         raise TypeError('Money movements are immutable — write a reversal (treasury.ledger.reverse).')
@@ -166,6 +279,19 @@ class MoneyMove(models.Model):
         OPENING         = 'OPENING',         _('Opening balance')
         COUNT_ADJUST    = 'COUNT_ADJUST',    _('Count difference')
         REVERSAL        = 'REVERSAL',        _('Reversal')
+        # Wave 2 — the owner level (TREASURY.md § 12). None of these is income or expense.
+        DRAW_OUT        = 'DRAW_OUT',        _('Owner draw')           # left a business part …
+        DRAW_IN         = 'DRAW_IN',         _('Owner draw received')  # … arrived in personal money
+        PUT_OUT         = 'PUT_OUT',         _('Put into a business')  # left personal money (or another business) …
+        PUT_IN          = 'PUT_IN',          _('Owner put in')         # … arrived in a business part
+        LOAN_IN         = 'LOAN_IN',         _('Loan received')
+        LOAN_REPAY      = 'LOAN_REPAY',      _('Loan paid back')
+        LOAN_OUT        = 'LOAN_OUT',        _('Loan given')
+        LOAN_BACK       = 'LOAN_BACK',       _('Loan repaid to us')
+        AMANA_IN        = 'AMANA_IN',        _('Money held for someone')
+        AMANA_OUT       = 'AMANA_OUT',       _('Held money returned')
+        PARTNER_IN      = 'PARTNER_IN',      _('Partner put in')
+        PARTNER_OUT     = 'PARTNER_OUT',     _('Paid to a partner')
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     box = models.ForeignKey(MoneyBox, on_delete=models.PROTECT, related_name='moves')
@@ -188,6 +314,11 @@ class MoneyMove(models.Model):
                                          related_name='+')
     expense = models.ForeignKey('finance.Expense', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     other_income = models.ForeignKey(OtherIncome, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    # Wave 2 sources (owner level)
+    part_entry = models.ForeignKey(PartEntry, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    loan = models.ForeignKey(Loan, on_delete=models.PROTECT, null=True, blank=True, related_name='moves')
+    amana = models.ForeignKey(Amana, on_delete=models.PROTECT, null=True, blank=True, related_name='moves')
+    partner = models.ForeignKey(Partner, on_delete=models.PROTECT, null=True, blank=True, related_name='moves')
     transfer_id = models.UUIDField(null=True, blank=True, db_index=True)
     shift = models.ForeignKey('finance.WorkShift', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     reverses = models.OneToOneField('self', on_delete=models.PROTECT, null=True, blank=True, related_name='reversed_by')

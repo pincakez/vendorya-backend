@@ -324,6 +324,11 @@ class StoreSettings(TimestampedModel):
     treasury_enabled = models.BooleanField(
         _("Treasury (money boxes)"), default=False,
         help_text=_("Track where the money is: drawers, safe, bank, e-wallets — every movement written automatically."))
+    # TREASURY.md § 12 (Wave 2): the owner level — other businesses, personal money, draws, loans, partners, amanat.
+    # A SECOND switch; works only while treasury_enabled is on. Off = Wave 1 exactly. Only the owner (the person) uses it.
+    treasury_owner_level = models.BooleanField(
+        _("Owner level (other businesses + personal money)"), default=False,
+        help_text=_("The owner's own money world: other businesses, personal money, draws, loans, partners, money held for others."))
 
     class CreditPolicy(models.TextChoices):
         ALLOW = 'ALLOW', _('Allow — no enforcement')

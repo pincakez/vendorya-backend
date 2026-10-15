@@ -114,7 +114,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = StoreSettings
         fields = [
-            'allow_negative_stock', 'enable_agel_selling', 'require_shift_to_sell', 'treasury_enabled',
+            'allow_negative_stock', 'enable_agel_selling', 'require_shift_to_sell', 'treasury_enabled', 'treasury_owner_level',
             'expiry_tracking_enabled', 'expired_sale_policy', 'expiry_alert_days',
             'multi_unit_enabled', 'weight_selling_enabled', 'default_weight_unit',
             'autocomplete_source', 'mb_auto_register',

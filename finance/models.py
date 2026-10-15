@@ -60,6 +60,9 @@ class Expense(TimestampedModel, SoftDeleteModel):
     date = models.DateField()
     # TREASURY.md (Upgrade 7): the box the money left from. Empty = "before the Treasury" (counts in the P&L, never in a box).
     paid_from = models.ForeignKey('treasury.MoneyBox', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    # TREASURY.md § 12 (Wave 2): a shop with partners — an expense only the owner carries (the partners' profit share
+    # ignores it). Counts in the P&L like any expense.
+    owner_only = models.BooleanField(default=False)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
