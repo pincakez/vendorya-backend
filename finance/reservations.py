@@ -235,14 +235,22 @@ def _give_back(res, user, amount, method, box, note):
 
 # ── convert ────────────────────────────────────────────────────────────────────────────────────────────────────────
 def _deposit_by_method(res):
-    """[(method, net amount > 0)] in the order the deposits were taken."""
+    """[(method, amount > 0)] in the order the deposits were taken — what is HELD per method, adding up to exactly
+    `deposit_balance()`. Money given back on a method that took less (or nothing) comes off the methods taken last
+    (s175 surgeon review: it used to be dropped, so a give-back on another method was still counted as paid)."""
     order, net = [], {}
     for dep in res.deposits.select_related('method').order_by('created_at'):
         if dep.method_id not in net:
             order.append(dep.method)
             net[dep.method_id] = ZERO
         net[dep.method_id] += dep.amount
-    return [(m, net[m.pk]) for m in order if net[m.pk] > 0]
+    short = -sum((v for v in net.values() if v < 0), start=ZERO)
+    split = [[m, net[m.pk]] for m in order if net[m.pk] > 0]
+    for row in reversed(split):
+        take = min(row[1], short)
+        row[1] -= take
+        short -= take
+    return [(m, amt) for m, amt in split if amt > 0]
 
 
 @transaction.atomic
@@ -317,10 +325,16 @@ def cancel(res, user, *, outcome, reason, method=None, box=None):
     if held <= 0:
         outcome = O.NONE
     elif outcome == O.REFUNDED:
-        if method is None:
-            last = res.deposits.filter(amount__gt=0).select_related('method').order_by('-created_at').first()
-            method = last.method if last else None
-        _give_back(res, user, held, method, box, 'Reservation cancelled')
+        split = _deposit_by_method(res)
+        if len(split) > 1:
+            # s175 (surgeon review): held on several methods → each part goes back the way it came (its own box /
+            # the drawer), never all of it on one method — the books and the shift's cash would drift.
+            for m, amt in split:
+                _give_back(res, user, amt, m, None, 'Reservation cancelled')
+        else:
+            if method is None:
+                method = split[0][0] if split else None
+            _give_back(res, user, held, method, box, 'Reservation cancelled')
     elif outcome == O.KEPT:
         res.kept_amount = held
     elif outcome == O.TO_CREDIT:

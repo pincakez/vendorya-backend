@@ -194,6 +194,38 @@ class ReservationTests(_TillBase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.store_credit, D('45'))
 
+    def test_give_back_on_another_method_is_not_counted_at_convert(self):
+        # s175 (surgeon #1): 500 cash in, 100 given back by card → 400 held; the sale must count 400, not 500
+        if self.TREASURY:
+            self.skipTest('card box starts empty — the give-back needs the Treasury off')
+        self._shift()
+        rid = self._new(qty='10', deposit='500').data['id']
+        r = self.mgr.post(f'{URL}{rid}/give-back/', {'amount': '100', 'method': str(self.card.id)}, format='json')
+        self.assertEqual((r.status_code, r.data['deposit_held']), (200, '400.00'), r.content)
+        r = self.client.post(f'{URL}{rid}/convert/', {'payments': [{'method': str(self.cash.id), 'amount': '600'}]},
+                             format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        inv = SalesInvoice.objects.get(pk=r.data['id'])
+        from_deposit = sum(p.amount for p in Payment.objects.filter(invoice=inv, deposit_of__isnull=False))
+        self.assertEqual((from_deposit, inv.paid_amount), (D('400'), D('1000')))
+        self.assertEqual(customer_outstanding(self.customer), D('0'))
+
+    def test_cancel_gives_back_each_part_the_way_it_came(self):
+        # s175 (surgeon #3): 300 cash + 200 card held; the window pre-fills the card → still 300 cash + 200 card back
+        shift = self._shift()
+        rid = self._new(qty='5', deposit='300').data['id']
+        self.client.post(f'{URL}{rid}/deposit/', {'amount': '200', 'method': str(self.card.id)}, format='json')
+        r = self.client.post(f'{URL}{rid}/cancel/', {'outcome': 'REFUNDED', 'reason': 'x', 'method': str(self.card.id)},
+                             format='json')
+        self.assertEqual((r.status_code, r.data['deposit_held']), (200, '0.00'), r.content)
+        outs = sorted((d.method_id == self.cash.id, d.amount) for d in Reservation.objects.get(pk=rid).deposits.all()
+                      if d.amount < 0)
+        self.assertEqual(outs, [(False, D('-200')), (True, D('-300'))])
+        if self.TREASURY:
+            self.assertEqual((ledger.balance(self.drawer), ledger.balance(self.bank)), (D('0'), D('0')))
+        else:
+            self.assertEqual(shift.cash_out(), D('300'))
+
     def test_give_back_is_manager_only_and_capped(self):
         rid = self._new(qty='1', deposit='50').data['id']
         body = {'amount': '20', 'method': str(self.cash.id)}
