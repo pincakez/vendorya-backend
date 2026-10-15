@@ -19,5 +19,9 @@ router.register('loans', LoanViewSet, basename='owner-loans')
 router.register('amanat', AmanaViewSet, basename='owner-amanat')
 
 # ── part B (partner_views) ──
+from .partner_views import PartnerViewSet, SettlementViewSet, PartPnlViewSet  # noqa: E402
+router.register('partners', PartnerViewSet, basename='owner-partners')
+router.register('settlements', SettlementViewSet, basename='owner-settlements')
+router.register('pnl', PartPnlViewSet, basename='owner-pnl')
 
 urlpatterns = router.urls

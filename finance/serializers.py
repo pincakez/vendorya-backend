@@ -731,8 +731,10 @@ class ExpenseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Expense
+        # owner_only (TREASURY.md § 12.4): the owner carries it alone — partners' profit share ignores it. Flipping it
+        # never touches a box line (only amount / box do).
         fields = ['id', 'branch', 'category', 'amount', 'description', 'date', 'paid_from', 'paid_from_name',
-                  'created_at']
+                  'owner_only', 'created_at']
         read_only_fields = ['id', 'created_at']
 
     def validate(self, attrs):

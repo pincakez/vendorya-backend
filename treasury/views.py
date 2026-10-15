@@ -28,7 +28,7 @@ from .ledger import TreasuryError, ZERO
 from .models import MoneyBox, MoneyMove, IncomeCategory, OtherIncome
 from .serializers import (
     MoneyBoxSerializer, MoneyBoxCreateSerializer, CountSerializer, TransferSerializer, ReverseSerializer,
-    IncomeCategorySerializer, OtherIncomeSerializer, move_line, transfer_counterparts, money,
+    IncomeCategorySerializer, OtherIncomeSerializer, move_line, transfer_counterparts, money, owner_level_type,
 )
 
 # Lines a person may reverse from the Treasury: they have no business source. Everything else (a sale, a refund,
@@ -97,6 +97,16 @@ def statement_dates(params):
 STATEMENT_RELATED = ('created_by', 'payment__invoice', 'customer_receipt__customer', 'refund',
                      'supplier_payment__supplier', 'expense__category', 'other_income__category', 'shift__user',
                      'reverses')
+
+
+def shop_move_line(m, running_balance=None, counterpart_names=None):
+    """A statement line as SHOP STAFF see it: an owner-level line (draw, put-in, loan, amana, partner — or its
+    reversal) keeps only its generic label; the owner typed its note / reason for themself (§ 12.4 privacy).
+    Never used for the owner's own statements (they share `statement_answer` with their own line maker)."""
+    line = move_line(m, running_balance, counterpart_names)
+    if owner_level_type(m):
+        line['note'] = line['reason'] = ''
+    return line
 
 
 def statement_answer(lines_qs, df, dt, box_id, make_line, counterparts):
@@ -229,7 +239,7 @@ class MoneyBoxViewSet(TreasuryMixin, viewsets.ModelViewSet):
             return Response(error, status=status.HTTP_400_BAD_REQUEST)
         lines_qs = MoneyMove.objects.filter(store=self.store, box=box)
         return Response({'box': self.get_serializer(box).data,
-                         **statement_answer(lines_qs, df, dt, box.id, move_line, transfer_counterparts)})
+                         **statement_answer(lines_qs, df, dt, box.id, shop_move_line, transfer_counterparts)})
 
     @action(detail=True, methods=['post'], url_path='count')
     def count_box(self, request, pk=None):

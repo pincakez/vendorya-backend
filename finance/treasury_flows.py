@@ -313,7 +313,8 @@ def drawer_lines(shift):
     """The drawer's lines since the shift opened, minus the shift's own opening count (already in starting_cash)."""
     return (MoneyMove.all_objects.filter(box_id=shift.drawer_id, at__gt=shift.start_time)
             .exclude(kind=K.COUNT_ADJUST, shift=shift)
-            .select_related('payment__invoice', 'refund__original_invoice', 'customer_receipt__customer')
+            .select_related('payment__invoice', 'refund__original_invoice', 'customer_receipt__customer',
+                            'reverses')
             .order_by('-at', '-created_at'))
 
 
