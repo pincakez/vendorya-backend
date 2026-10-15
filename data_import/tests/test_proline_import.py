@@ -410,6 +410,44 @@ class ReviewFixTests(_Base):
         self.assertIn('tb_Cust key column: ID (kept from the first import', report.render(dry_run=False))
 
 
+class RealDataFixTests(_Base):
+    """s173 — what the real export showed: the price the till charges sits in PriceOut2 for most items, and
+    SourceID is empty on every item (the supplier is only on the purchase lines)."""
+    MASTER = ['tb_Group1', 'tb_Group2', 'tb_Cust', 'tb_Item', 'tb_InvoIn', 'tb_InvoInBack', 'tb_InvoOut']
+
+    def test_sell_price_column_follows_the_sales_lines(self):
+        # 12511: PriceOut1 18,500 · PriceOut2 18000 — the till sold it at 18000 twice (a return line ignored)
+        sales = [{'InvoNo': '1', 'ItemCode': '12511', 'Price': '18000', 'Back': ''},
+                 {'InvoNo': '2', 'ItemCode': '12511', 'Price': '18000', 'PriceBefore': '18000', 'Back': ''},
+                 {'InvoNo': '3', 'ItemCode': '12511', 'Price': '18500', 'Back': 'y'}]
+        report = self.run_import(commit=True, folder=self.folder_with(self.MASTER, {'tb_InvoOutData': sales}))
+        self.assertTrue(report.committed)
+        self.assertIn('sell price column: PriceOut2 (auto', report.render(dry_run=False))
+        self.assertEqual(ProductVariant.objects.get(store=self.store, sku2='12511').sell_price, Decimal('18000'))
+        # an item with nothing in PriceOut2 takes PriceOut1
+        self.assertEqual(ProductVariant.objects.get(store=self.store, sku2='12600').sell_price, Decimal('250'))
+        # the owner can force the column
+        forced = self.run_import(commit=False, folder=self.folder_with(self.MASTER, {'tb_InvoOutData': sales}),
+                                 sell_price='PriceOut1')
+        self.assertIn('sell price column: PriceOut1 (--sell-price)', forced.render(dry_run=True))
+
+    def test_no_sales_lines_keeps_priceout1(self):
+        report = self.run_import(commit=True)
+        self.assertIn('sell price column: PriceOut1 (auto — no sales lines', report.render(dry_run=False))
+        self.assertEqual(ProductVariant.objects.get(store=self.store, sku2='12511').sell_price, Decimal('18500'))
+
+    def test_supplier_comes_from_the_latest_purchase_when_sourceid_is_empty(self):
+        # 12604 has no SourceID: bought from 6 (old line) then from 5 (newest) → supplier 5 (مؤسسة الأمل)
+        lines = [{'InvoNo': '1', 'Date': '2024-01-01', 'ItemCode': '12604', 'ComCode': '6'},
+                 {'InvoNo': '2', 'Date': '2025-03-01', 'ItemCode': '12604', 'ComCode': '5'},
+                 {'InvoNo': '3', 'Date': '2023-01-01', 'ItemCode': '12604', 'ComCode': '2'}]
+        report = self.run_import(commit=True, folder=self.folder_with(self.MASTER, {'tb_InvoInData': lines}))
+        self.assertTrue(report.committed)
+        screen = ProductVariant.objects.get(store=self.store, sku2='12604').product
+        self.assertEqual(screen.supplier.name, 'مؤسسة الأمل')
+        self.assertIn('item supplier from latest purchase', report.render(dry_run=False))
+
+
 class HelperTests(TestCase):
     def test_numbers_and_keys(self):
         self.assertEqual(parse_decimal('1,234.50'), Decimal('1234.50'))

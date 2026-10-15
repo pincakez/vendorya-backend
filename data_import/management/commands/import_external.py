@@ -50,6 +50,8 @@ class Command(BaseCommand):
         parser.add_argument('--balance-sign', choices=['as-is', 'flip'], default='as-is',
                             help='with --balances=opening: "flip" if the source stores what a customer owes '
                                  'as a negative number (Vendorya: positive = the customer owes the shop)')
+        parser.add_argument('--sell-price', choices=['auto', 'PriceOut1', 'PriceOut2'], default='auto',
+                            help='the item column with the real sell price ("auto" = the one recent sales match)')
         parser.add_argument('--type-column', default='auto',
                             help='customer/supplier split: the source column that says which is which '
                                  '("auto" = detect, "none" = ignore types and use invoices only)')
@@ -77,6 +79,7 @@ class Command(BaseCommand):
             'party_key': o['party_key'], 'supplier_codes': _codes(o['supplier_codes']),
             'customer_codes': _codes(o['customer_codes']), 'default_supplier': o['default_supplier'],
             'link_by_code': o['link_by_code'],
+            'sell_price': o['sell_price'],
         }
         report = run_import(get_adapter(o['system']), store, o['dir'], options, commit=o['commit'])
         self.stdout.write(report.render(dry_run=not o['commit']))

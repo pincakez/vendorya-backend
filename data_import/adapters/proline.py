@@ -7,9 +7,14 @@ What lands where:
     tb_Group1 (top) + tb_Group2 (child, `Group1` → tb_Group1.ID or .Name)  → Category with parent
     tb_Cust                                   → Supplier and/or Customer (the split rule below)
     tb_Item                                   → Product + one ProductVariant
-        ItemCode → SKU2 (and the hidden tag) · ItemName → name · PriceIn → cost · PriceOut1 → sell
+        ItemCode → SKU2 (and the hidden tag) · ItemName → name · PriceIn → cost · PriceOut1 or PriceOut2 → sell
         MinQty → reorder level · BarCode1 (else BarCode) → the one barcode · Group2ID/Group1ID → category
-        SourceID → the supplier (a tb_Cust row) — else the shop's default supplier
+        SourceID → the supplier (a tb_Cust row) — else the supplier of the item's LATEST purchase line
+        (tb_InvoInData) — else the shop's default supplier
+
+The sell price column (--sell-price, default auto): Proline has two (PriceOut1, PriceOut2) and a shop may keep
+its real price in either. auto = the column the recent sales lines (tb_InvoOutData) match most often; PriceOut1
+when there are no sales lines. An item with nothing in that column takes the other one (counted).
     NOT imported, ever: stock (tb_Item.Qty, tb_StoreQty). Stock comes later as one correction.
 
 The customer / supplier split — Proline has ONE table (tb_Cust) for both. Per row, first rule that applies:
@@ -71,9 +76,27 @@ INVO_OUT_COLUMNS = [
     'MinimumTotal', 'Printed', 'MobPrinted', 'DownPayment', 'UserSerID', 'UserSerName', 'RefCode', 'RefName',
     'DiscountUnit', 'DiscountTotal', 'VoucherCode']
 
+# Line tables — read for facts only in part A (which price the till really uses, who sold us each item).
+INVO_IN_DATA_COLUMNS = [
+    'InvoNo', 'Date', 'SN', 'ComCode', 'ComName', 'ItemCode', 'ItemName', 'Unit', 'Qty', 'Price', 'Total',
+    'Group1Code', 'Group2Code', 'SourceCode', 'Serial', 'ExDate', 'ExDateName', 'UserAdded', 'Motor', 'StoreCode',
+    'StoreName', 'BranshCode', 'BranshName', 'Group0Code', 'SerialID', 'MotorID', 'Note', 'PaymentTypeAr',
+    'RefCode', 'RefName', 'PriceBefore', 'Unit2', 'Qty2']
+INVO_OUT_DATA_COLUMNS = [
+    'InvoNo', 'Date', 'SN', 'ComCode', 'ComName', 'ItemCode', 'ItemName', 'Unit', 'MadeIn', 'ItemEdit', 'Qty',
+    'BackArabic', 'Back', 'Price', 'Total', 'Group1Code', 'Group2Code', 'SourceCode', 'Serial', 'ExDate',
+    'ExDateName', 'UserAdded', 'PayedType', 'Dayss', 'BranshCode', 'Motor', 'Notes', 'BranshName', 'Discount',
+    'PriceBefore', 'StoreCode', 'StoreName', 'Serv', 'UserPayIDServ', 'UserPayNameServ', 'UserPayIDSale',
+    'UserPayNameSale', 'DiscountRates', 'SubItem', 'STaxe', 'Group0Code', 'Chk_Taxe', 'GTaxe', 'Service',
+    'Delivery', 'Mob_Print', 'SerialID', 'MotorID', 'Note', 'RefCode', 'RefName', 'Consignment', 'Cost',
+    'ItemNameInvoice', 'Unit2', 'Qty2']
+SELL_COLUMNS = ('PriceOut1', 'PriceOut2')
+PRICE_SAMPLE = 3000          # the newest sales lines looked at to pick the sell price column
+
 TABLES = {'tb_Group1': GROUP1_COLUMNS, 'tb_Group2': GROUP2_COLUMNS, 'tb_Cust': CUST_COLUMNS,
           'tb_Item': ITEM_COLUMNS, 'tb_InvoIn': INVO_IN_COLUMNS, 'tb_InvoInBack': INVO_IN_BACK_COLUMNS,
-          'tb_InvoOut': INVO_OUT_COLUMNS}
+          'tb_InvoOut': INVO_OUT_COLUMNS, 'tb_InvoInData': INVO_IN_DATA_COLUMNS,
+          'tb_InvoOutData': INVO_OUT_DATA_COLUMNS}
 PURCHASE_TABLES = ('tb_InvoIn', 'tb_InvoInBack')
 SALES_TABLES = ('tb_InvoOut',)
 
@@ -132,6 +155,8 @@ class ProlineAdapter(Adapter):
                               'Switch it on first (Admin → SYSTEM → SKU Management).')
         self._load_parties()
         self._load_items()
+        self._pick_sell_price()
+        self._load_last_purchases()
         self._check_default_supplier()
         self._load_balances()
 
@@ -272,19 +297,83 @@ class ProlineAdapter(Adapter):
 
     def _check_default_supplier(self):
         """A NEW product needs a supplier (its SKU carries the supplier code): the item's SourceID supplier,
-        else a default one. Items that end up linked to an existing product don't need it (not known yet)."""
+        else its latest purchase's supplier, else a default one. Items that end up linked to an existing product
+        don't need it (not known yet)."""
         info = self.report.section('split')
         self.default_supplier = self._default_supplier()
-        need = sum(1 for it in self.items
-                   if not it['skip'] and norm_key(it['row'].get('SourceID')) not in self.supplier_keys)
+        how = Counter(self._supplier_key(it['row'])[1] for it in self.items if not it['skip'])
+        for label in ('SourceID', 'latest purchase'):
+            if how[label]:
+                info.note(f'item supplier from {label}', how[label])
+        need = how[None]
         if need:
             if self.default_supplier is None:
                 self.report.blockers.append(
-                    f'Up to {need} items have no supplier in Proline (SourceID empty or not a supplier). '
+                    f'Up to {need} items have no supplier in Proline (SourceID empty or not a supplier, never '
+                    f'bought on a purchase invoice). '
                     f'Give --default-supplier <code> or set the shop\'s default supplier.')
             else:
                 info.line(f'up to {need} items use the default supplier '
                           f'{self.default_supplier.name} ({self.default_supplier.code_prefix})')
+
+    def _supplier_key(self, x):
+        """→ (tb_Cust key, where it came from) — SourceID when it is a supplier, else the latest purchase's
+        supplier, else (None, None)."""
+        key = norm_key(x.get('SourceID'))
+        if key in self.supplier_keys:
+            return key, 'SourceID'
+        key = self.last_purchase.get(text(x.get('ItemCode')))
+        if key in self.supplier_keys:
+            return key, 'latest purchase'
+        return None, None
+
+    def _load_last_purchases(self):
+        """ItemCode → the tb_Cust key of the supplier on its newest purchase line (by Date, then InvoNo)."""
+        best = {}
+        for x in self._rows('tb_InvoInData'):
+            code, sup = text(x.get('ItemCode')), norm_key(x.get('ComCode'))
+            if not code or not sup:
+                continue
+            try:
+                no = int(text(x.get('InvoNo')) or 0)
+            except ValueError:
+                no = 0
+            rank = (text(x.get('Date')), no)
+            if code not in best or rank >= best[code][0]:
+                best[code] = (rank, sup)
+        self.last_purchase = {c: v[1] for c, v in best.items()}
+
+    def _pick_sell_price(self):
+        """Which tb_Item column holds the price the till really charges (see the module docstring)."""
+        info = self.report.section('item_extras')
+        want = self.options.get('sell_price') or 'auto'
+        if want in SELL_COLUMNS:
+            self.sell_col = want
+            info.line(f'sell price column: {want} (--sell-price)')
+            return
+        items = {it['code']: it['prices'] for it in self.items if not it['skip']}
+        hits, looked = Counter(), 0
+        for x in self._rows('tb_InvoOutData')[-PRICE_SAMPLE:]:
+            pr = items.get(text(x.get('ItemCode')))
+            if pr is None or truthy(x.get('Back')):
+                continue
+            try:
+                paid = parse_decimal(x.get('PriceBefore'), 'PriceBefore') or parse_decimal(x.get('Price'), 'Price')
+            except BadNumber:
+                continue
+            if not paid:
+                continue
+            looked += 1
+            for col in SELL_COLUMNS:
+                if pr.get(col) and pr[col] == paid:
+                    hits[col] += 1
+        self.sell_col = 'PriceOut2' if hits['PriceOut2'] > hits['PriceOut1'] else 'PriceOut1'
+        if looked:
+            info.line(f'sell price column: {self.sell_col} (auto — of the newest {looked} sales lines, '
+                      f'{hits["PriceOut1"]} match PriceOut1 and {hits["PriceOut2"]} match PriceOut2; '
+                      f'--sell-price to choose)')
+        else:
+            info.line('sell price column: PriceOut1 (auto — no sales lines to check; --sell-price to choose)')
 
     def _tag_key(self, key):
         return f'{self.party_key}:{key}'
@@ -335,7 +424,7 @@ class ProlineAdapter(Adapter):
                 skip = 'name longer than 255 characters'
             else:
                 try:
-                    for col in ('PriceIn', 'PriceOut1', 'MinQty'):
+                    for col in ('PriceIn', 'PriceOut1', 'PriceOut2', 'MinQty'):
                         prices[col] = parse_decimal(x.get(col), col)
                 except BadNumber as exc:
                     skip = f'bad number in {exc.column} ("{exc.raw}")'
@@ -734,11 +823,16 @@ class ProlineAdapter(Adapter):
             prod_vals = {'name': it['name'], 'category': category}
             # An empty source value never overwrites a live one (same rule as the catalog re-import):
             # None = "no value" → left out on update; sell price 0 = no price; money rounded to 2 decimals.
-            cost, sell = _money(pr['PriceIn']), _money(pr['PriceOut1'])
+            other = 'PriceOut2' if self.sell_col == 'PriceOut1' else 'PriceOut1'
+            cost, sell = _money(pr['PriceIn']), _money(pr[self.sell_col])
+            if not sell and pr[other]:
+                sell = _money(pr[other])
+                sec.note(f'{self.sell_col} empty or 0 — took {other}')
             if sell == 0:
                 sell = None
             if sell is None:
-                sec.note('PriceOut1 empty or 0 — a new product gets 0, an existing one keeps its price')
+                sec.note('no sell price (PriceOut1 and PriceOut2 empty or 0) — a new product gets 0, '
+                         'an existing one keeps its price')
             # s171 review: a cost or reorder level of 0 is "no value" too — never wipe a real one typed in Vendorya
             # (a 0 cost would show a 100% profit on the next sale). A new product still gets 0.
             if cost == 0:
@@ -785,9 +879,9 @@ class ProlineAdapter(Adapter):
                             sec.note('item code is the BARCODE of a product typed by hand — linked to that product')
                         v, origin, verb = cand, LINKED, 'link'
                 if verb is None:
-                    supplier = self.sup_by_key.get(norm_key(x.get('SourceID'))) or self.default_supplier
+                    supplier = self.sup_by_key.get(self._supplier_key(x)[0]) or self.default_supplier
                     if supplier is None:
-                        sec.skip('no supplier (SourceID not a supplier, no default supplier)', sample)
+                        sec.skip('no supplier (not in SourceID or any purchase, no default supplier)', sample)
                         continue
                     product = Product(store=self.store, name=it['name'], category=category, supplier=supplier)
                     product.save()
@@ -828,7 +922,7 @@ class ProlineAdapter(Adapter):
                 if it['sku2_ok'] and not v.sku2 and code not in by_sku2:
                     var_vals['sku2'] = code
                 v_changes = apply_fields(v, var_vals, origin, always)
-                sup = self.sup_by_key.get(norm_key(x.get('SourceID')))
+                sup = self.sup_by_key.get(self._supplier_key(x)[0])
                 if sup is not None and sup.pk != product.supplier_id:
                     sec.note('supplier differs from Proline — kept (the SKU carries the supplier code)')
                 if p_changes:
