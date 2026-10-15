@@ -472,14 +472,19 @@ def remove(unit, user=None, note=''):
 
 def find_serial(store, serial):
     """The unit a serial means in `store`: the one on the shelf if any, else the most recent row (sold /
-    returned / written off). None when the shop never had it. Soft-deleted (removed) rows are ignored."""
+    returned / written off). None when the shop never had it. Soft-deleted (removed) rows are ignored.
+    ONE pick rule for one serial and for a list screen: this goes through find_serials."""
     s = normalize(serial)
     if not s or store is None:
         return None
-    qs = SerialUnit.all_objects.filter(store=store, serial=s, is_deleted=False).select_related(
-        'variant__product', 'branch')
-    return (qs.filter(status=SerialUnit.Status.IN_STOCK).first()
-            or qs.order_by('-created_at').first())
+    return find_serials(store, [s]).get(s)
+
+
+def warranty_active(unit):
+    """THE rule for "this unit is still under warranty" (Serial Lookup page + service desk pre-tick): a SOLD
+    unit whose warranty ends today or later (shop's local date)."""
+    return bool(unit is not None and unit.status == SerialUnit.Status.SOLD and unit.warranty_ends_on
+                and unit.warranty_ends_on >= timezone.localdate())
 
 
 def find_serials(store, serials):

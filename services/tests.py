@@ -336,6 +336,15 @@ class ServiceDeskTests(TestCase):
         self.assertEqual(r.status_code, 201, r.content[:400])
         self.assertFalse(StockLevel.objects.filter(variant=labour).exists())   # no "Low stock: Repair service" ever
 
+    def test_a_serial_tracked_product_cannot_be_a_repair_part(self):
+        self.part.product.track_serials = True
+        self.part.product.save(update_fields=['track_serials'])
+        body = {'client_name': 'X', 'receive_date': str(date.today()),
+                'parts': [{'variant': str(self.part.id), 'quantity': '1'}]}
+        r = self._api(self.cashier).post('/api/services/', body, format='json')
+        self.assertEqual(r.status_code, 400, r.content[:300])
+        self.assertIn('serial', str(r.content))
+
     # ── tenant + roles ──
     def test_technician_from_another_shop_refused(self):
         api = self._api(self.cashier)

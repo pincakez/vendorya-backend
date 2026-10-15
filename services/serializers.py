@@ -1,7 +1,6 @@
 from decimal import Decimal
 
 from django.db import transaction
-from django.utils import timezone
 from rest_framework import serializers
 
 from core.field_visibility import hides_cost, request_user
@@ -42,6 +41,15 @@ class ServicePartSerializer(serializers.ModelSerializer):
     def validate_quantity(self, value):
         if value <= 0:
             raise serializers.ValidationError('Quantity must be more than zero.')
+        return value
+
+    def validate_variant(self, value):
+        # A serial-tracked product needs its unit's serial on the sale — the desk's Done can't ask for one, so it
+        # would refuse the whole job (s169 batch review). Sell such a unit at the till instead.
+        if value.product.track_serials:
+            raise serializers.ValidationError(
+                f'"{value.product.name}" tracks serial numbers — sell it at the till (with its serial), '
+                'not as a repair part.', code='part_tracks_serials')
         return value
 
     def to_representation(self, instance):
@@ -99,7 +107,7 @@ def device_unit_info(unit):
     """What a job shows about the shop's own serial unit behind its device serial (read-only): the product,
     the sale it left on and its warranty. None when the serial is not one of the shop's units. No cost, no
     supplier — a cashier sees this."""
-    from inventory.models import SerialUnit
+    from inventory.serials import warranty_active
     if unit is None:
         return None
     inv = unit.sale_item.invoice if unit.sale_item_id else None
@@ -112,8 +120,8 @@ def device_unit_info(unit):
         'product_name': unit.variant.product.name,
         'sale': {'id': str(inv.id), 'invoice_number': inv.invoice_number, 'date': inv.date} if inv else None,
         'warranty_ends_on': ends,
-        # Same rule as the Serial Lookup page: a SOLD unit whose warranty end is today or later.
-        'warranty_active': bool(unit.status == SerialUnit.Status.SOLD and ends and ends >= timezone.localdate()),
+        # The ONE rule shared with the Serial Lookup page (inventory.serials.warranty_active).
+        'warranty_active': warranty_active(unit),
     }
 
 

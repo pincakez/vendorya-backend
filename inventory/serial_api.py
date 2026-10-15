@@ -10,7 +10,6 @@ follows the shop's "hide supplier" switch for the caller's role; no cost is ever
 """
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.utils import timezone
 from rest_framework import serializers, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -87,8 +86,8 @@ class SerialUnitSerializer(serializers.ModelSerializer):
         return obj.variant.product.condition or ''
 
     def get_warranty_active(self, obj):
-        return bool(obj.status == SerialUnit.Status.SOLD and obj.warranty_ends_on
-                    and obj.warranty_ends_on >= timezone.localdate())
+        from .serials import warranty_active
+        return warranty_active(obj)
 
     def get_purchase(self, obj):
         return _purchase_info(obj.purchase_item, self._show_supplier())
