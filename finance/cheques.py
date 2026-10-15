@@ -22,6 +22,10 @@ def _err(code, detail, **extra):
     return ValidationError({'code': code, 'detail': detail, **{k: str(v) for k, v in extra.items()}})
 
 
+def is_on(store):
+    return bool(getattr(getattr(store, 'settings', None), 'cheques_enabled', False))
+
+
 def _check_method(store, method):
     if method is None:
         raise _err('method_required', 'Choose how the cheque is paid (e.g. a "Cheque" method that lands in the bank).')
@@ -34,6 +38,8 @@ def _check_method(store, method):
 @transaction.atomic
 def create_cheque(store, user, *, direction, customer=None, supplier=None, number='', bank_name='', amount=None,
                   issue_date=None, due_date=None, method=None, note=''):
+    if not is_on(store):
+        raise _err('cheques_off', 'Cheques are switched off for this shop (Settings → Capabilities).')
     if direction not in Cheque.Direction.values:
         raise _err('bad_direction', 'Choose received or given.')
     if direction == Cheque.Direction.RECEIVED:

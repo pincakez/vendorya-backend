@@ -31,6 +31,7 @@ class ChequeTests(_TillBase):
         self.manager = User.objects.create_user(username='mgr_ch', password='x', role='MANAGER', store=self.store)
         self.admin = User.objects.create_user(username='adm_ch', password='x', role='ADMIN', store=self.store)
         self.mgr = _client(self.manager)
+        StoreSettings.objects.filter(store=self.store).update(cheques_enabled=True)   # s174: cheques have a switch
         self.cheque_m = PaymentMethod.objects.create(store=self.store, name='Cheque')
         self.supplier = Supplier.objects.create(store=self.store, name='Dist', code_prefix='402', prefix_locked=True)
         # the customer owes 500 (opening balance), the shop owes the supplier 800
@@ -53,6 +54,17 @@ class ChequeTests(_TillBase):
         rows = self.mgr.get('/api/inventory/suppliers/').json()
         rows = rows['results'] if isinstance(rows, dict) else rows
         return D(str(next(s for s in rows if s['id'] == str(self.supplier.id))['balance']))
+
+    def test_switch_off_blocks_new_cheques_but_keeps_written_ones(self):
+        c = self._new()
+        StoreSettings.objects.filter(store=self.store).update(cheques_enabled=False)
+        r = self.mgr.post(URL, {'direction': 'RECEIVED', 'number': 'CH-2', 'amount': '100', 'customer': str(self.customer.id),
+                                'due_date': (timezone.localdate() + timedelta(days=5)).isoformat()}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(r.json()['code'], 'cheques_off')
+        self.assertEqual(self.mgr.get(f"{URL}{c['id']}/").status_code, 200)        # a written cheque stays reachable
+        r = self.mgr.post(f"{URL}{c['id']}/cancel/", {'reason': 'switched off'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)                              # …and can still be closed
 
     def test_waiting_cheque_moves_nothing(self):
         self._new()

@@ -327,6 +327,11 @@ class StoreSettings(TimestampedModel):
     payment_dues_enabled = models.BooleanField(
         _("Payment due dates"), default=False,
         help_text=_("Write when a customer will pay (one date or instalments) and get reminded on the day."))
+    # s174 (Yakot: every optional module gets a switch): cheques received / given with due dates. Off = no menu, no NEW
+    # cheque; written ones stay reachable by link and can still be cleared / bounced / cancelled.
+    cheques_enabled = models.BooleanField(
+        _("Cheques"), default=False,
+        help_text=_("Track cheques you receive from customers and give to suppliers, with due dates and reminders."))
     # TREASURY.md (Wave 1): money boxes — drawer, safe, bank, e-wallet… with immutable lines. OFF = Vendorya exactly as before
     # (shifts count cash the old way, expenses have no "paid from"). Turning it on runs treasury.ledger.setup().
     treasury_enabled = models.BooleanField(
