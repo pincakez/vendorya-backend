@@ -88,7 +88,17 @@ class TwoFactorVerifySetupView(APIView):
             device.confirmed = True
             device.save()
             codes = _issue_backup_codes(user)
-        return Response({'enabled': True, 'backup_codes': codes})
+        response = Response({'enabled': True, 'backup_codes': codes})
+        # s174: the forced setup at login (a pre-auth token) finishes the login here — the code just typed can't be
+        # used twice, so asking for "the next code" would only make the owner wait 30 seconds.
+        if getattr(request, 'auth', None) is not None and request.auth.get('pre_auth'):
+            from rest_framework_simplejwt.tokens import RefreshToken
+            from .cookies import set_refresh_cookie
+            from .serializers import UserProfileSerializer
+            refresh = RefreshToken.for_user(user)
+            response.data.update({'access': str(refresh.access_token), 'user': UserProfileSerializer(user).data})
+            set_refresh_cookie(response, str(refresh))
+        return response
 
 
 class TwoFactorStatusView(APIView):

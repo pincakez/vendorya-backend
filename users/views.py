@@ -16,7 +16,7 @@ from .permissions import RoleScopedPermission, ROLE_RANK, _user_rank
 from rest_framework.exceptions import PermissionDenied
 from .serializers import VendoryaTokenObtainSerializer, UserProfileSerializer, CustomerSerializer, StaffSerializer
 from .throttling import LoginRateThrottle
-from .twofa import is_enrolled, verify_token
+from .twofa import is_enrolled, requires_2fa, verify_token
 from .cookies import set_refresh_cookie, clear_refresh_cookie
 from core.activity import log_activity
 from core.models import ActivityLog
@@ -63,8 +63,12 @@ class VendoryaTokenObtainView(TokenObtainPairView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # 4. Two-factor — OPTIONAL. Only users who voluntarily enrolled a
-        #    confirmed device are prompted; nobody is ever forced to enrol.
+        # 4. Two-factor. An enrolled user types the code. An OWNER must have one (s174): without it, a 10-minute
+        #    pre-auth token that only opens the setup screens — setup then finishes the login (views_2fa).
+        if not is_enrolled(user) and requires_2fa(user):
+            from .views_2fa import make_pre_auth_token
+            return Response({'requires_2fa_setup': True, 'pre_auth_token': make_pre_auth_token(user),
+                             'detail': 'Set up your authenticator to continue.'}, status=status.HTTP_200_OK)
         if is_enrolled(user):
             otp_token = str(request.data.get('otp_token', '')).strip()
             if not otp_token:
@@ -104,6 +108,17 @@ class CookieTokenRefreshView(TokenRefreshView):
                 data = request.data.copy()
                 data['refresh'] = cookie
                 request._full_data = data
+        # s174: an owner without an authenticator isn't kept signed in — log in again, and login asks for the setup.
+        try:
+            uid = RefreshToken(request.data.get('refresh'))['user_id']
+            who = User.objects.filter(pk=uid).first()
+        except (TokenError, KeyError, TypeError):
+            who = None
+        if who is not None and requires_2fa(who) and not is_enrolled(who):
+            response = Response({'detail': 'Set up your authenticator — please log in again.', 'code': 'twofa_setup_required'},
+                                status=status.HTTP_401_UNAUTHORIZED)
+            clear_refresh_cookie(response)
+            return response
         response = super().post(request, *args, **kwargs)
         if response.status_code == 200:
             # ROTATE_REFRESH_TOKENS returns a new refresh token — move it into the

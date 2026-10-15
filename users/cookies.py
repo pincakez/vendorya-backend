@@ -22,6 +22,7 @@ def clear_refresh_cookie(response):
         key=settings.REFRESH_COOKIE_NAME,
         path=settings.REFRESH_COOKIE_PATH,
         samesite=settings.REFRESH_COOKIE_SAMESITE,
-        secure=settings.REFRESH_COOKIE_SECURE,
+        # no `secure=` — Django's delete_cookie doesn't take it (it crashed; s174). Django marks the deletion Secure
+        # by itself when SameSite=None needs it.
     )
     return response

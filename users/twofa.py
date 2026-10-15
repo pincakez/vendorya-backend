@@ -1,8 +1,9 @@
 """Two-factor (TOTP) helpers: requirement policy, device lookup, token matching.
 
-Policy: 2FA is **fully optional / opt-in**. No account is ever forced to enrol.
-A user is only prompted for a code at login if they have voluntarily enrolled a
-confirmed TOTP device (see the login view, which gates on ``is_enrolled``).
+Policy (s174, Yakot: "not optional"): every shop **OWNER** must log in with an authenticator — the owner sees all
+the money. Login gives an owner without one a short pre-auth token that only opens the setup screens, and setup
+finishes the login. Everyone else stays opt-in (prompted only once they enrolled). Sudo has its own admin login.
+A lost phone: backup codes, else sudo clears the device (admin_auth) and the next login asks to set it up again.
 """
 from django_otp import devices_for_user, match_token
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -12,12 +13,10 @@ from .models import User
 
 
 def requires_2fa(user):
-    """Forced 2FA is disabled — enrolment is always optional.
-
-    Kept as a single source of truth so the login view, status, and disable
-    endpoints all agree that nobody is *required* to use 2FA.
-    """
-    return False
+    """A shop owner must use an authenticator (s174). The single source of truth for the login view, the token refresh,
+    the status and the disable endpoints."""
+    return bool(user is not None and getattr(user, 'is_active', False)
+                and getattr(user, 'role', None) == User.Role.OWNER and not getattr(user, 'is_superadmin', False))
 
 
 def confirmed_totp_device(user):
