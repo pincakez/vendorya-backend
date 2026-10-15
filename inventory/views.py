@@ -1023,13 +1023,15 @@ def supplier_account_sources(store):
     ONE definition, shared by the suppliers-list balance (SupplierViewSet.get_queryset) and the
     account statement (SupplierViewSet.statement), so the two can never drift apart. A DRAFT
     purchase isn't a liability yet (matches the AP-aging report); soft-deleted rows don't count.
-    There are no purchase returns and no supplier opening balance in the system yet (checked s167) —
-    when either is built, add it HERE so the list and the statement both pick it up."""
-    from finance.models import PurchaseInvoice, SupplierPayment
+    s171: + returns to the supplier (POSTED only) — each takes `total − refund_amount` off the account (the money
+    handed back is the part that did NOT become credit). No supplier opening balance yet — add it HERE when built.
+    Also used by the A/P aging report (reports.views.APAgingView)."""
+    from finance.models import PurchaseInvoice, SupplierPayment, PurchaseReturn
     purchases = PurchaseInvoice.objects.filter(
         store=store, status=PurchaseInvoice.Status.RECEIVED, is_deleted=False)
     payments = SupplierPayment.objects.filter(store=store, is_deleted=False)
-    return purchases, payments
+    returns = PurchaseReturn.objects.filter(store=store, status=PurchaseReturn.Status.POSTED, is_deleted=False)
+    return purchases, payments, returns
 
 
 class SupplierViewSet(viewsets.ModelViewSet):
@@ -1059,11 +1061,13 @@ class SupplierViewSet(viewsets.ModelViewSet):
         # The two sources live in supplier_account_sources() — shared with `statement`.
         store = self.request.user.store
         DEC = DecimalField(max_digits=12, decimal_places=2)
-        purchases, payments = supplier_account_sources(store)
+        purchases, payments, returns = supplier_account_sources(store)
         received = (purchases.filter(supplier=OuterRef('pk'))
                     .values('supplier').annotate(t=Sum('total_amount')).values('t'))
         paid = (payments.filter(supplier=OuterRef('pk'))
                 .values('supplier').annotate(t=Sum('amount')).values('t'))
+        sent_back = (returns.filter(supplier=OuterRef('pk')).values('supplier')
+                     .annotate(t=Sum(F('total_amount') - F('refund_amount'))).values('t'))
         return (
             Supplier.objects
             .filter(store=store)
@@ -1072,7 +1076,9 @@ class SupplierViewSet(viewsets.ModelViewSet):
                                         Value(Decimal('0')), output_field=DEC),
                 payments_total=Coalesce(Subquery(paid, output_field=DEC),
                                         Value(Decimal('0')), output_field=DEC),
-                balance=ExpressionWrapper(F('received_total') - F('payments_total'),
+                returns_total=Coalesce(Subquery(sent_back, output_field=DEC),
+                                       Value(Decimal('0')), output_field=DEC),
+                balance=ExpressionWrapper(F('received_total') - F('payments_total') - F('returns_total'),
                                           output_field=DEC),
             )
         )
@@ -1141,7 +1147,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         ZERO = Decimal('0.00')
-        purchases, payments = supplier_account_sources(store)
+        purchases, payments, returns = supplier_account_sources(store)
         entries = []
         for p in purchases.filter(supplier=supplier).order_by():
             entries.append({
@@ -1163,6 +1169,21 @@ class SupplierViewSet(viewsets.ModelViewSet):
                 'method': pay.method, 'method_display': pay.get_method_display(),
                 'debit': pay.amount or ZERO, 'credit': ZERO, 'link_id': str(pay.id),
             })
+        for r in returns.filter(supplier=supplier).select_related('refund_method').order_by():
+            # A return = a DEBIT for its whole value (we owe less) …
+            entries.append({
+                'date': r.date, 'created_at': r.created_at, 'kind': 'return',
+                'ref': str(r.return_number or ''), 'note': r.notes or '',
+                'debit': r.total_amount or ZERO, 'credit': ZERO, 'link_id': str(r.id),
+            })
+            # … and money the supplier handed back is a CREDIT (that part was paid in cash, not as credit).
+            if (r.refund_amount or ZERO) > 0:
+                entries.append({
+                    'date': r.date, 'created_at': r.created_at, 'kind': 'return_refund',
+                    'ref': str(r.return_number or ''), 'note': '',
+                    'payment_method_name': r.refund_method.name if r.refund_method_id else '',
+                    'debit': ZERO, 'credit': r.refund_amount, 'link_id': str(r.id),
+                })
         entries.sort(key=lambda e: (e['date'], e['created_at']))
 
         def money(v):

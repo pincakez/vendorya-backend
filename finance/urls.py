@@ -3,7 +3,7 @@ from .views import (
     PaymentMethodViewSet, SalesInvoiceViewSet, PaymentViewSet, CustomerReceiptViewSet,
     PurchaseInvoiceViewSet, SupplierPaymentViewSet,
     ExpenseCategoryViewSet, ExpenseViewSet,
-    WorkShiftViewSet, RefundInvoiceViewSet,
+    WorkShiftViewSet, RefundInvoiceViewSet, PurchaseReturnViewSet,
 )
 
 router = DefaultRouter()
@@ -17,5 +17,6 @@ router.register('expense-categories', ExpenseCategoryViewSet, basename='expense-
 router.register('expenses', ExpenseViewSet, basename='expenses')
 router.register('shifts', WorkShiftViewSet, basename='shifts')
 router.register('refunds', RefundInvoiceViewSet, basename='refunds')
+router.register('purchase-returns', PurchaseReturnViewSet, basename='purchase-returns')
 
 urlpatterns = router.urls

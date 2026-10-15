@@ -896,6 +896,7 @@ class SerialUnit(TimestampedModel, SoftDeleteModel):
         # e.g. faulty). Not sellable; a stock adjustment / a new receive is the way back.
         RETURNED    = 'RETURNED',    _('Returned (not restocked)')
         WRITTEN_OFF = 'WRITTEN_OFF', _('Written off')
+        SUPPLIER_RETURNED = 'SUPPLIER_RETURNED', _('Returned to supplier')
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='serial_units')
@@ -905,7 +906,7 @@ class SerialUnit(TimestampedModel, SoftDeleteModel):
                                related_name='serial_units')
     # Stored trimmed + UPPER-CASE (inventory.serials.normalize): a scanner and a typist must match.
     serial = models.CharField(_("Serial / IMEI"), max_length=100)
-    status = models.CharField(max_length=12, choices=Status.choices, default=Status.IN_STOCK)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.IN_STOCK)
 
     # The current cycle (a unit bought back later is a NEW row — the old one keeps its history).
     purchase_item = models.ForeignKey('finance.PurchaseItem', on_delete=models.SET_NULL,
@@ -952,6 +953,8 @@ class SerialMove(models.Model):
         TRANSFERRED  = 'TRANSFERRED',  _('Transferred')
         REGISTERED   = 'REGISTERED',   _('Registered on existing stock')
         REMOVED      = 'REMOVED',      _('Registration removed')
+        TO_SUPPLIER  = 'TO_SUPPLIER',  _('Returned to supplier')
+        RETURN_VOIDED = 'RETURN_VOIDED', _('Supplier return voided')
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='serial_moves')
@@ -969,6 +972,8 @@ class SerialMove(models.Model):
                                    related_name='serial_moves')
     transfer = models.ForeignKey(StockTransfer, on_delete=models.SET_NULL, null=True, blank=True,
                                  related_name='serial_moves')
+    purchase_return_item = models.ForeignKey('finance.PurchaseReturnItem', on_delete=models.SET_NULL, null=True,
+                                             blank=True, related_name='serial_moves')
     note = models.CharField(max_length=255, blank=True, default='')
     created_by = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True,
                                    related_name='+')

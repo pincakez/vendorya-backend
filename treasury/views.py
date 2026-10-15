@@ -95,7 +95,7 @@ def statement_dates(params):
 
 # What a statement line may point at (one query for the whole statement).
 STATEMENT_RELATED = ('created_by', 'payment__invoice', 'customer_receipt__customer', 'refund',
-                     'supplier_payment__supplier', 'expense__category', 'other_income__category', 'shift__user',
+                     'supplier_payment__supplier', 'purchase_return', 'expense__category', 'other_income__category', 'shift__user',
                      'reverses')
 
 

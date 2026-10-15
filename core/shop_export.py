@@ -202,6 +202,28 @@ def _supplier_payments(store):
                p.note, _username(p.created_by)]
 
 
+def _supplier_returns(store):
+    from finance.models import PurchaseReturn
+    qs = (PurchaseReturn.objects.filter(store=store)
+          .select_related('branch', 'supplier', 'purchase', 'refund_method', 'created_by').order_by('date'))
+    for r in qs.iterator(chunk_size=CHUNK):
+        p = _live_doc(r.purchase, store) if r.purchase_id else None
+        yield [r.id, r.return_number, r.date, r.status, r.branch.name if r.branch_id else '', r.supplier_id,
+               r.supplier.name if r.supplier_id else '', r.purchase_id if p else '',
+               (p.purchase_number or p.vendor_reference) if p else '', r.total_amount, r.refund_amount,
+               r.refund_method.name if r.refund_method_id else '', r.notes, r.void_reason, _username(r.created_by)]
+
+
+def _supplier_return_lines(store):
+    from finance.models import PurchaseReturnItem
+    qs = (PurchaseReturnItem.objects.filter(purchase_return__store=store, purchase_return__is_deleted=False)
+          .select_related('purchase_return', 'variant__product', 'unit').order_by('purchase_return__date', 'id'))
+    for it in qs.iterator(chunk_size=CHUNK):
+        yield [it.id, it.purchase_return_id, it.purchase_return.return_number, _sku(it.variant),
+               _product_name(it.variant), it.unit.name if it.unit_id else '', it.unit_factor, it.quantity,
+               it.unit_cost, it.total_cost, ' '.join(it.serial_numbers or [])]
+
+
 def _refunds(store):
     from finance.models import RefundInvoice
     qs = (RefundInvoice.objects.filter(store=store)
@@ -388,6 +410,19 @@ TABLES = [
         ('method', 'Payment method name (older payments may show CASH / BANK / CARD / OTHER)'),
         ('amount', ''), ('note', ''), ('recorded_by', 'Username'),
     ], _supplier_payments),
+    ('supplier_returns.csv', 'Goods you sent back to a supplier (one row per return).', [
+        ('return_id', 'Unique id (join key for supplier_return_lines)'), ('return_number', ''), ('date', ''),
+        ('status', 'POSTED / VOID (a voided return was undone — stock and money put back)'), ('branch', ''),
+        ('supplier_id', ''), ('supplier_name', ''), ('purchase_id', 'Joins to purchases.csv, empty = not linked'),
+        ('purchase_number', ''), ('total', 'Value of the goods sent back'),
+        ('money_back', 'Money the supplier handed back (the rest lowered what you owe)'),
+        ('money_back_method', ''), ('note', ''), ('void_reason', ''), ('recorded_by', 'Username'),
+    ], _supplier_returns),
+    ('supplier_return_lines.csv', 'The items on each return to a supplier.', [
+        ('line_id', ''), ('return_id', 'Joins to supplier_returns.csv'), ('return_number', ''), ('sku', ''),
+        ('product_name', ''), ('unit', 'Empty = base unit'), ('unit_factor', ''), ('quantity', ''),
+        ('unit_cost', ''), ('line_total', ''), ('serials', 'Serial numbers sent back, space-separated'),
+    ], _supplier_return_lines),
     ('refunds.csv', 'Returns / refunds (one row per refund).', [
         ('refund_id', 'Unique id (join key for refund_lines)'), ('refund_number', ''), ('date', ''),
         ('branch', ''), ('original_invoice_id', 'Joins to sales.csv'), ('original_invoice_number', ''),
@@ -406,7 +441,8 @@ TABLES = [
         ('product_name', ''),
         ('condition', 'NEW / IMPORTED_INSPECTED / USED, empty = not stated (a sold unit shows the condition '
                       'printed on its sale)'),
-        ('status', 'IN_STOCK / SOLD / RETURNED (came back, not put on sale) / WRITTEN_OFF'),
+        ('status', 'IN_STOCK / SOLD / RETURNED (came back, not put on sale) / WRITTEN_OFF / '
+                   'SUPPLIER_RETURNED (sent back to the supplier)'),
         ('branch', 'Where the unit is, or was last'),
         ('purchase_id', 'The purchase it came in on (joins to purchases.csv), empty if registered on old stock'),
         ('purchase_number', ''),

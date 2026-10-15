@@ -161,6 +161,10 @@ def move_ref(m, counterpart_names=None):
     if m.supplier_payment_id:
         sp = m.supplier_payment
         return {'type': 'supplier_payment', 'id': str(sp.id), 'label': sp.supplier.name}
+    if m.purchase_return_id:
+        pr = m.purchase_return
+        return {'type': 'purchase_return', 'id': str(pr.id),
+                'label': str(pr.return_number) if pr.return_number is not None else ''}
     if m.expense_id:
         e = m.expense
         return {'type': 'expense', 'id': str(e.id), 'label': e.category.name if e.category_id else ''}

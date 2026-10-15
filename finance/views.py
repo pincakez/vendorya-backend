@@ -16,14 +16,14 @@ from rest_framework.exceptions import PermissionDenied
 from inventory.models import StockLevel
 from .models import (
     SalesInvoice, Payment, PaymentMethod, CustomerReceipt,
-    PurchaseInvoice, SupplierPayment,
+    PurchaseInvoice, SupplierPayment, PurchaseReturn,
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice,
 )
 from .serializers import (
     SalesInvoiceSerializer, PaymentSerializer, PaymentMethodSerializer, CustomerReceiptSerializer,
-    PurchaseInvoiceSerializer, SupplierPaymentSerializer,
+    PurchaseInvoiceSerializer, SupplierPaymentSerializer, PurchaseReturnSerializer,
     ExpenseSerializer, ExpenseCategorySerializer,
     WorkShiftSerializer,
     RefundInvoiceSerializer,
@@ -1237,3 +1237,128 @@ class RefundInvoiceViewSet(viewsets.ModelViewSet):
                 'total': str(refund.total_refunded),
             },
         )
+
+
+def _is_uuid(value):
+    import uuid
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+class PurchaseReturnViewSet(viewsets.ReadOnlyModelViewSet):
+    """Return goods to a supplier (s171). POST = create AND post (stock out, account credit, money back in a box) —
+    all in finance/purchase_returns.py. No edit, no delete: a mistake is voided (ADMIN), which undoes everything.
+
+    GET ?supplier= &purchase= &status= · GET returnable/?purchase=<id> = that purchase's lines with what can still
+    go back."""
+    serializer_class = PurchaseReturnSerializer
+    permission_classes = [IsAuthenticated, RoleScopedPermission]
+    role_map = {
+        'list':       'MANAGER',
+        'retrieve':   'MANAGER',
+        'create':     'MANAGER',
+        'returnable': 'MANAGER',
+        'void':       'ADMIN',
+    }
+
+    def get_queryset(self):
+        qs = (PurchaseReturn.objects.filter(store=self.request.user.store)
+              .select_related('supplier', 'branch', 'purchase', 'refund_method', 'refund_box', 'created_by')
+              .prefetch_related('items__variant__product', 'items__unit'))
+        p = self.request.query_params
+        for key in ('supplier', 'purchase'):
+            if p.get(key):
+                if not _is_uuid(p[key]):
+                    return qs.none()
+                qs = qs.filter(**{key + '_id': p[key]})
+        if p.get('status'):
+            qs = qs.filter(status=p['status'])
+        return qs
+
+    def get_object(self):
+        if not _is_uuid(self.kwargs.get('pk')):
+            from django.http import Http404
+            raise Http404
+        return super().get_object()
+
+    def create(self, request, *args, **kwargs):
+        from inventory.models import Supplier
+        from treasury.models import MoneyBox
+        from .purchase_returns import create_return
+        store = request.user.store
+        d = request.data
+
+        def pick(model, key, **scope):
+            val = d.get(key)
+            if not val:
+                return None
+            if not _is_uuid(val):
+                raise ValidationError({key: 'Not found.'})
+            obj = model.all_objects.filter(pk=val, **scope).first() if hasattr(model, 'all_objects') \
+                else model.objects.filter(pk=val, **scope).first()
+            if obj is None:
+                raise ValidationError({key: 'Not found.'})
+            return obj
+
+        supplier = pick(Supplier, 'supplier', store=store)
+        purchase = pick(PurchaseInvoice, 'purchase', store=store)
+        if supplier is None and purchase is not None:
+            supplier = purchase.supplier
+        branch = pick(Branch, 'branch', store=store)
+        method = pick(PaymentMethod, 'refund_method', store=store)
+        box = pick(MoneyBox, 'refund_box', store=store)
+        lines = d.get('lines') or []
+        if not isinstance(lines, list):
+            raise ValidationError({'lines': 'Send a list of lines.'})
+        ret = create_return(store, request.user, supplier=supplier, branch=branch, purchase=purchase, lines=lines,
+                            refund_amount=d.get('refund_amount') or 0, refund_method=method, refund_box=box,
+                            notes=d.get('notes') or '')
+        log_activity(
+            request=request,
+            action=f"Returned to supplier #{ret.return_number}: {ret.total_amount} → {ret.supplier.name}",
+            op_type=ActivityLog.OperationType.PURCHASE,
+            details={'purchase_return_id': str(ret.id), 'supplier': ret.supplier.name,
+                     'total': str(ret.total_amount), 'refund': str(ret.refund_amount)},
+        )
+        return Response(self.get_serializer(self.get_queryset().get(pk=ret.pk)).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def void(self, request, pk=None):
+        from .purchase_returns import void_return
+        ret = void_return(self.get_object(), request.user, request.data.get('reason') or '')
+        log_activity(
+            request=request,
+            action=f"Voided supplier return #{ret.return_number} ({ret.supplier.name})",
+            op_type=ActivityLog.OperationType.PURCHASE,
+            details={'purchase_return_id': str(ret.id), 'reason': ret.void_reason},
+        )
+        return Response(self.get_serializer(self.get_queryset().get(pk=ret.pk)).data)
+
+    @action(detail=False, methods=['get'])
+    def returnable(self, request):
+        from .purchase_returns import returned_qty
+        pid = request.query_params.get('purchase')
+        if not _is_uuid(pid):
+            return Response({'purchase': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        purchase = (PurchaseInvoice.objects.filter(store=request.user.store, pk=pid)
+                    .select_related('supplier', 'branch').first())
+        if purchase is None:
+            return Response({'purchase': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        lines = []
+        for it in purchase.items.select_related('variant__product', 'unit').order_by('id'):
+            back = returned_qty(it)
+            lines.append({
+                'purchase_item': it.id, 'variant': str(it.variant_id), 'product_name': it.variant.product.name,
+                'sku': it.variant.sku, 'unit': str(it.unit_id) if it.unit_id else None,
+                'unit_name': it.unit.name if it.unit_id else '', 'unit_factor': str(it.unit_factor),
+                'bought': str(it.quantity), 'returned': str(back), 'left': str(Decimal(str(it.quantity)) - back),
+                'unit_cost': str(it.unit_cost), 'track_serials': bool(it.variant.product.track_serials),
+                'serial_numbers': list(it.serial_numbers or []),
+            })
+        return Response({'purchase': str(purchase.id), 'status': purchase.status,
+                         'supplier': str(purchase.supplier_id) if purchase.supplier_id else None,
+                         'supplier_name': purchase.supplier.name if purchase.supplier_id else '',
+                         'branch': str(purchase.branch_id), 'lines': lines})

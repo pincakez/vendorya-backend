@@ -272,6 +272,7 @@ class MoneyMove(models.Model):
         RECEIPT_IN      = 'RECEIPT_IN',      _('Customer paid a debt')
         REFUND_OUT      = 'REFUND_OUT',      _('Refund paid back')
         SUPPLIER_OUT    = 'SUPPLIER_OUT',    _('Supplier payment')
+        SUPPLIER_IN     = 'SUPPLIER_IN',     _('Supplier paid back')   # money back on a return to the supplier
         EXPENSE_OUT     = 'EXPENSE_OUT',     _('Expense')
         OTHER_INCOME_IN = 'OTHER_INCOME_IN', _('Other income')
         TRANSFER_IN     = 'TRANSFER_IN',     _('Transfer in')
@@ -313,6 +314,8 @@ class MoneyMove(models.Model):
     supplier_payment = models.ForeignKey('finance.SupplierPayment', on_delete=models.PROTECT, null=True, blank=True,
                                          related_name='+')
     expense = models.ForeignKey('finance.Expense', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    purchase_return = models.ForeignKey('finance.PurchaseReturn', on_delete=models.PROTECT, null=True, blank=True,
+                                        related_name='+')
     other_income = models.ForeignKey(OtherIncome, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     # Wave 2 sources (owner level)
     part_entry = models.ForeignKey(PartEntry, on_delete=models.PROTECT, null=True, blank=True, related_name='+')

@@ -5,7 +5,7 @@ from django.db.models import Sum
 from inventory.models import ProductUnit
 from .models import (
     SalesInvoice, SalesInvoiceItem, Payment, PaymentMethod, CustomerReceipt,
-    PurchaseInvoice, PurchaseItem, SupplierPayment,
+    PurchaseInvoice, PurchaseItem, SupplierPayment, PurchaseReturn, PurchaseReturnItem,
     Expense, ExpenseCategory,
     WorkShift,
     RefundInvoice, RefundItem,
@@ -1026,3 +1026,54 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
                 errors.append(f"Cannot refund {total_req} — only {left} of this sale is left to refund.")
         if errors:
             raise serializers.ValidationError({'items': errors})
+
+
+# --- RETURN TO SUPPLIER (s171, finance/purchase_returns.py) ---
+
+class PurchaseReturnItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='variant.product.name', read_only=True)
+    sku = serializers.CharField(source='variant.sku', read_only=True)
+    unit_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseReturnItem
+        fields = ['id', 'variant', 'product_name', 'sku', 'purchase_item', 'unit', 'unit_name', 'unit_factor',
+                  'quantity', 'unit_cost', 'total_cost', 'serial_numbers']
+        read_only_fields = fields
+
+    def get_unit_name(self, obj):
+        return obj.unit.name if obj.unit_id else ''
+
+
+class PurchaseReturnSerializer(serializers.ModelSerializer):
+    """Read shape. Writing goes through PurchaseReturnViewSet.create → purchase_returns.create_return (one door)."""
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True)
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+    purchase_number = serializers.SerializerMethodField()
+    refund_method_name = serializers.SerializerMethodField()
+    refund_box_name = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+    credit_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    items = PurchaseReturnItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PurchaseReturn
+        fields = ['id', 'return_number', 'date', 'status', 'supplier', 'supplier_name', 'branch', 'branch_name',
+                  'purchase', 'purchase_number', 'total_amount', 'refund_amount', 'credit_amount', 'refund_method',
+                  'refund_method_name', 'refund_box', 'refund_box_name', 'notes', 'void_reason', 'created_by_name',
+                  'created_at', 'items']
+        read_only_fields = fields
+
+    def get_purchase_number(self, obj):
+        p = obj.purchase
+        return (p.purchase_number or p.vendor_reference or '') if p else ''
+
+    def get_refund_method_name(self, obj):
+        return obj.refund_method.name if obj.refund_method_id else ''
+
+    def get_refund_box_name(self, obj):
+        return obj.refund_box.name if obj.refund_box_id else ''
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        return (u.get_full_name() or u.username) if u else ''

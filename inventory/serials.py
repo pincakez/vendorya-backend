@@ -415,6 +415,55 @@ def _in_stock_units(store, variant, branch, serials, name):
     return [units[s] for s in serials]
 
 
+# ── return to supplier (finance/purchase_returns.py) ───────────────────────
+
+def supplier_return(item, user=None):
+    """A return-to-supplier line of a tracked product: one serial per unit; each listed unit must be IN_STOCK at the
+    return's branch → SUPPLIER_RETURNED. On a return linked to a purchase line, every unit must be one that line
+    received (you send back what you bought from THEM)."""
+    ret = item.purchase_return
+    variant = item.variant
+    if not is_tracked(variant):
+        return
+    name = variant.product.name
+    need = whole_units(name, item.base_qty)
+    serials = clean_list(item.serial_numbers, name)
+    _check_count(name, serials, need)
+    lock_shop_serials(ret.store)
+    units = _in_stock_units(ret.store, variant, ret.branch, serials, name)
+    if item.purchase_item_id:
+        foreign = [u.serial for u in units if u.purchase_item_id != item.purchase_item_id]
+        if foreign:
+            raise _err('serial_not_from_purchase', f'Not received on this purchase: {", ".join(foreign)}.',
+                       serials=foreign, product=name)
+    for u in units:
+        u.status = SerialUnit.Status.SUPPLIER_RETURNED
+        u.save(update_fields=['status', 'updated_at'])
+        _move(u, SerialMove.Kind.TO_SUPPLIER, branch=ret.branch, purchase_return_item=item, created_by=user,
+              note=f'Return #{ret.return_number}')
+    type(item).objects.filter(pk=item.pk).update(serial_numbers=serials)
+
+
+def void_supplier_return(item, user=None):
+    """Undo supplier_return: the units it sent back come back IN_STOCK at the return's branch."""
+    ret = item.purchase_return
+    if not is_tracked(item.variant) or not item.serial_numbers:
+        return
+    lock_shop_serials(ret.store)
+    units = SerialUnit.all_objects.select_for_update().filter(
+        store=ret.store, variant=item.variant, serial__in=item.serial_numbers,
+        status=SerialUnit.Status.SUPPLIER_RETURNED, is_deleted=False)
+    if units.count() != len(item.serial_numbers):
+        raise _err('serial_not_available', 'Some units of this return are no longer marked as returned.',
+                   product=item.variant.product.name)
+    for u in units:
+        u.status = SerialUnit.Status.IN_STOCK
+        u.branch = ret.branch
+        u.save(update_fields=['status', 'branch', 'updated_at'])
+        _move(u, SerialMove.Kind.RETURN_VOIDED, branch=ret.branch, purchase_return_item=item, created_by=user,
+              note=f'Return #{ret.return_number} voided')
+
+
 # ── manager tools (no quantity change) ──────────────────────────────────────
 
 def untracked_on_hand(variant, branch, lock=False):

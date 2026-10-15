@@ -23,7 +23,7 @@ from users.permissions import IsManagerOrAbove
 from users.models import User
 from finance.models import (
     SalesInvoice, SalesInvoiceItem, Payment,
-    PurchaseInvoice, PurchaseItem,
+    PurchaseInvoice, PurchaseItem, PurchaseReturn, PurchaseReturnItem,
     Expense, RefundInvoice, RefundItem, WorkShift, CustomerReceipt,
     with_refund_totals, invoice_outstanding,
 )
@@ -341,20 +341,30 @@ class APAgingView(_StoreMixin, APIView):
             return _no_store()
         today = timezone.localdate()
 
-        purchases = (
-            PurchaseInvoice.objects.filter(
-                store=store, status=PurchaseInvoice.Status.RECEIVED, is_deleted=False)
-            .select_related('supplier')
-        )
+        # s171: the SAME running account as the suppliers list + statement (inventory.views.supplier_account_sources):
+        # what was paid (payments) and sent back (return credits) settles the OLDEST purchases first; what is left
+        # of each purchase is aged by its date. (Before s171 this read PurchaseInvoice.paid_amount, which nothing
+        # fills — so payments never lowered this report.)
+        from inventory.views import supplier_account_sources
+        purchases, payments, returns = supplier_account_sources(store)
+        credit = defaultdict(lambda: ZERO)
+        for row in payments.values('supplier').annotate(t=Sum('amount')):
+            credit[str(row['supplier'])] += row['t'] or ZERO
+        for row in returns.values('supplier').annotate(t=Sum(F('total_amount') - F('refund_amount'))):
+            credit[str(row['supplier'])] += row['t'] or ZERO
         supp = defaultdict(lambda: {'name': '', 'b0_30': ZERO, 'b31_60': ZERO,
                                     'b61_90': ZERO, 'b90_plus': ZERO, 'total': ZERO})
-        for p in purchases:
-            outstanding = (p.total_amount or ZERO) - (p.paid_amount or ZERO)
+        for p in purchases.filter(supplier__isnull=False).select_related('supplier').order_by('date', 'created_at'):
+            sid = str(p.supplier_id)
+            amount = p.total_amount or ZERO
+            used = min(credit[sid], amount) if credit[sid] > 0 else ZERO
+            credit[sid] -= used
+            outstanding = amount - used
             if outstanding <= 0:
                 continue
             age = (today - timezone.localtime(p.date).date()).days
             bucket = _bucket_label(age)
-            s = supp[str(p.supplier_id)]
+            s = supp[sid]
             s['name'] = p.supplier.name
             s[bucket] += outstanding
             s['total'] += outstanding
@@ -651,6 +661,21 @@ class StockLedgerView(_StoreMixin, APIView):
                 f"R#{it.refund.refund_number}" if it.refund.refund_number else str(it.refund_id),
                 it.refund.reason or '', it.refund.branch.name,
                 active=it.quantity * (it.unit_factor or Decimal('1')), pools=('active',))
+
+        # Returns to the supplier OUT (s171) — active only. A voided one shows its way out AND its way back in
+        # (at the void), so the running balance is right on every day in between.
+        prf = Q(purchase_return__store=store, purchase_return__is_deleted=False, variant_id=variant_id)
+        if branch:
+            prf &= Q(purchase_return__branch_id=branch)
+        for it in PurchaseReturnItem.objects.filter(prf).select_related(
+                'purchase_return', 'purchase_return__supplier', 'purchase_return__branch'):
+            pr = it.purchase_return
+            base = it.quantity * (it.unit_factor or Decimal('1'))
+            add(pr.date, 'SUPPLIER_RETURN', f"S#{pr.return_number}", pr.supplier.name, pr.branch.name,
+                active=-base, pools=('active',))
+            if pr.status == PurchaseReturn.Status.VOID:
+                add(pr.updated_at, 'SUPPLIER_RETURN_VOID', f"S#{pr.return_number}", pr.void_reason or '',
+                    pr.branch.name, active=base, pools=('active',))
 
         # Branch transfers — two active-pool half-moves (OUT at from_branch,
         # IN at to_branch). Net-zero store-wide, but each branch sees a real

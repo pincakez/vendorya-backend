@@ -553,6 +553,83 @@ class SupplierPayment(TimestampedModel, SoftDeleteModel):
         return f"{self.supplier.name} ← {self.amount} ({self.date:%Y-%m-%d})"
 
 
+class PurchaseReturnSequence(models.Model):
+    """The last return-to-supplier number per shop (1, 2, 3…)."""
+    store = models.OneToOneField(Store, on_delete=models.CASCADE, related_name='+')
+    last_number = models.PositiveIntegerField(default=0)
+
+
+class PurchaseReturn(TimestampedModel, SoftDeleteModel):
+    """Goods sent BACK to a supplier (PROLINE-PARITY gap "purchase returns"; the old system's `tb_InvoInBack`).
+
+    Posted the moment it is saved (finance/purchase_returns.py): stock leaves the branch (batches FEFO, serial units
+    → SUPPLIER_RETURNED), and the supplier's running account drops by `total_amount`. Money the supplier hands back
+    (`refund_amount`) lands in a box and puts that part back on the account — so the account moves by
+    total − refund, exactly like the old system's Total / Payed / Cre. A mistake is VOIDED (everything undone with
+    the same locks), never deleted. Linked to the purchase it came from when known (caps the quantity), else free."""
+    class Status(models.TextChoices):
+        POSTED = 'POSTED', _('Posted')
+        VOID = 'VOID', _('Void')
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='purchase_returns')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT)
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='returns')
+    purchase = models.ForeignKey(PurchaseInvoice, on_delete=models.PROTECT, null=True, blank=True,
+                                 related_name='supplier_returns')
+    return_number = models.PositiveIntegerField(editable=False, null=True)
+    date = models.DateTimeField(default=timezone.now)
+    status = models.CharField(max_length=8, choices=Status.choices, default=Status.POSTED)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # Money the supplier paid back now (the rest stays as credit on the running account).
+    refund_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    refund_method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    refund_box = models.ForeignKey('treasury.MoneyBox', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    notes = models.TextField(blank=True, default='')
+    void_reason = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
+                                   related_name='+')
+
+    objects = TenantSoftDeleteManager()
+
+    class Meta:
+        ordering = ['-date', '-return_number']
+        constraints = [models.UniqueConstraint(fields=['store', 'return_number'], name='uniq_purchase_return_number')]
+
+    @property
+    def credit_amount(self):
+        """What the return takes off the supplier's account (total − money handed back)."""
+        return (self.total_amount or Decimal('0')) - (self.refund_amount or Decimal('0'))
+
+    def __str__(self):
+        return f"Return #{self.return_number} → {self.supplier.name}"
+
+
+class PurchaseReturnItem(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    purchase_return = models.ForeignKey(PurchaseReturn, on_delete=models.CASCADE, related_name='items')
+    variant = models.ForeignKey(ProductVariant, on_delete=models.PROTECT)
+    # The purchase line it came from (same unit + cost; caps what can go back). Null on a free return.
+    purchase_item = models.ForeignKey(PurchaseItem, on_delete=models.PROTECT, null=True, blank=True,
+                                      related_name='returned_lines')
+    unit = models.ForeignKey(ProductUnit, on_delete=models.PROTECT, null=True, blank=True)
+    unit_factor = models.DecimalField(max_digits=12, decimal_places=3, default=1)
+    quantity = models.DecimalField(max_digits=10, decimal_places=3)      # in `unit`
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)     # per `unit`
+    total_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    serial_numbers = models.JSONField(default=list, blank=True)
+    # Expiry-tracked: the batches this line drew from [{batch, qty}] (base units) — a void puts them back there.
+    batch_draws = models.JSONField(default=list, blank=True)
+
+    def save(self, *args, **kwargs):
+        self.total_cost = (Decimal(str(self.quantity)) * Decimal(str(self.unit_cost))).quantize(Decimal('0.01'))
+        super().save(*args, **kwargs)
+
+    @property
+    def base_qty(self):
+        return Decimal(str(self.quantity)) * Decimal(str(self.unit_factor or 1))
+
+
 def weighted_avg_cost(variant, store):
     """Weighted-average unit cost from RECEIVED purchases of this variant in this store.
 
@@ -573,7 +650,14 @@ def weighted_avg_cost(variant, store):
     )
     total_cost = agg['total_cost'] or Decimal('0')
     total_qty = agg['total_qty'] or Decimal('0')
-    if total_qty > 0:
+    # Goods sent back to the supplier leave the average with the cost they went back at.
+    back = PurchaseReturnItem.objects.filter(
+        variant=variant, purchase_return__store=store,
+        purchase_return__status=PurchaseReturn.Status.POSTED, purchase_return__is_deleted=False,
+    ).aggregate(total_cost=Sum('total_cost'), total_qty=Sum(F('quantity') * F('unit_factor')))
+    total_cost -= back['total_cost'] or Decimal('0')
+    total_qty -= back['total_qty'] or Decimal('0')
+    if total_qty > 0 and total_cost >= 0:
         return (total_cost / total_qty).quantize(Decimal('0.01'))
     return variant.cost_price or Decimal('0')
 
