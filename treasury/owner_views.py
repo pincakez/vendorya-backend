@@ -529,3 +529,43 @@ class OwnerReportViewSet(OwnerViewSetMixin, viewsets.ViewSet):
         from .reports import partners
         df, dt = self._range()
         return Response(partners(self.owner, df, dt))
+
+
+# ── the lock (s174, owner_lock.py) ────────────────────────────────────────────────────────────────────────────
+class OwnerLockViewSet(OwnerViewSetMixin, viewsets.ViewSet):
+    """GET lock/ → {enabled, open, seconds_left, minutes, enrolled} · POST lock/open/ {code} · POST lock/close/.
+    The only owner-level door that answers while My money is locked (skip_owner_lock)."""
+    skip_owner_lock = True
+
+    def _state(self, request):
+        from users.twofa import is_enrolled
+        from . import owner_lock
+        store = request.user.store
+        on = owner_lock.enabled(store)
+        left = owner_lock.seconds_left(request) if on else 0
+        return {'enabled': on, 'open': (not on) or left > 0, 'seconds_left': left,
+                'minutes': store.settings.owner_unlock_minutes, 'enrolled': is_enrolled(request.user)}
+
+    def list(self, request):
+        return Response(self._state(request))
+
+    @action(detail=False, methods=['post'], url_path='open')
+    def open_lock(self, request):
+        from . import owner_lock
+        if not owner_lock.enabled(request.user.store):
+            return Response(self._state(request))
+        result = owner_lock.open_with_code(request, request.data.get('code'))
+        if result == 'paused':
+            return Response({'code': 'too_many_tries', 'detail': 'Too many wrong codes — wait 5 minutes.'},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+        if result == 'wrong':
+            return Response({'code': 'wrong_code', 'detail': 'Wrong code — try the newest one in your authenticator app.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        log_activity(request=request, action='My money opened with the authenticator', op_type=ActivityLog.OperationType.OTHER)
+        return Response(self._state(request))
+
+    @action(detail=False, methods=['post'], url_path='close')
+    def close_lock(self, request):
+        from . import owner_lock
+        owner_lock.close(request)
+        return Response(self._state(request))

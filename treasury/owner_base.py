@@ -1,7 +1,8 @@
 """The owner level's shared gate (TREASURY.md § 12.0) — every `/api/treasury/owner/...` view inherits it.
 
 Order: authentication + role (role_map, OWNER for everything; sudo refused like everywhere) → a shop → both switches on
-(else 403 `owner_level_off`) → the login IS the owner (else 403 `not_owner`). Data is then scoped by `self.owner`, NEVER by
+(else 403 `owner_level_off`) → the login IS the owner (else 403 `not_owner`) → with the lock on, opened by the authenticator
+code (else 403 `owner_locked`, s174 — `owner_lock.py`). Data is then scoped by `self.owner`, NEVER by
 `request.user.store` alone: business and personal rows have no shop. Another owner's row = 404, never revealed.
 """
 import uuid
@@ -32,6 +33,10 @@ class OwnerMixin:
         if owner is None:
             raise PermissionDenied({'code': 'not_owner', 'detail': 'Only the owner can open the owner level.'})
         self.owner = owner
+        # s174: My money behind the owner's authenticator — closed until the code (owner_lock.py). The lock's own door skips it.
+        from . import owner_lock
+        if owner_lock.enabled(store) and not getattr(self, 'skip_owner_lock', False) and not owner_lock.is_open(request):
+            raise PermissionDenied({'code': 'owner_locked', 'detail': 'My money is locked — type your authenticator code.'})
 
     def handle_exception(self, exc):
         if isinstance(exc, TreasuryError):

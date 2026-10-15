@@ -27,4 +27,7 @@ router.register('pnl', PartPnlViewSet, basename='owner-pnl')
 # ── Wave 3 reports ──
 from .owner_views import OwnerReportViewSet  # noqa: E402
 router.register('reports', OwnerReportViewSet, basename='owner-reports')
+# ── s174: the My money lock (authenticator) ──
+from .owner_views import OwnerLockViewSet  # noqa: E402
+router.register('lock', OwnerLockViewSet, basename='owner-lock')
 urlpatterns = router.urls

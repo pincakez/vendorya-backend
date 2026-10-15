@@ -343,6 +343,15 @@ class StoreSettings(TimestampedModel):
         _("Owner level (other businesses + personal money)"), default=False,
         help_text=_("The owner's own money world: other businesses, personal money, draws, loans, partners, money held for others."))
 
+    # s174 (Yakot): "My money" behind the owner's authenticator — opening the tree shows the app's lock screen and asks the
+    # 6-digit code; it then stays open owner_unlock_minutes. Kept by the server (treasury/owner_lock.py).
+    owner_lock_enabled = models.BooleanField(
+        _("Lock My money with the authenticator"), default=False,
+        help_text=_("Opening My money asks for the owner's Google Authenticator code."))
+    owner_unlock_minutes = models.PositiveSmallIntegerField(
+        _("My money stays open (minutes)"), default=15,
+        help_text=_("How long My money stays open after the right code."))
+
     class CreditPolicy(models.TextChoices):
         ALLOW = 'ALLOW', _('Allow — no enforcement')
         WARN  = 'WARN',  _('Warn — allow but notify store owner')

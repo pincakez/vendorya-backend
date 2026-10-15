@@ -305,6 +305,20 @@ class StoreSettingsView(APIView):
             if not treasury_after:
                 return Response({'code': 'treasury_off',
                                  'detail': 'Turn the Treasury on before the owner level.'}, status=400)
+        # s174: the My money lock — only the owner (the person) changes it; ON needs his authenticator set up; while it is on,
+        # OFF or new minutes need My money open right now (a fresh code), so nobody at a signed-in screen can switch it off.
+        vd, cur = serializer.validated_data, request.user.store.settings
+        if (('owner_lock_enabled' in vd and vd['owner_lock_enabled'] != cur.owner_lock_enabled)
+                or ('owner_unlock_minutes' in vd and vd['owner_unlock_minutes'] != cur.owner_unlock_minutes)):
+            from treasury import owner_lock
+            from users.twofa import is_enrolled
+            if ledger.owner_for_user(request.user) is None:
+                return Response({'code': 'not_owner', 'detail': 'Only the shop owner can change the My money lock.'}, status=403)
+            if vd.get('owner_lock_enabled') and not cur.owner_lock_enabled and not is_enrolled(request.user):
+                return Response({'code': 'authenticator_needed',
+                                 'detail': 'Set up your authenticator first (Settings → Security).'}, status=400)
+            if owner_lock.enabled(request.user.store) and not owner_lock.is_open(request):
+                return Response({'code': 'owner_locked', 'detail': 'Open My money with your code first.'}, status=403)
         with transaction.atomic():
             settings_obj = serializer.save()
             # TREASURY.md § 11: turning the Treasury on makes the shop's boxes (owner + shop part, one drawer per

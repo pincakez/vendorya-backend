@@ -116,7 +116,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
         fields = [
             'allow_negative_stock', 'enable_agel_selling', 'require_shift_to_sell', 'reservations_enabled',
             'payment_dues_enabled', 'cheques_enabled',
-            'treasury_enabled', 'treasury_owner_level',
+            'treasury_enabled', 'treasury_owner_level', 'owner_lock_enabled', 'owner_unlock_minutes',
             'expiry_tracking_enabled', 'expired_sale_policy', 'expiry_alert_days',
             'multi_unit_enabled', 'weight_selling_enabled', 'default_weight_unit',
             'autocomplete_source', 'mb_auto_register',
@@ -184,6 +184,11 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
             name = (str(value[i]).strip() if i < len(value) and value[i] else '')
             out.append(name or defaults[i])
         return out
+
+    def validate_owner_unlock_minutes(self, value):
+        if not 1 <= value <= 240:
+            raise serializers.ValidationError('Between 1 and 240 minutes.')
+        return value
 
     def validate_session_timeout_minutes(self, value):
         if value < 0 or value > 1440:
