@@ -191,6 +191,9 @@ def void_return(ret, user, reason):
     ret = PurchaseReturn.all_objects.select_for_update().get(pk=ret.pk)
     if ret.status != PurchaseReturn.Status.POSTED:
         raise _err('already_void', 'This return is already voided.')
+    if ret.source_number:
+        # PROLINE-IMPORT-B.md: imported history took no stock out here — a void would add stock that never left.
+        raise _err('imported', 'This return was imported from the old system — it can\'t be voided.')
     for item in ret.items.select_related('variant__product'):
         stock, _ = StockLevel.objects.select_for_update().get_or_create(variant=item.variant, branch=ret.branch)
         stock.quantity = Decimal(str(stock.quantity)) + item.base_qty

@@ -1,4 +1,5 @@
-"""Import another system's CSV export into ONE shop — master data (categories, products, customers, suppliers).
+"""Import another system's CSV export into ONE shop — master data (categories, products, customers, suppliers) and
+its history (sales, returns, purchases, supplier returns — PROLINE-IMPORT-B.md).
 
     manage.py import_external proline --store <store code or id> --dir <folder with the CSVs>      (dry run)
     manage.py import_external proline --store <…> --dir <…> --commit                                (save)
@@ -14,6 +15,9 @@ with a fresher export UPDATES what the last run made — it never adds a second 
 typed by hand earlier are found by SKU2 (or barcode) = the source's item code and LINKED when the names
 match (or with --link-by-code): prices follow the source, the shop's name / category / barcode stay. An
 empty price in the source never overwrites a price. Stock is never touched.
+
+History (--part all / history) is imported SETTLED: it never moves stock, money, boxes, shifts or balances. Today's
+debts come in once through --balances=opening.
 """
 from django.core.management.base import BaseCommand, CommandError
 
@@ -23,9 +27,8 @@ from data_import.core import run_import
 
 BALANCES_HELP = (
     "none (default) = do NOT import tb_Cust.Balance. opening = write it as each customer's OPENING balance. "
-    "RISK: in the source Balance is most likely the CURRENT balance (a running Debit − Credit). If the old "
-    "sales / payments are imported later as history, the same debt would be counted twice. Use 'opening' only "
-    "when that history will not be imported.")
+    "Balance is what each customer owes NOW (Proline: positive = owes you). The history (part B) is imported "
+    "SETTLED — paid in full, it never changes a balance — so 'opening' counts the debt exactly once.")
 
 
 def _codes(raw):
@@ -33,7 +36,7 @@ def _codes(raw):
 
 
 class Command(BaseCommand):
-    help = 'Import master data from another system\'s CSV export into one shop (dry run unless --commit).'
+    help = 'Import master data + history from another system\'s CSV export into one shop (dry run unless --commit).'
 
     def add_arguments(self, parser):
         parser.add_argument('system', choices=sorted(ADAPTERS), help='the source system')
@@ -49,7 +52,8 @@ class Command(BaseCommand):
         parser.add_argument('--balances', choices=['none', 'opening'], default='none', help=BALANCES_HELP)
         parser.add_argument('--balance-sign', choices=['as-is', 'flip'], default='as-is',
                             help='with --balances=opening: "flip" if the source stores what a customer owes '
-                                 'as a negative number (Vendorya: positive = the customer owes the shop)')
+                                 'as a negative number (Vendorya: positive = the customer owes the shop). '
+                                 'Proline: positive = owes you → as-is.')
         parser.add_argument('--sell-price', choices=['auto', 'PriceOut1', 'PriceOut2'], default='auto',
                             help='the item column with the real sell price ("auto" = the one recent sales match)')
         parser.add_argument('--type-column', default='auto',
@@ -62,6 +66,13 @@ class Command(BaseCommand):
         parser.add_argument('--default-supplier', default='',
                             help='supplier code (or name) for items whose source supplier is unknown '
                                  '(default: the shop\'s default supplier)')
+        parser.add_argument('--part', choices=['all', 'master', 'history'], default='all',
+                            help='all (default) = master data, then the history, in one run · master = master data '
+                                 'only · history = the history only (on the tags of an earlier committed import)')
+        parser.add_argument('--invoice-numbers', choices=['proline', 'new'], default='proline',
+                            help='proline (default) = an imported sale keeps its old number as its invoice number '
+                                 'when the shop has not used it (the shop\'s numbering continues after the highest); '
+                                 'new = fresh numbers. The old number is always kept and searchable.')
 
     def handle(self, *args, **o):
         key = o['store'].strip()
@@ -80,6 +91,7 @@ class Command(BaseCommand):
             'customer_codes': _codes(o['customer_codes']), 'default_supplier': o['default_supplier'],
             'link_by_code': o['link_by_code'],
             'sell_price': o['sell_price'],
+            'part': o['part'], 'invoice_numbers': o['invoice_numbers'],
         }
         report = run_import(get_adapter(o['system']), store, o['dir'], options, commit=o['commit'])
         self.stdout.write(report.render(dry_run=not o['commit']))

@@ -59,6 +59,11 @@ def refuse_void_with_returns(invoice):
     if invoice.status == SalesInvoice.Status.POSTED and invoice.payments.filter(deposit_of__isnull=False).exists():
         raise ValidationError({'detail': 'This sale was made from a reservation — it can\'t be voided. Return the items instead.',
                                'code': 'void_from_reservation'})
+    # PROLINE-IMPORT-B.md: a sale imported from the old system moved no stock and no money here — a void would put its
+    # goods back on today's shelf. Return the items instead (a return restocks what really comes back).
+    if invoice.status == SalesInvoice.Status.POSTED and invoice.source_number:
+        raise ValidationError({'detail': 'This sale was imported from the old system — it can\'t be voided. '
+                                         'Return the items instead.', 'code': 'void_imported'})
 
 
 class PaymentMethodViewSet(viewsets.ModelViewSet):
@@ -126,6 +131,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 q = models.Q(customer__name__icontains=term) | models.Q(customer__phone_number__icontains=term)
                 if term.lstrip('#').isdigit() and len(term.lstrip('#')) <= 9:   # fits the integer column
                     q |= models.Q(invoice_number=int(term.lstrip('#')))
+                q |= models.Q(source_number=term.lstrip('#'))   # an imported sale's old-system number
                 qs = qs.filter(q)
         return qs
 
@@ -337,6 +343,7 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
                 'paid_amount': str(invoice.paid_amount),
                 'change_given': str(invoice.change_given),
                 'salesperson_name': invoice.salesperson_name,   # s171: who sold it
+                'source_number': invoice.source_number,         # PROLINE-IMPORT-B.md: the old system's number
             },
             'store': {
                 'name': store.name,
@@ -482,7 +489,8 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
         if q := p.get('q'):
             qs = qs.filter(
                 models.Q(vendor_reference__icontains=q) |
-                models.Q(supplier__name__icontains=q)
+                models.Q(supplier__name__icontains=q) |
+                models.Q(source_number=q.strip().lstrip('#'))   # an imported purchase's old-system number
             )
         if s := p.get('status'):
             qs = qs.filter(status=s)

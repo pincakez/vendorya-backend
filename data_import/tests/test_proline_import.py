@@ -72,6 +72,7 @@ class _Base(TestCase):
         # The hand-made laptop in make_shop has its own name, so most tests link it by code on purpose;
         # ReviewFixTests check what happens without the flag.
         options.setdefault('link_by_code', True)
+        options.setdefault('part', 'master')      # part B (history) has its own tests: test_proline_history.py
         return run_import(ProlineAdapter, self.store, folder, options, commit=commit)
 
     def folder_with(self, tables, extra=None):

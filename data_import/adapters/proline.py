@@ -1,4 +1,5 @@
-"""Adapter: the Proline desktop ERP (MS SQL), exported table by table to CSV — part A, master data.
+"""Adapter: the Proline desktop ERP (MS SQL), exported table by table to CSV — part A, master data (part B, the
+history, is `proline_history.py`, mixed in below — PROLINE-IMPORT-B.md).
 
 Column lists are Proline's own, copied from its schema (one CSV per table, header = column names,
 UTF-8 with BOM). Everything Proline-specific lives in this file; the engine is `data_import/core.py`.
@@ -20,7 +21,8 @@ when there are no sales lines. An item with nothing in that column takes the oth
 The customer / supplier split — Proline has ONE table (tb_Cust) for both. Per row, first rule that applies:
     1. forced by --supplier-codes / --customer-codes
     2. a "type" column (Type1 / Type2 / ConType — auto-detected, or --type-column) whose value says
-       supplier (مورد / supplier / vendor) or customer (عميل / customer / client)
+       supplier (مورد / supplier / vendor) or customer (عميل / customer / client) — and a party that appears on
+       purchases (tb_InvoIn / tb_InvoInBack) is ALSO a supplier whatever its type says (usage adds, never removes)
     3. usage: the code appears in purchases (tb_InvoIn, tb_InvoInBack) or as an item's SourceID →
        supplier; in sales (tb_InvoOut) → customer; in both → both a supplier and a customer
     4. otherwise → customer
@@ -38,6 +40,7 @@ from users.models import Customer
 from ..core import (Adapter, BadNumber, apply_fields, describe, has_value, norm_key, norm_name, norm_phone,
                     parse_decimal, read_table, text, truthy)
 from ..models import ExternalRef
+from .proline_history import HistoryMixin
 
 CREATED, LINKED = ExternalRef.Origin.CREATED, ExternalRef.Origin.LINKED
 
@@ -116,18 +119,20 @@ EXTRA_BARCODES = [f'BarCode{i}' for i in range(2, 10)]
 SKU2_MAX = 8
 
 BALANCE_HELP = (
-    "tb_Cust has Debit, Credit and Balance side by side. Balance looks like a RUNNING total kept by Proline "
-    "(Debit − Credit of every movement so far) — i.e. the CURRENT balance, not an opening one. Old sales, "
-    "purchases and payments come in later as normal history (part B); importing Balance as an opening balance "
-    "AND that history would count the same debt twice. So the default is --balances=none. Use "
-    "--balances=opening ONLY if the history will NOT be imported (or the opening balance is cleared first).")
+    "tb_Cust.Balance is what each party owes NOW (Proline: positive = they owe you, negative = you owe them — the "
+    "same sign as Vendorya, so --balance-sign as-is). It need not equal Debit − Credit (on a real export it did not); "
+    "it is the only source (tb_CustTransaction may be empty). Part B imports the old sales / returns / purchases as "
+    "SETTLED history (paid in full, no payments, kept out of the supplier account), so the history never changes a "
+    "balance: --balances=opening brings each customer's debt in exactly ONCE, as the opening balance. The default "
+    "stays --balances=none — bringing debts in is the owner's decision. Suppliers have no opening-balance field in "
+    "Vendorya yet — their balances are reported, not imported.")
 
 
 def _money(value):
     return None if value is None else value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
-class ProlineAdapter(Adapter):
+class ProlineAdapter(HistoryMixin, Adapter):
     system = 'proline'
 
     # ── load: read + count + blockers (no writes) ────────────────────────────────────────────
@@ -159,6 +164,14 @@ class ProlineAdapter(Adapter):
         self._load_last_purchases()
         self._check_default_supplier()
         self._load_balances()
+        # --part: master (part A) · history (part B, on the tags of an earlier committed part A) · all (both, default)
+        self.part = o.get('part') or 'all'
+        if self.part == 'history':
+            r.blockers.clear()       # part A writes nothing in this run — its checks can't block the history
+            r.section('split').line('--part history: master data is NOT imported in this run (the tags of an '
+                                    'earlier import are used)')
+        if self.part != 'master':
+            self.load_history()
 
     def _rows(self, name):
         t = self.t.get(name)
@@ -251,6 +264,12 @@ class ProlineAdapter(Adapter):
                 kinds, reason = {'customer'}, 'forced by --customer-codes'
             elif tcol and self._classify(x.get(tcol)):
                 kinds, reason = self._classify(x.get(tcol)), f'{tcol} = "{text(x.get(tcol))}"'
+                # s173 (Sam): a party the shop BOUGHT from is a supplier too, whatever its type says — usage ADDS the
+                # supplier side, it never removes the customer side (forced --customer-codes still wins, above).
+                if 'supplier' not in kinds and key in purchases:
+                    kinds = kinds | {'supplier'}
+                    reason += ' + used on purchases → also supplier'
+                    info.note('type says customer, used on purchases → also supplier')
             elif key in purchases or key in sources or key in sales:
                 kinds = set()
                 if key in purchases or key in sources:
@@ -493,7 +512,7 @@ class ProlineAdapter(Adapter):
         info.line(f'{nonzero} rows have a Balance ≠ 0 · total {total}')
         if checked:
             info.line(f'Balance = Debit − Credit on {dc} of {checked} rows · = Credit − Debit on {cd} '
-                      f'(all rows ⇒ Balance is a running total = the CURRENT balance)')
+                      f'(Balance is Proline\'s own CURRENT balance — it need not match these columns)')
         if bad:
             info.line(f'{bad} rows with a bad number in Balance / Debit / Credit')
         for k, n in kinds.items():
@@ -503,14 +522,18 @@ class ProlineAdapter(Adapter):
         else:
             info.line('Imported as the customers\' OPENING balance. Suppliers have no opening-balance field in '
                       'Vendorya — their balances are not imported. A party that is both is not imported either.')
-            self.report.warnings.append('--balances=opening: ' + BALANCE_HELP)
+            self.report.warnings.append('--balances=opening: each customer\'s CURRENT Proline balance becomes the '
+                                        'opening balance (history is imported settled, so it is counted once).')
 
     # ── run: the writes ──────────────────────────────────────────────────────────────────────
     def run(self):
-        self._categories()
-        self._suppliers()
-        self._customers()
-        self._products()
+        if self.part != 'history':
+            self._categories()
+            self._suppliers()
+            self._customers()
+            self._products()
+        if self.part != 'master':
+            self.run_history()
 
     # categories
     def _categories(self):

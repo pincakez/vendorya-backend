@@ -134,6 +134,10 @@ class SalesInvoice(TimestampedModel, SoftDeleteModel):
     salesperson = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name='sales_made')
     salesperson_name = models.CharField(max_length=150, blank=True, default='')
+    # PROLINE-IMPORT-B.md: the number this sale had in the system it was imported from (data_import) — shown on the
+    # invoice page and found by the invoice search. Empty = made in Vendorya. An imported sale is SETTLED history
+    # (paid_amount = grand_total, no Payment rows, no stock moved).
+    source_number = models.CharField(max_length=30, blank=True, default='', editable=False, db_index=True)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
@@ -412,6 +416,8 @@ class RefundInvoice(TimestampedModel, SoftDeleteModel):
     # Store Credit refund; on a "Cash / Original" refund, the share of the sale that was PAID with store
     # credit goes back to the wallet first (never turned into cash), then cash, then the card.
     store_credit_back = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    # PROLINE-IMPORT-B.md: the old system's number of the invoice that carried these returned lines (data_import).
+    source_number = models.CharField(max_length=30, blank=True, default='', editable=False, db_index=True)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
@@ -500,6 +506,9 @@ class PurchaseInvoice(TimestampedModel, SoftDeleteModel):
     # Materialized into real Product + ProductVariant + PurchaseItem the moment a
     # supplier is assigned (see PurchaseInvoiceSerializer).
     draft_items = models.JSONField(default=list, blank=True)
+    # PROLINE-IMPORT-B.md: the old system's number of an imported purchase (data_import). An imported purchase was
+    # SETTLED in the old system: it stays OUT of the supplier's running account (inventory.views.supplier_account_sources).
+    source_number = models.CharField(max_length=30, blank=True, default='', editable=False, db_index=True)
 
     objects = TenantSoftDeleteManager()   # secure-by-default; .all_objects = unscoped
 
@@ -627,6 +636,8 @@ class PurchaseReturn(TimestampedModel, SoftDeleteModel):
     void_reason = models.TextField(blank=True, default='')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
                                    related_name='+')
+    # PROLINE-IMPORT-B.md: an imported (settled) return — the old system's number; out of the running account too.
+    source_number = models.CharField(max_length=30, blank=True, default='', editable=False, db_index=True)
 
     objects = TenantSoftDeleteManager()
 
@@ -861,6 +872,8 @@ def weighted_avg_cost(variant, store):
 
     COGS source of truth: actual purchase-invoice prices, NOT ProductVariant.cost_price.
     Falls back to the variant's stored cost_price, then 0, when no purchases exist.
+    PROLINE-IMPORT-B.md: purchases / supplier returns IMPORTED from another system (source_number set) never count —
+    years of old prices would drag today's cost down. A product with only imported history uses its cost_price.
     """
     from django.db.models import F
     agg = PurchaseItem.objects.filter(
@@ -868,6 +881,7 @@ def weighted_avg_cost(variant, store):
         invoice__store=store,
         invoice__status=PurchaseInvoice.Status.RECEIVED,
         invoice__is_deleted=False,
+        invoice__source_number='',
     ).aggregate(
         total_cost=Sum('total_cost'),
         # total_cost is the money paid; quantity must be converted to BASE units
@@ -880,6 +894,7 @@ def weighted_avg_cost(variant, store):
     back = PurchaseReturnItem.objects.filter(
         variant=variant, purchase_return__store=store,
         purchase_return__status=PurchaseReturn.Status.POSTED, purchase_return__is_deleted=False,
+        purchase_return__source_number='',
     ).aggregate(total_cost=Sum('total_cost'), total_qty=Sum(F('quantity') * F('unit_factor')))
     total_cost -= back['total_cost'] or Decimal('0')
     total_qty -= back['total_qty'] or Decimal('0')
