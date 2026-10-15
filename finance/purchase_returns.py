@@ -134,6 +134,16 @@ def create_return(store, user, *, supplier, branch=None, purchase=None, lines=()
     # Locks first, same order as every other stock path: the shop's serial lock, then the stock rows.
     serial_engine.lock_shop_serials(store)
     specs = [_line_spec(store, purchase, raw) for raw in lines]
+    # s175 (surgeon #4): two lines on the same bought line — the cap is on their total, not on each line alone.
+    asked = {}
+    for sp in specs:
+        if sp['purchase_item'] is not None:
+            asked[sp['purchase_item'].pk] = (sp['purchase_item'], asked.get(sp['purchase_item'].pk, (None, ZERO))[1] + sp['qty'])
+    for pi, total in asked.values():
+        left = Decimal(str(pi.quantity)) - returned_qty(pi)
+        if total > left:
+            raise _err('more_than_bought', f'Only {left.normalize()} of {pi.variant.product.name} can still go back.',
+                       product=pi.variant.product.name, left=left.normalize())
 
     ret = PurchaseReturn.all_objects.create(
         store=store, branch=branch, supplier=supplier, purchase=purchase, return_number=_next_number(store),

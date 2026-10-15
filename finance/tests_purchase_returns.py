@@ -106,6 +106,15 @@ class PurchaseReturnTests(TestCase):
         self.assertEqual(PurchaseReturn.objects.count(), 1)          # the refused ones left nothing behind
         self.assertEqual(self._stock(), D('1'))
 
+    def test_two_lines_on_the_same_bought_line_share_the_cap(self):
+        # s175 (surgeon #4): 5 bought → 3 + 3 on two lines of one return is 6 > 5, refused; nothing moves
+        pid = self._buy([{'variant': str(self.variant.id), 'quantity': '5', 'base_price': '100'}])
+        pi = self._returnable(pid)[0]['purchase_item']
+        r = self.mgr.post(URL, {'purchase': pid, 'lines': [{'purchase_item': pi, 'quantity': '3'},
+                                                            {'purchase_item': pi, 'quantity': '3'}]}, format='json')
+        self.assertEqual((r.status_code, r.data['code']), (400, 'more_than_bought'))
+        self.assertEqual((self._stock(), self._balance()), (D('5'), D('500.00')))
+
     def test_statement_and_ap_aging_follow_the_return(self):
         pid = self._buy([{'variant': str(self.variant.id), 'quantity': '10', 'base_price': '100'}])
         self._return(pid, 2, refund_amount='50', refund_method=str(self.cash.id))
