@@ -66,8 +66,9 @@ def labour_variant(store):
 
 
 def job_lines(service, labour=None):
-    """What the job bills, as sale lines [(variant, quantity, unit_price, name)]: one labour line
-    (detection fee + repair charge) + one line per part. A warranty job charges 0 for everything (the parts
+    """What the job bills, as sale lines [(variant, quantity, unit_price, name, serials)]: one labour line
+    (detection fee + repair charge) + one line per part (a serial-tracked part carries its unit serials — two
+    parts of the same product stay two lines, each with its own). A warranty job charges 0 for everything (the parts
     still leave stock). `labour` = the labour variant (None for a quote before the shop's first Done: the
     line is still taxed right — a fresh labour product has no own tax, so the shop default applies)."""
     free = service.is_warranty
@@ -77,9 +78,10 @@ def job_lines(service, labour=None):
     if amount > 0 or not parts:   # a 0-labour job with parts needs no empty labour line on the receipt
         name = labour.product.name if labour is not None else LABOUR_NAME[
             'ar' if (getattr(service.store, 'default_language', '') or '').startswith('ar') else 'en']
-        lines.append((labour, Decimal('1'), amount, name))
+        lines.append((labour, Decimal('1'), amount, name, []))
     for p in parts:
-        lines.append((p.variant, p.quantity, ZERO if free else p.unit_price, p.variant.product.name))
+        lines.append((p.variant, p.quantity, ZERO if free else p.unit_price, p.variant.product.name,
+                      list(p.serial_numbers or [])))
     return lines
 
 
@@ -89,12 +91,12 @@ def quote(service):
     from finance.serializers import SalesInvoiceSerializer
     lines = job_lines(service, labour=find_labour_variant(service.store))
     priced = SalesInvoiceSerializer.price_lines(
-        SalesInvoice(store=service.store, discount=ZERO), [(v, q, p, ZERO) for v, q, p, _n in lines])
+        SalesInvoice(store=service.store, discount=ZERO), [(v, q, p, ZERO) for v, q, p, _n, _s in lines])
     return {
         'lines': [{
-            'name': name, 'quantity': str(q), 'unit_price': str(p),
+            'name': name, 'quantity': str(q), 'unit_price': str(p), 'serial_numbers': serials,
             'tax_rate': str(pl['tax_rate']), 'tax_amount': str(pl['tax_amount']), 'total': str(pl['total']),
-        } for (_v, q, p, name), pl in zip(lines, priced['lines'])],
+        } for (_v, q, p, name, serials), pl in zip(lines, priced['lines'])],
         'subtotal': str(priced['subtotal']),
         'tax_total': str(priced['tax_total']),
         'grand_total': str(priced['grand_total']),
@@ -102,21 +104,30 @@ def quote(service):
 
 
 def add_job_lines(service, invoice):
-    """Put the job on its DRAFT sale (the caller then prices it with the normal sale rule)."""
+    """Put the job on its DRAFT sale (the caller then prices it with the normal sale rule). A tracked part's
+    serials ride on its line, so the posting (inventory.serials.post_sale) sells exactly those units."""
     from finance.models import SalesInvoiceItem
-    for variant, qty, price, _name in job_lines(service, labour=labour_variant(service.store)):
-        SalesInvoiceItem.objects.create(invoice=invoice, variant=variant, quantity=qty, unit_price=price)
+    for variant, qty, price, _name, serials in job_lines(service, labour=labour_variant(service.store)):
+        SalesInvoiceItem.objects.create(invoice=invoice, variant=variant, quantity=qty, unit_price=price,
+                                        serial_numbers=serials)
 
 
 def refund_lines(invoice, restock_parts=True):
     """Everything still returnable on the job's sale, one line per variant, in the product's BASE unit (no
     `unit` sent = base unit): the quantity + money left after earlier returns — counted by the same helper
     the return cap uses (finance.models.returned_so_far), so the two can never disagree. The labour line is
-    never restocked (a service has no stock); parts are, unless `restock_parts` is False (a dead part)."""
+    never restocked (a service has no stock); parts are, unless `restock_parts` is False (a dead part). A
+    serial-tracked part goes back with the serials of its units still SOLD on this sale (inventory.serials
+    .return_units puts them back on the shelf, or keeps them apart for a dead part)."""
     from finance.models import returned_so_far
-    from inventory.models import ProductVariant, Product
+    from inventory.models import ProductVariant, Product, SerialUnit
 
     counts = returned_so_far(invoice)
+    sold_serials = {}
+    for vid, serial in (SerialUnit.all_objects.filter(store=invoice.store, sale_item__invoice=invoice,
+                                                      status=SerialUnit.Status.SOLD, is_deleted=False)
+                        .order_by('serial').values_list('variant_id', 'serial')):
+        sold_serials.setdefault(vid, []).append(serial)
     services = set(ProductVariant.all_objects.filter(
         pk__in=list(counts), product__product_type=Product.ProductType.SERVICE).values_list('pk', flat=True))
     lines = []
@@ -132,5 +143,6 @@ def refund_lines(invoice, restock_parts=True):
             'quantity': str(q_left),
             'refund_amount': str(money),
             'restock_inventory': bool(restock_parts) and vid not in services,
+            'serial_numbers': sold_serials.get(vid, []),
         })
     return lines

@@ -144,7 +144,8 @@ class ServicePart(TimestampedModel, SoftDeleteModel):
 
     Planning only while the job is open — NOTHING moves stock here. When the job is marked Done each live part
     becomes a real line on the job's sales invoice, and the stock leaves through the normal sale checkout
-    (oversell check, FEFO batches, COGS snapshot). A returned job gives the parts back through a normal return.
+    (oversell check, FEFO batches, COGS snapshot, serial units → SOLD). A returned job gives the parts back
+    through a normal return (serial units back on the shelf).
     """
     id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     store      = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='service_parts')
@@ -152,6 +153,9 @@ class ServicePart(TimestampedModel, SoftDeleteModel):
     variant    = models.ForeignKey('inventory.ProductVariant', on_delete=models.PROTECT, related_name='service_parts')
     quantity   = models.DecimalField(max_digits=10, decimal_places=3)       # in the variant's base unit
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)       # selling price per unit, before tax
+    # A serial-tracked product: the exact unit(s) used, one serial per unit (checked IN_STOCK while the job is
+    # open). Done copies them onto the sale line, so the normal posting marks them SOLD with warranty.
+    serial_numbers = models.JSONField(default=list, blank=True)
 
     objects     = TenantSoftDeleteManager()
     all_objects = models.Manager()

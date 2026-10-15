@@ -356,15 +356,6 @@ class ServiceDeskTests(TestCase):
         self.assertEqual(r.status_code, 201, r.content[:400])
         self.assertFalse(StockLevel.objects.filter(variant=labour).exists())   # no "Low stock: Repair service" ever
 
-    def test_a_serial_tracked_product_cannot_be_a_repair_part(self):
-        self.part.product.track_serials = True
-        self.part.product.save(update_fields=['track_serials'])
-        body = {'client_name': 'X', 'receive_date': str(date.today()),
-                'parts': [{'variant': str(self.part.id), 'quantity': '1'}]}
-        r = self._api(self.cashier).post('/api/services/', body, format='json')
-        self.assertEqual(r.status_code, 400, r.content[:300])
-        self.assertIn('serial', str(r.content))
-
     # ── tenant + roles ──
     def test_technician_from_another_shop_refused(self):
         api = self._api(self.cashier)
@@ -594,3 +585,250 @@ class ServiceDeviceSerialTests(TestCase):
         self.assertIsNone(self._job('GONE1')['device_unit'])
         for q in ('NOPE-42', '', '   '):
             self.assertIsNone(self._lookup(q))
+
+
+class ServicePartSerialTests(TestCase):
+    """s170-D — a serial-tracked product as a repair part: each part carries its unit serial(s) (IN_STOCK units of
+    that product in this shop, one per unit), Done copies them onto the sale line so the normal posting marks the
+    units SOLD with warranty, and returning the job puts them back on the shelf."""
+
+    _base_setUp = ServiceDeskTests.setUp
+    _api = ServiceDeskTests._api
+
+    def setUp(self):
+        from core.models import Branch, Address
+        from inventory.models import Product, ProductVariant, StockLevel, SerialUnit, Supplier
+        self._base_setUp()
+        sup = Supplier.objects.filter(store=self.store).first()
+        self.ssd = ProductVariant.objects.create(
+            product=Product.objects.create(store=self.store, name='Battery X', supplier=sup,
+                                           track_serials=True, warranty_months=6),
+            sell_price=Decimal('200'), cost_price=Decimal('120'))
+        self.ssd_stock = StockLevel.objects.create(variant=self.ssd, branch=self.branch, quantity=Decimal('3'))
+        for s in ('SN-A', 'SN-B', 'SN-C'):
+            SerialUnit.all_objects.create(store=self.store, variant=self.ssd, branch=self.branch, serial=s,
+                                          status=SerialUnit.Status.IN_STOCK)
+        # another tracked product of the same shop, and another shop's unit
+        self.other = ProductVariant.objects.create(
+            product=Product.objects.create(store=self.store, name='Charger Y', supplier=sup, track_serials=True),
+            sell_price=Decimal('50'))
+        SerialUnit.all_objects.create(store=self.store, variant=self.other, branch=self.branch, serial='OTHER-1',
+                                      status=SerialUnit.Status.IN_STOCK)
+        sup2 = Supplier.objects.filter(store=self.store2).first()
+        their = ProductVariant.objects.create(
+            product=Product.objects.create(store=self.store2, name='Their battery', supplier=sup2, track_serials=True),
+            sell_price=Decimal('1'))
+        b2 = Branch.objects.create(store=self.store2, name='B2',
+                                   address=Address.objects.create(store=self.store2, street_1='2', city='Giza'))
+        SerialUnit.all_objects.create(store=self.store2, variant=their, branch=b2, serial='THEIRS-1',
+                                      status=SerialUnit.Status.IN_STOCK)
+
+    # ── helpers ──
+    def _post(self, parts, **extra):
+        body = {'client_name': 'Customer', 'receive_date': str(date.today()), 'cost': '100', 'parts': parts}
+        body.update(extra)
+        return self._api(self.cashier).post('/api/services/', body, format='json')
+
+    def _job(self, parts=None, **extra):
+        r = self._post(parts if parts is not None else
+                       [{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-A']}], **extra)
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        return Service.objects.get(pk=r.data['id'])
+
+    def _done(self, job):
+        return self._api(self.cashier).post(f'/api/services/{job.id}/done/', {'method': str(self.cash.id)},
+                                            format='json')
+
+    def _unit(self, serial):
+        from inventory.models import SerialUnit
+        return SerialUnit.all_objects.get(store=self.store, serial=serial)
+
+    def _code(self, r):
+        code = r.data.get('serial_code')
+        return code[0] if isinstance(code, list) else code
+
+    def _refused(self, parts, code):
+        r = self._post(parts)
+        self.assertEqual(r.status_code, 400, r.content[:400])
+        self.assertEqual(self._code(r), code, r.content[:400])
+        self.assertFalse(Service.objects.filter(store=self.store).exists())
+
+    # ── the job form ──
+    def test_tracked_part_needs_its_serial(self):
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 1}], 'serial_count')
+
+    def test_wrong_count_refused(self):
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 2, 'serial_numbers': ['SN-A']}], 'serial_count')
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-A', 'SN-B']}],
+                      'serial_count')
+
+    def test_fraction_refused(self):
+        self._refused([{'variant': str(self.ssd.id), 'quantity': '1.5', 'serial_numbers': ['SN-A']}], 'serial_whole')
+
+    def test_unknown_serial_refused(self):
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['NOPE-9']}],
+                      'serial_not_available')
+
+    def test_serial_of_another_product_refused(self):
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['OTHER-1']}],
+                      'serial_not_available')
+
+    def test_already_sold_serial_refused(self):
+        from inventory.models import SerialUnit
+        SerialUnit.all_objects.filter(serial='SN-A').update(status=SerialUnit.Status.SOLD)
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-A']}],
+                      'serial_not_available')
+
+    def test_another_shops_serial_refused(self):
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['THEIRS-1']}],
+                      'serial_not_available')
+
+    def test_same_serial_on_two_parts_refused(self):
+        self._refused([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-A']},
+                       {'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['sn-a']}], 'serial_duplicate')
+
+    def test_untracked_part_carries_no_serial(self):
+        self._refused([{'variant': str(self.part.id), 'quantity': 1, 'serial_numbers': ['SN-A']}], 'serial_off')
+        job = self._job([{'variant': str(self.part.id), 'quantity': 2, 'serial_numbers': []}])
+        self.assertEqual(job.parts.get().serial_numbers, [])
+
+    def test_serials_saved_normalised_and_editable_while_open(self):
+        job = self._job([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': [' sn-a ']}])
+        part = job.parts.get()
+        self.assertEqual(part.serial_numbers, ['SN-A'])
+        r = self._api(self.manager).patch(f'/api/services/{job.id}/', {'parts': [
+            {'id': str(part.id), 'variant': str(self.ssd.id), 'quantity': 2, 'serial_numbers': ['SN-B', 'SN-C']}]},
+            format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        part.refresh_from_db()
+        self.assertEqual((part.quantity, part.serial_numbers), (Decimal('2'), ['SN-B', 'SN-C']))
+        self.assertEqual(r.data['parts'][0]['serial_numbers'], ['SN-B', 'SN-C'])
+
+    # ── Done ──
+    def test_done_sells_the_unit_with_warranty_and_puts_the_serial_on_the_sale_line(self):
+        from django.utils import timezone
+        from inventory.models import SerialUnit
+        from inventory.serials import add_months
+        job = self._job()
+        self.assertEqual(self._unit('SN-A').status, SerialUnit.Status.IN_STOCK)   # nothing moves while open
+        q = self._api(self.cashier).get(f'/api/services/{job.id}/quote/').data
+        self.assertEqual([ln['serial_numbers'] for ln in q['lines']], [[], ['SN-A']])
+        r = self._done(job)
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        self.assertEqual(r.data['parts'][0]['serial_numbers'], ['SN-A'])
+        job.refresh_from_db()
+        line = job.invoice.items.get(variant=self.ssd)
+        self.assertEqual(line.serial_numbers, ['SN-A'])
+        unit = self._unit('SN-A')
+        self.assertEqual((unit.status, unit.sale_item_id), (SerialUnit.Status.SOLD, line.id))
+        self.assertEqual(unit.warranty_months, 6)
+        self.assertEqual(unit.warranty_ends_on, add_months(timezone.localdate(job.invoice.date), 6))
+        self.assertEqual(self._unit('SN-B').status, SerialUnit.Status.IN_STOCK)
+        self.ssd_stock.refresh_from_db()
+        self.assertEqual(self.ssd_stock.quantity, Decimal('2'))
+
+    def test_two_parts_of_the_same_product_each_sell_their_own_unit(self):
+        from inventory.models import SerialUnit
+        job = self._job([{'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-A']},
+                         {'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-B']}])
+        self.assertEqual(self._done(job).status_code, 200)
+        job.refresh_from_db()
+        lines = list(job.invoice.items.filter(variant=self.ssd))
+        self.assertEqual(sorted(s for ln in lines for s in ln.serial_numbers), ['SN-A', 'SN-B'])
+        for s in ('SN-A', 'SN-B'):
+            self.assertEqual(self._unit(s).status, SerialUnit.Status.SOLD)
+
+    def test_unit_sold_at_the_till_before_done_refuses_done_and_keeps_nothing(self):
+        from django.utils import timezone
+        from finance.models import SalesInvoice, SalesInvoiceItem
+        from inventory.models import SerialUnit
+        job = self._job()
+        till = SalesInvoice.objects.create(store=self.store, branch=self.branch, customer=self.walkin,
+                                           status=SalesInvoice.Status.DRAFT, date=timezone.now())
+        SalesInvoiceItem.objects.create(invoice=till, variant=self.ssd, quantity=1, unit_price=Decimal('200'),
+                                        serial_numbers=['SN-A'])
+        till.status = SalesInvoice.Status.POSTED
+        till.save()
+        self.assertEqual(self._unit('SN-A').status, SerialUnit.Status.SOLD)
+        r = self._done(job)
+        self.assertEqual(r.status_code, 400, r.content[:400])
+        self.assertEqual(self._code(r), 'serial_not_available')
+        job.refresh_from_db()
+        self.assertEqual((job.status, job.invoice_id), (Service.Status.OPEN, None))
+        self.assertEqual(list(SalesInvoice.all_objects.filter(store=self.store)), [till])   # the draft rolled back
+        self.ssd_stock.refresh_from_db()
+        self.assertEqual(self.ssd_stock.quantity, Decimal('2'))                             # only the till's sale
+        self.assertEqual(self._unit('SN-A').sale_item.invoice_id, till.id)
+
+    def test_unit_at_another_branch_refused_at_done(self):
+        from core.models import Branch, Address
+        from inventory.models import SerialUnit
+        far = Branch.objects.create(store=self.store, name='Far',
+                                    address=Address.objects.create(store=self.store, street_1='3', city='Alex'))
+        job = self._job()
+        SerialUnit.all_objects.filter(serial='SN-A').update(branch=far)
+        r = self._done(job)
+        self.assertEqual((r.status_code, self._code(r)), (400, 'serial_not_available'), r.content[:400])
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.OPEN)
+
+    def test_serials_frozen_after_done(self):
+        job = self._job()
+        self.assertEqual(self._done(job).status_code, 200)
+        part = job.parts.get()
+        api = self._api(self.manager)
+        r = api.patch(f'/api/services/{job.id}/', {'parts': [
+            {'id': str(part.id), 'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['SN-B']}]},
+            format='json')
+        self.assertEqual(r.status_code, 400, r.content[:400])
+        # the form re-sending the same list (its unit is SOLD now) is fine
+        r = api.patch(f'/api/services/{job.id}/', {'diagnosis': 'cell replaced', 'parts': [
+            {'id': str(part.id), 'variant': str(self.ssd.id), 'quantity': 1, 'serial_numbers': ['sn-a'],
+             'unit_price': '200'}]}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        part.refresh_from_db()
+        self.assertEqual(part.serial_numbers, ['SN-A'])
+
+    # ── Returned ──
+    def test_returning_the_job_brings_the_unit_back_in_stock(self):
+        from inventory.models import SerialUnit
+        job = self._job(client=str(self.named.id))
+        self.assertEqual(self._done(job).status_code, 200)
+        r = self._api(self.manager).post(f'/api/services/{job.id}/return/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        job.refresh_from_db()
+        self.assertEqual(job.status, Service.Status.RETURNED)
+        self.assertEqual(job.refund.items.get(variant=self.ssd).serial_numbers, ['SN-A'])
+        unit = self._unit('SN-A')
+        self.assertEqual((unit.status, unit.sale_item_id, unit.warranty_ends_on),
+                         (SerialUnit.Status.IN_STOCK, None, None))
+        self.ssd_stock.refresh_from_db()
+        self.assertEqual(self.ssd_stock.quantity, Decimal('3'))
+
+    def test_dead_part_return_keeps_the_unit_off_the_shelf(self):
+        from inventory.models import SerialUnit
+        job = self._job(client=str(self.named.id))
+        self.assertEqual(self._done(job).status_code, 200)
+        r = self._api(self.manager).post(f'/api/services/{job.id}/return/', {'restock_parts': False}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        self.assertEqual(self._unit('SN-A').status, SerialUnit.Status.RETURNED)
+        self.ssd_stock.refresh_from_db()
+        self.assertEqual(self.ssd_stock.quantity, Decimal('2'))
+
+    def test_return_after_one_unit_came_back_at_the_returns_screen(self):
+        from inventory.models import SerialUnit
+        job = self._job([{'variant': str(self.ssd.id), 'quantity': 2, 'serial_numbers': ['SN-A', 'SN-B']}],
+                        client=str(self.named.id))
+        self.assertEqual(self._done(job).status_code, 200)
+        inv = Service.objects.get(pk=job.pk).invoice
+        r = self._api(self.manager).post('/api/finance/refunds/', {
+            'branch': str(self.branch.id), 'original_invoice': str(inv.id), 'customer': str(self.named.id),
+            'items': [{'variant': str(self.ssd.id), 'quantity': '1', 'refund_amount': '1',
+                       'serial_numbers': ['SN-B']}]}, format='json')
+        self.assertEqual(r.status_code, 201, r.content[:400])
+        r = self._api(self.manager).post(f'/api/services/{job.id}/return/', {}, format='json')
+        self.assertEqual(r.status_code, 200, r.content[:400])
+        job.refresh_from_db()
+        self.assertEqual(job.refund.items.get(variant=self.ssd).serial_numbers, ['SN-A'])
+        for s in ('SN-A', 'SN-B'):
+            self.assertEqual(self._unit(s).status, SerialUnit.Status.IN_STOCK)
