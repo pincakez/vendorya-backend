@@ -27,6 +27,23 @@ from users.models import User
 
 _NO_STORE = Response({'detail': 'User has no store assigned.'}, status=status.HTTP_403_FORBIDDEN)
 
+_LOGO_EXT = ('.png', '.jpg', '.jpeg', '.webp', '.gif')
+
+
+def _clean_logo(f):
+    """A logo must be a real picture with a picture name (s175 security review): /media/ is served from the app's own
+    address, so a web page or SVG saved as a "logo" would run as Vendorya for whoever opens its link. → error text or None."""
+    from PIL import Image
+    if os.path.splitext(f.name or '')[1].lower() not in _LOGO_EXT:
+        return 'The logo must be a PNG, JPG, WEBP or GIF picture.'
+    try:
+        Image.open(f).verify()
+    except Exception:
+        return 'That file is not a picture.'
+    finally:
+        f.seek(0)
+    return None
+
 
 class StoreView(APIView):
     """GET = any active staff (the sidebar needs the store name).
@@ -61,6 +78,9 @@ class StoreLogoView(APIView):
         if not request.user.store:
             return _NO_STORE
         store = request.user.store
+        for key in ('logo_light', 'logo_dark'):
+            if key in request.FILES and (err := _clean_logo(request.FILES[key])):
+                return Response({key: [err]}, status=400)
         if request.data.get('clear_logo_light') in (True, 'true', '1'):
             store.logo_light.delete(save=False)
             store.logo_light = None
@@ -90,6 +110,8 @@ class LockscreenLogoView(APIView):
                 s.lock_logo.delete(save=False)
             s.lock_logo = None
         if 'lock_logo' in request.FILES:
+            if err := _clean_logo(request.FILES['lock_logo']):
+                return Response({'lock_logo': [err]}, status=400)
             if s.lock_logo:
                 s.lock_logo.delete(save=False)
             s.lock_logo = request.FILES['lock_logo']
