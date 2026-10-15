@@ -946,7 +946,9 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         the rest returns to the card / cancels Ajel debt. The drawer = the refunder's own open shift in
         this branch, else the branch's most recently opened one; none open → paid from outside a till."""
         cash = refund.paid_back - refund.store_credit_back   # s167: the wallet share never leaves the till as cash
-        if original is not None:
+        # PROLINE-IMPORT-B.md: a sale IMPORTED from the old system has no Payment rows (it was settled there) — the
+        # payout is drawer cash from the refunder's shift, exactly like a return with no original sale.
+        if original is not None and not original.source_number:
             taken = (Payment.objects.filter(invoice=original, method__is_cash=True)
                      .aggregate(s=Sum('amount'))['s'] or Decimal('0'))
             given = (RefundInvoice.objects.filter(original_invoice=original, is_deleted=False)

@@ -21,7 +21,8 @@ when there are no sales lines. An item with nothing in that column takes the oth
 The customer / supplier split — Proline has ONE table (tb_Cust) for both. Per row, first rule that applies:
     1. forced by --supplier-codes / --customer-codes
     2. a "type" column (Type1 / Type2 / ConType — auto-detected, or --type-column) whose value says
-       supplier (مورد / supplier / vendor) or customer (عميل / customer / client)
+       supplier (مورد / supplier / vendor) or customer (عميل / customer / client) — and a party that appears on
+       purchases (tb_InvoIn / tb_InvoInBack) is ALSO a supplier whatever its type says (usage adds, never removes)
     3. usage: the code appears in purchases (tb_InvoIn, tb_InvoInBack) or as an item's SourceID →
        supplier; in sales (tb_InvoOut) → customer; in both → both a supplier and a customer
     4. otherwise → customer
@@ -263,6 +264,12 @@ class ProlineAdapter(HistoryMixin, Adapter):
                 kinds, reason = {'customer'}, 'forced by --customer-codes'
             elif tcol and self._classify(x.get(tcol)):
                 kinds, reason = self._classify(x.get(tcol)), f'{tcol} = "{text(x.get(tcol))}"'
+                # s173 (Sam): a party the shop BOUGHT from is a supplier too, whatever its type says — usage ADDS the
+                # supplier side, it never removes the customer side (forced --customer-codes still wins, above).
+                if 'supplier' not in kinds and key in purchases:
+                    kinds = kinds | {'supplier'}
+                    reason += ' + used on purchases → also supplier'
+                    info.note('type says customer, used on purchases → also supplier')
             elif key in purchases or key in sources or key in sales:
                 kinds = set()
                 if key in purchases or key in sources:

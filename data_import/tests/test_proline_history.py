@@ -148,7 +148,7 @@ class DryRunTests(_Base):
         self.assertEqual(report.blockers, [])
         self.assertEqual((money_and_stock(self.store), history_counts(self.store), money_and_stock(self.other),
                           history_counts(self.other)), before)
-        self.assertEqual(report.counts('sales')['add'], 7, report.render(True))
+        self.assertEqual(report.counts('sales')['add'], 8, report.render(True))
         text = report.render(dry_run=True)
         self.assertIn('DRY RUN', text)
         self.assertIn('Sales (tb_InvoOut + tb_InvoOutData)', text)
@@ -171,7 +171,7 @@ class CommitTests(_Base):
         self.assertEqual(money_and_stock(self.store), before)
 
         sales = report.counts('sales')
-        self.assertEqual((sales['add'], sales['skip']), (7, 2), report.render(False))
+        self.assertEqual((sales['add'], sales['skip']), (8, 2), report.render(False))
         skips = report.sections['sales'].reasons
         self.assertEqual(skips['credit sale to a customer that was not imported'], 1)    # #4
         self.assertEqual(skips['no lines in tb_InvoOutData'], 1)                         # #7
@@ -199,10 +199,10 @@ class CommitTests(_Base):
         # header Total below its lines → the gap is the whole-invoice discount
         s12 = self.sale('12')
         self.assertEqual((s12.subtotal, s12.discount, s12.grand_total), (Decimal('900'), Decimal('50'), Decimal('850')))
-        # numbers: Proline's own; 9 was taken in this shop → the next free number past the top (12)
-        self.assertEqual(self.sale('9').invoice_number, 13)
+        # numbers: Proline's own; 9 was taken in this shop → the next free number past the top (14)
+        self.assertEqual(self.sale('9').invoice_number, 15)
         self.assertEqual(self.sale('9').source_number, '9')
-        self.assertEqual(InvoiceSequence.objects.get(store=self.store).last_number, 13)
+        self.assertEqual(InvoiceSequence.objects.get(store=self.store).last_number, 15)
 
         # returned lines: #5 = a sale of what was bought + a return of what came back; #6 = a return only
         self.assertEqual(self.sale('5').grand_total, Decimal('700'))
@@ -211,9 +211,13 @@ class CommitTests(_Base):
         self.assertEqual((r5.total_refunded, r5.paid_back, r5.drawer_cash, r5.original_invoice_id, r5.shift_id),
                          (Decimal('250'), Decimal('250'), Decimal('0'), None, None))
         self.assertEqual(r5.date, cairo('2024-01-14 14:00:00'))
-        self.assertFalse(r5.items.get().restock_inventory)
         self.assertEqual(RefundInvoice.all_objects.get(store=self.store, source_number='6').total_refunded,
                          Decimal('18000'))
+        # #14 sold AND took back the same item → the return names that sale (balance still 0: paid back in full)
+        r14 = RefundInvoice.all_objects.get(store=self.store, source_number='14')
+        self.assertEqual((r14.original_invoice, r14.paid_back), (self.sale('14'), Decimal('250')))
+        self.assertIsNone(r5.original_invoice)        # #5 took back an item it did not sell → a free return
+        self.assertTrue(r5.items.get().restock_inventory)   # cost back in the P&L — and still no stock moved
 
         # purchases: born RECEIVED, settled, out of the supplier account; a missing supplier → none
         p1 = PurchaseInvoice.all_objects.get(store=self.store, source_number='1')
@@ -231,7 +235,7 @@ class CommitTests(_Base):
         api.force_authenticate(self.store.owner)
         found = api.get('/api/finance/invoices/', {'search': '9'}).json()
         rows = found['results'] if isinstance(found, dict) else found
-        self.assertIn(13, [r['invoice_number'] for r in rows])
+        self.assertIn(15, [r['invoice_number'] for r in rows])
         self.assertIn('9', [r['source_number'] for r in rows])
 
     def test_second_run_adds_nothing(self):
@@ -246,9 +250,9 @@ class CommitTests(_Base):
     def test_fresher_export_adds_only_new_and_updates_changed(self):
         self.run_import(commit=True)
         n = history_counts(self.store)
-        new_sale = {'InvoNo': '13', 'Date': '2024-04-01 10:00:00', 'ComCode': '1', 'InvoType': 'نقدى',
+        new_sale = {'InvoNo': '15', 'Date': '2024-04-01 10:00:00', 'ComCode': '1', 'InvoType': 'نقدى',
                     'Total': '250', 'Payed': '250'}
-        new_line = {'InvoNo': '13', 'Date': '2024-04-01 10:00:00', 'ComCode': '1', 'ItemCode': '12600', 'Qty': '1',
+        new_line = {'InvoNo': '15', 'Date': '2024-04-01 10:00:00', 'ComCode': '1', 'ItemCode': '12600', 'Qty': '1',
                     'Price': '250', 'PriceBefore': '250', 'Total': '250', 'Back': ''}
         folder = self.folder(edits=[('tb_InvoOutData', 'بالقطعة,,,2,,,250.0000,500.0', 'بالقطعة,,,3,,,250.0000,750.0')],
                              extra_rows={'tb_InvoOut': [new_sale], 'tb_InvoOutData': [new_line]})
@@ -256,8 +260,8 @@ class CommitTests(_Base):
         c = report.counts('sales')
         self.assertEqual((c['add'], c['update']), (1, 1), report.render(False))
         self.assertEqual(history_counts(self.store)['sales'], n['sales'] + 1)
-        # Proline 13 is already Vendorya #13 (given to Proline 9 on the first run) → the next free number
-        self.assertEqual(self.sale('13').invoice_number, 14)
+        # Proline 15 is already Vendorya #15 (given to Proline 9 on the first run) → the next free number
+        self.assertEqual(self.sale('15').invoice_number, 16)
         self.assertEqual(self.sale('2').items.get().quantity, Decimal('3'))
         self.assertEqual(self.sale('2').paid_amount, self.sale('2').grand_total)
 
@@ -280,7 +284,7 @@ class CommitTests(_Base):
         self.assertEqual(history_counts(self.store)['sales'], 1)          # only the shop's own (void) sale
         report = self.run_import(commit=True, part='history')
         self.assertTrue(report.committed, report.render(False))
-        self.assertEqual(report.counts('sales')['add'], 7)
+        self.assertEqual(report.counts('sales')['add'], 8)
         self.assertEqual(report.counts('products'), {k: 0 for k in ('add', 'update', 'link', 'unchanged', 'skip')})
 
 
@@ -295,7 +299,7 @@ class CountedOnlyTests(_Base):
         self.assertEqual(money_and_stock(self.store), before)               # incl. track_serials count
         text = report.render(dry_run=False)
         self.assertIn('10 × tb_Serial rows = the repair desk\'s device in / out log — NOT imported', text)
-        self.assertIn('tb_InvoOutData.Serial values (no serial units are made): "NO" × 11', text)
+        self.assertIn('tb_InvoOutData.Serial values (no serial units are made): "NO" × 13', text)
 
     def test_instalment_notes_are_counted_never_cheques(self):
         report = self.run_import(commit=True)
@@ -316,3 +320,77 @@ class ReservationTests(_Base):
         self.assertIn('tb_Reservation_Order.StoreState: "in" × 2, "out" × 1', text)
         self.assertIn('1 × reservations already converted to sales', text)
         self.assertIn('2 × OPEN reservations (StoreState "in") — open reservations are not imported yet', text)
+
+
+class ReviewFixTests(_Base):
+    """surgeon-reviewer on b33defc."""
+
+    def test_a_returned_line_counts_against_its_imported_sale(self):
+        self.run_import(commit=True)
+        v = ProductVariant.objects.get(store=self.store, sku2='12600')
+        api = APIClient()
+        api.force_authenticate(self.store.owner)
+        r = api.post('/api/finance/refunds/', {
+            'branch': str(self.store.branches.first().id), 'original_invoice': str(self.sale('14').id),
+            'customer': str(self.sale('14').customer_id), 'refund_method': 'CASH',
+            'items': [{'variant': str(v.id), 'quantity': '1', 'refund_amount': '250'}]}, format='json')
+        self.assertEqual(r.status_code, 400, r.content)        # Proline already took that unit back
+        self.assertIn('refundable', str(r.content))
+
+    def test_pnl_takes_the_returned_goods_cost_back(self):
+        from datetime import date
+        from reports.views import compute_pnl
+        self.run_import(commit=True)
+        _rows, totals = compute_pnl(self.store, date(2024, 2, 1), date(2024, 2, 29))
+        # #6 (12511 at cost 15000, no purchase counts → its cost price) + #14 (12600 at the sale's cost 150)
+        self.assertEqual(Decimal(str(totals['cogs_returned'])), Decimal('15150'))
+
+    def test_a_repeated_number_skips_every_copy(self):
+        folder = self.folder(extra_rows={
+            'tb_InvoOut': [{'InvoNo': '2', 'Date': '2024-05-01 10:00:00', 'InvoType': 'نقدى', 'Total': '99'}],
+            'tb_InvoIn': [{'InvoNo': '2', 'Date': '2024-05-01 10:00:00', 'InvoType': 'نقدى', 'Total': '99'}]})
+        report = self.run_import(commit=True, folder=folder)
+        self.assertEqual(report.sections['sales'].reasons[
+            'InvoNo appears more than once in tb_InvoOut — its lines can\'t be told apart'], 2)
+        self.assertEqual(report.sections['purchases'].reasons[
+            'InvoNo appears more than once in tb_InvoIn — its lines can\'t be told apart'], 2)
+        self.assertFalse(ExternalRef.objects.filter(store=self.store, kind__in=('sale', 'purchase'),
+                                                    external_key='2').exists())
+
+    def test_a_purchase_a_vendorya_return_points_at_is_never_rebuilt(self):
+        from finance.models import PurchaseReturnItem
+        self.run_import(commit=True)
+        p1 = PurchaseInvoice.all_objects.get(store=self.store, source_number='1')
+        line = p1.items.get()
+        ret = PurchaseReturn.all_objects.create(store=self.store, branch=p1.branch, supplier=p1.supplier,
+                                                return_number=99, total_amount=Decimal('15000'))
+        PurchaseReturnItem.objects.create(purchase_return=ret, variant=line.variant, purchase_item=line,
+                                          quantity=1, unit_cost=line.unit_cost, total_cost=line.unit_cost)
+        folder = self.folder(edits=[('tb_InvoInData', '12511,,بالقطعة,2,15000.0000', '12511,,بالقطعة,3,15000.0000')])
+        report = self.run_import(commit=True, folder=folder)
+        self.assertTrue(report.committed, report.render(False))
+        self.assertEqual(report.sections['purchases'].reasons[
+            'lines changed in Proline, but a return to the supplier in Vendorya points at them — left alone'], 1)
+        self.assertEqual(p1.items.get().pk, line.pk)
+
+    def test_a_party_the_shop_bought_from_is_also_a_supplier(self):
+        # purchase #3 now comes from party 1, whose type says customer
+        folder = self.folder(edits=[('tb_InvoIn', '3,2023-12-03 09:00:00,2023-12-03 09:00:00,,1,,5,',
+                                     '3,2023-12-03 09:00:00,2023-12-03 09:00:00,,1,,1,')])
+        report = self.run_import(commit=True, folder=folder)
+        self.assertTrue(ExternalRef.objects.filter(store=self.store, kind='supplier', external_key='ID:1').exists())
+        self.assertTrue(ExternalRef.objects.filter(store=self.store, kind='customer', external_key='ID:1').exists())
+        self.assertEqual(PurchaseInvoice.all_objects.get(store=self.store, source_number='3').supplier.name,
+                         'محمد أحمد')
+        self.assertIn('1 × type says customer, used on purchases → also supplier', report.render(dry_run=False))
+        # forced --customer-codes still wins
+        other = self.run_import(commit=False, folder=folder, customer_codes=['1'])
+        self.assertNotIn('used on purchases → also supplier', other.render(dry_run=True))
+
+    def test_a_dry_run_never_locks_the_sale_sequence(self):
+        from unittest import mock
+        with mock.patch.object(InvoiceSequence.objects, 'select_for_update',
+                               side_effect=AssertionError('dry run locked the sequence')):
+            report = self.run_import(commit=False)
+        self.assertEqual(report.counts('sales')['add'], 8)
+        self.assertFalse(InvoiceSequence.objects.filter(store=self.store).exists())

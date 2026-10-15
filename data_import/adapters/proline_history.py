@@ -254,7 +254,12 @@ class HistoryMixin:
         facts.line('tb_InvoOut.InvoType: ' + ', '.join(
             f'"{v}" × {n}' for v, n in Counter(text(x.get('InvoType')) for x in headers).most_common()))
         # Numbering (see the doc): Proline's InvoNo when the shop has no sale with it; the sequence moves past the top.
-        seq = InvoiceSequence.objects.select_for_update().get_or_create(store=self.store)[0]
+        # A dry run only READS the sequence (no row lock, no insert — the till locks it on every sale); a commit locks it.
+        if self.commit:
+            seq = InvoiceSequence.objects.select_for_update().get_or_create(store=self.store)[0]
+        else:
+            seq = (InvoiceSequence.objects.filter(store=self.store).first()
+                   or InvoiceSequence(store=self.store, last_number=0))
         used = set(SalesInvoice.all_objects.filter(store=self.store, invoice_number__isnull=False)
                    .values_list('invoice_number', flat=True))
         top = max([int(norm_key(x.get('InvoNo'))) for x in headers if norm_key(x.get('InvoNo')).isdigit()] or [0])
@@ -265,7 +270,7 @@ class HistoryMixin:
             facts.line(f'sale numbers: Proline\'s own; the shop\'s next new sale keeps {seq.last_number + 1}')
         else:
             facts.line('sale numbers: new Vendorya numbers (--invoice-numbers new); Proline\'s stay as the old no.')
-        seen = set()
+        repeated = {k for k, n in Counter(norm_key(x.get('InvoNo')) for x in headers).items() if n > 1}
 
         def order(x):
             return (text(x.get('Date')), int(norm_key(x.get('InvoNo'))) if norm_key(x.get('InvoNo')).isdigit() else 0)
@@ -276,10 +281,9 @@ class HistoryMixin:
             if not no:
                 sec.skip('empty InvoNo', sample)
                 continue
-            if no in seen:
-                sec.skip('InvoNo appears twice in tb_InvoOut', sample)
+            if no in repeated:
+                sec.skip('InvoNo appears more than once in tb_InvoOut — its lines can\'t be told apart', sample)
                 continue
-            seen.add(no)
             rows = lines.get(no, [])
             if not rows:
                 sec.skip('no lines in tb_InvoOutData', sample)
@@ -318,16 +322,19 @@ class HistoryMixin:
                 discount = extra if ZERO < extra <= subtotal else ZERO
                 if extra < 0:
                     facts.note('header Total above the sum of its lines — the lines are kept')
+                sale = None
                 if sold:
-                    self._upsert_sale(sec, sales.get(no), no, x, when, customer, seller, sold, subtotal, discount,
-                                      seq, used, sample)
+                    sale = self._upsert_sale(sec, sales.get(no), no, x, when, customer, seller, sold, subtotal,
+                                             discount, seq, used, sample)
                 elif no in sales:
                     sec.skip('Proline now has only returned lines on this invoice — the sale is left alone', sample)
                 else:
                     facts.note('invoices with only returned lines (a return, no sale)')
                 if back:
-                    self._upsert_sale_return(rsec, returns.get(no), no, when, customer, back, sample)
-        seq.save(update_fields=['last_number'])
+                    self._upsert_sale_return(rsec, returns.get(no), no, when, customer, back, sample,
+                                             self._returned_on(sale, sold, back))
+        if self.commit:
+            seq.save(update_fields=['last_number'])
 
     @staticmethod
     def _num_safe(x, col):
@@ -345,16 +352,16 @@ class HistoryMixin:
             self.refs.touch(ref)
             if inv.is_deleted or inv.status != SalesInvoice.Status.POSTED:
                 sec.skip('voided / deleted in Vendorya — left alone', sample)
-                return
+                return None
             changes = [f for f, v in values.items()
                        if (inv.customer_id != v.pk if f == 'customer' else getattr(inv, f) != v)]
             lines_changed = self._item_sig(inv) != self._sig(sold)
             if not changes and not lines_changed:
                 sec.unchanged()
-                return
-            if inv.refunds.exists() or inv.payments.exists():
+                return inv
+            if inv.refunds.filter(source_number='').exists() or inv.payments.exists():
                 sec.skip('changed in Proline, but it has returns / payments in Vendorya — left alone', sample)
-                return
+                return inv
             for f, v in values.items():
                 setattr(inv, f, v)
             inv.save()
@@ -364,7 +371,7 @@ class HistoryMixin:
                 changes.append('lines')
             self._created_at(SalesInvoice, inv.pk, when)
             sec.update(f'{sample}: {", ".join(changes)}')
-            return
+            return inv
         number = int(no) if no.isdigit() and len(no) <= 9 else None
         if self.number_mode != 'proline' or number is None or number in used or number == 0:
             if self.number_mode == 'proline':
@@ -379,6 +386,7 @@ class HistoryMixin:
         self._created_at(SalesInvoice, inv.pk, when)
         self.refs.tag('sale', no, inv, CREATED)
         sec.add(f'{sample} → #{number}')
+        return inv
 
     @staticmethod
     def _sale_items(inv, sold):
@@ -389,7 +397,18 @@ class HistoryMixin:
             discount_amount=l['discount'], tax_amount=ZERO, total=l['total'], cost_at_sale=l['cost'],
             salesperson_name=l['seller']) for l in sold])
 
-    def _upsert_sale_return(self, sec, ret, no, when, customer, back, sample):
+    def _returned_on(self, inv, sold, back):
+        """The imported sale the returned lines belong to — only when EVERY returned item was sold on it (then the
+        return counts against that sale: a unit can't be returned twice). Else None (a free return)."""
+        if inv is None or not sold or not inv.pk:
+            return None
+        sold_ids = {l['variant'].pk for l in sold}
+        if all(l['variant'].pk in sold_ids for l in back):
+            return inv
+        self.history_facts.note('returned lines of an item not sold on the same invoice → a free return')
+        return None
+
+    def _upsert_sale_return(self, sec, ret, no, when, customer, back, sample, original=None):
         total = sum((l['amount'] for l in back), ZERO)
         if ret is not None:
             self.refs.touch(self.refs.get('sale_return', no))
@@ -399,18 +418,21 @@ class HistoryMixin:
             have = sorted((str(i.variant_id), str(Decimal(i.quantity).normalize()), str(_money(i.refund_amount)))
                           for i in ret.items.all())
             want = sorted((str(l['variant'].pk), str(Decimal(l['qty']).normalize()), str(l['amount'])) for l in back)
-            if have == want and ret.customer_id == customer.pk:
+            if have == want and ret.customer_id == customer.pk and ret.original_invoice_id == getattr(original, 'pk', None):
                 sec.unchanged()
                 return
             ret.items.all().delete()
             self._refund_items(ret, back)
-            RefundInvoice.all_objects.filter(pk=ret.pk).update(customer=customer, total_refunded=total, paid_back=total,
+            RefundInvoice.all_objects.filter(pk=ret.pk).update(customer=customer, original_invoice=original,
+                                                               total_refunded=total, paid_back=total,
                                                                date=when, created_at=when)
             sec.update(f'{sample}: lines')
             return
-        # A free return (no original sale — Proline does not say which sale it was), paid back in full in Proline:
-        # no balance moves, no drawer cash, no shift, no store credit. Lines never restock (bulk, restock off).
-        ret = RefundInvoice(store=self.store, branch=self.branch, customer=customer, original_invoice=None,
+        # Paid back in full in Proline (paid_back = total → no balance moves, also when it names its sale): no drawer
+        # cash, no shift, no store credit. Linked to the imported sale when every returned item was sold on it.
+        # Lines are bulk-created → RefundItem.save never runs → no stock moves although restock_inventory is on
+        # (on = the goods went back on Proline's shelf: the P&L takes their cost back, the stock ledger shows them in).
+        ret = RefundInvoice(store=self.store, branch=self.branch, customer=customer, original_invoice=original,
                             refund_method=RefundInvoice.RefundMethod.CASH, total_refunded=total, paid_back=total,
                             drawer_cash=ZERO, reason=f'Returned in the old system (invoice {no})'[:500],
                             source_number=no[:30])
@@ -423,7 +445,7 @@ class HistoryMixin:
     @staticmethod
     def _refund_items(ret, back):
         RefundItem.objects.bulk_create([RefundItem(refund=ret, variant=l['variant'], quantity=l['qty'],
-                                                   refund_amount=l['amount'], restock_inventory=False)
+                                                   refund_amount=l['amount'], restock_inventory=True)
                                         for l in back])
 
     # ── purchases ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -456,14 +478,16 @@ class HistoryMixin:
             return
         lines = self._group('tb_InvoInData')
         made = self._tag_objects('purchase', PurchaseInvoice)
-        seen = set()
+        repeated = {k for k, n in Counter(norm_key(x.get('InvoNo')) for x in headers).items() if n > 1}
         for x in headers:
             no = norm_key(x.get('InvoNo'))
             sample = f'#{no} · {text(x.get("Date"))[:10]}'
-            if not no or no in seen:
-                sec.skip('empty or repeated InvoNo', sample)
+            if not no:
+                sec.skip('empty InvoNo', sample)
                 continue
-            seen.add(no)
+            if no in repeated:
+                sec.skip('InvoNo appears more than once in tb_InvoIn — its lines can\'t be told apart', sample)
+                continue
             with self.row(sec, sample):
                 try:
                     when = self._when(x.get('Date'))
@@ -502,6 +526,10 @@ class HistoryMixin:
                         sec.unchanged()
                         continue
                     if have != want:
+                        if PurchaseReturnItem.objects.filter(purchase_item__invoice=inv).exists():
+                            sec.skip('lines changed in Proline, but a return to the supplier in Vendorya points at '
+                                     'them — left alone', sample)
+                            continue
                         inv.items.all().delete()
                         self._purchase_items(inv, items)
                     PurchaseInvoice.all_objects.filter(pk=inv.pk).update(

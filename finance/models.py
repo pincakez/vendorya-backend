@@ -833,6 +833,8 @@ def weighted_avg_cost(variant, store):
 
     COGS source of truth: actual purchase-invoice prices, NOT ProductVariant.cost_price.
     Falls back to the variant's stored cost_price, then 0, when no purchases exist.
+    PROLINE-IMPORT-B.md: purchases / supplier returns IMPORTED from another system (source_number set) never count —
+    years of old prices would drag today's cost down. A product with only imported history uses its cost_price.
     """
     from django.db.models import F
     agg = PurchaseItem.objects.filter(
@@ -840,6 +842,7 @@ def weighted_avg_cost(variant, store):
         invoice__store=store,
         invoice__status=PurchaseInvoice.Status.RECEIVED,
         invoice__is_deleted=False,
+        invoice__source_number='',
     ).aggregate(
         total_cost=Sum('total_cost'),
         # total_cost is the money paid; quantity must be converted to BASE units
@@ -852,6 +855,7 @@ def weighted_avg_cost(variant, store):
     back = PurchaseReturnItem.objects.filter(
         variant=variant, purchase_return__store=store,
         purchase_return__status=PurchaseReturn.Status.POSTED, purchase_return__is_deleted=False,
+        purchase_return__source_number='',
     ).aggregate(total_cost=Sum('total_cost'), total_qty=Sum(F('quantity') * F('unit_factor')))
     total_cost -= back['total_cost'] or Decimal('0')
     total_qty -= back['total_qty'] or Decimal('0')
