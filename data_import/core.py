@@ -333,10 +333,13 @@ def _same(old, new):
 def apply_fields(obj, values, origin, always=()):
     """Set `values` on `obj` (not saved). An object the import CREATED follows the source on every
     field; one the shop made by hand (LINKED) keeps its own values, except the fields in `always`
-    and fields it left empty. → [(field, old, new)] that changed."""
+    and fields it left empty. An `always` field whose new value is empty is left alone (an empty source cell
+    means "no value", not "clear it"). → [(field, old, new)] that changed."""
     changes = []
     for field, new in values.items():
         old = getattr(obj, field)
+        if field in always and _empty(new):
+            continue          # an empty source value never overwrites a live one
         if origin == ExternalRef.Origin.LINKED and field not in always and not _empty(old):
             continue
         if _same(old, new):
@@ -411,6 +414,13 @@ def run_import(adapter_cls, store, folder, options=None, commit=False, user=None
         return report
     adapter.commit = commit
     with search_indexing_paused(), transaction.atomic():
+        if not commit:
+            # A dry run takes the same row locks as a commit (it really writes, then rolls back): fail fast
+            # instead of making the till wait behind it. Run dry runs outside opening hours.
+            from django.db import connection
+            if connection.vendor == 'postgresql':
+                with connection.cursor() as cur:
+                    cur.execute("SET LOCAL lock_timeout = '5s'")
         adapter.refs = RefBook(store, adapter_cls.system)
         adapter.run()
         adapter.refs.flush()

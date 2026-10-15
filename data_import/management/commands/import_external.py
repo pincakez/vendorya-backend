@@ -5,11 +5,15 @@
 
 DRY RUN IS THE DEFAULT: the whole import runs inside a transaction that is rolled back, so the report
 is exactly what --commit would do, and nothing is saved. --commit saves everything or nothing.
+RUN DRY RUNS (and commits) OUTSIDE OPENING HOURS: a dry run really writes before rolling back, so it holds
+the same row locks as a commit for the whole run (it gives up after 5 s waiting for a lock instead of
+making the till wait).
 
 Re-runnable: every imported row carries a hidden tag (system + the source's own key). Running again
 with a fresher export UPDATES what the last run made — it never adds a second copy. Products the shop
-typed by hand earlier are found by SKU2 = the source's item code and LINKED (prices follow the source,
-the shop's name / category / barcode stay). Stock is never touched.
+typed by hand earlier are found by SKU2 (or barcode) = the source's item code and LINKED when the names
+match (or with --link-by-code): prices follow the source, the shop's name / category / barcode stay. An
+empty price in the source never overwrites a price. Stock is never touched.
 """
 from django.core.management.base import BaseCommand, CommandError
 
@@ -35,7 +39,13 @@ class Command(BaseCommand):
         parser.add_argument('system', choices=sorted(ADAPTERS), help='the source system')
         parser.add_argument('--store', required=True, help='the shop: its store code or its id')
         parser.add_argument('--dir', required=True, help='folder with the exported CSV files')
-        parser.add_argument('--commit', action='store_true', help='SAVE (default is a dry run that saves nothing)')
+        parser.add_argument('--commit', action='store_true',
+                            help='SAVE (default is a dry run that saves nothing). Run dry runs and commits '
+                                 'outside opening hours — the run locks the rows it touches until it ends.')
+        parser.add_argument('--link-by-code', action='store_true',
+                            help='link a product the shop typed by hand to the source item with the same code '
+                                 '(SKU2 or barcode) EVEN WHEN THE NAMES DIFFER. Without it such rows are skipped '
+                                 'and listed in the report, so a code typed on the wrong product is caught.')
         parser.add_argument('--balances', choices=['none', 'opening'], default='none', help=BALANCES_HELP)
         parser.add_argument('--balance-sign', choices=['as-is', 'flip'], default='as-is',
                             help='with --balances=opening: "flip" if the source stores what a customer owes '
@@ -66,6 +76,7 @@ class Command(BaseCommand):
             'balances': o['balances'], 'balance_sign': o['balance_sign'], 'type_column': o['type_column'],
             'party_key': o['party_key'], 'supplier_codes': _codes(o['supplier_codes']),
             'customer_codes': _codes(o['customer_codes']), 'default_supplier': o['default_supplier'],
+            'link_by_code': o['link_by_code'],
         }
         report = run_import(get_adapter(o['system']), store, o['dir'], options, commit=o['commit'])
         self.stdout.write(report.render(dry_run=not o['commit']))

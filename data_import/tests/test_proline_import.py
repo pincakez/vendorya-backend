@@ -1,5 +1,6 @@
 """Import from another system — the Proline adapter, part A (master data), on fake CSVs in Proline's
 exact column layout (`fixtures/proline/`, 5–15 rows each, with broken rows on purpose)."""
+import csv
 import os
 import shutil
 import tempfile
@@ -68,7 +69,31 @@ class _Base(TestCase):
         self.other, _ = make_shop('200', 'Shop B')
 
     def run_import(self, commit, folder=FIXTURES, **options):
+        # The hand-made laptop in make_shop has its own name, so most tests link it by code on purpose;
+        # ReviewFixTests check what happens without the flag.
+        options.setdefault('link_by_code', True)
         return run_import(ProlineAdapter, self.store, folder, options, commit=commit)
+
+    def folder_with(self, tables, extra=None):
+        """A copy of some fixture tables, plus extra tables written here: {name: [{col: value}, …]}."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        for t in tables:
+            shutil.copy(os.path.join(FIXTURES, f'{t}.csv'), tmp)
+        for name, rows in (extra or {}).items():
+            cols = list(rows[0])
+            with open(os.path.join(tmp, f'{name}.csv'), 'w', encoding='utf-8-sig', newline='') as fh:
+                w = csv.writer(fh)
+                w.writerow(cols)
+                w.writerows([[r.get(c, '') for c in cols] for r in rows])
+        return tmp
+
+    def append_item(self, folder, **cells):
+        path = os.path.join(folder, 'tb_Item.csv')
+        with open(path, encoding='utf-8-sig', newline='') as fh:
+            header = next(csv.reader(fh))
+        with open(path, 'a', encoding='utf-8', newline='') as fh:
+            csv.writer(fh).writerow([cells.get(c, '') for c in header])
 
     def changed_copy(self, edit):
         """A copy of the fixtures with one cell changed — a 'fresher export'."""
@@ -299,6 +324,84 @@ class SearchIndexTests(_Base):
             up.assert_not_called()
             self.assertEqual(sync.call_count, 1)
             self.assertEqual(len(sync.call_args[0][0]), 11)    # 10 new + the linked laptop whose prices changed
+
+
+class ReviewFixTests(_Base):
+    """surgeon-reviewer: a code on the wrong product, empty prices, the party key column."""
+    ALL = ['tb_Group1', 'tb_Group2', 'tb_Cust', 'tb_Item', 'tb_InvoIn', 'tb_InvoInBack', 'tb_InvoOut']
+
+    # 1 ── linking a hand-made product by its code
+    def test_code_on_a_differently_named_product_is_not_linked(self):
+        report = self.run_import(commit=True, link_by_code=False)
+        v = ProductVariant.objects.get(pk=self.hand_variant.pk)
+        self.assertEqual(v.sell_price, Decimal('23000'))                     # not touched
+        self.assertFalse(ExternalRef.objects.filter(store=self.store, kind='product',
+                                                    external_key__in=['12513', '12514']).exists())
+        self.assertEqual(ProductVariant.objects.filter(store=self.store, sku2='12513').count(), 1)
+        self.assertEqual(report.counts('products')['skip'], 5)
+        text = report.render(dry_run=False)
+        self.assertIn('not linked: 12513 "لابتوب لينوفو ثينك باد" ≠ "Lenovo ThinkPad T14 (typed by hand)"', text)
+        self.assertIn('not linked: 12514', text)
+
+    def test_same_name_links_without_the_flag(self):
+        Product.objects.filter(pk=self.hand_variant.product_id).update(name='  لابتوب لينوفو   ثينك باد ')
+        report = self.run_import(commit=True, link_by_code=False)
+        self.assertEqual(report.counts('products')['link'], 1)               # 12513 (same name, spacing ignored)
+        self.assertEqual(ProductVariant.objects.get(pk=self.hand_variant.pk).sell_price, Decimal('24000'))
+        self.assertIn('not linked: 12514', report.render(dry_run=False))     # "… - وحدة 2" is another name
+
+    def test_an_imported_products_auto_sku2_is_never_linked_by_code(self):
+        StoreSettings.objects.filter(store=self.store).update(sku2_auto_new=True)
+        self.run_import(commit=True)
+        bag = ProductVariant.objects.get(pk=ExternalRef.objects.get(
+            store=self.store, kind='product', external_key='AB-77').object_id)
+        self.assertTrue(bag.sku2)                                             # numbered by the shop
+        folder = self.folder_with(self.ALL)
+        self.append_item(folder, ItemCode=bag.sku2, ItemName='منتج جديد', PriceIn='5', PriceOut1='9', SourceID='5')
+        report = self.run_import(commit=True, folder=folder)
+        self.assertEqual(report.counts('products')['add'], 1)
+        new = ProductVariant.objects.get(pk=ExternalRef.objects.get(
+            store=self.store, kind='product', external_key=bag.sku2).object_id)
+        self.assertNotEqual(new.pk, bag.pk)
+        self.assertNotEqual(new.sku2, bag.sku2)            # the shop may number it afresh, never with the taken code
+        bag.refresh_from_db()
+        self.assertEqual((bag.product.name, bag.sell_price), ('حقيبة لابتوب', Decimal('350')))
+        self.assertIn(f'without SKU2: {bag.sku2} "منتج جديد"', report.render(dry_run=False))
+
+    # 2 ── an empty / zero source price never overwrites a live one; money to 2 decimals
+    def test_empty_or_zero_price_keeps_the_price_and_money_is_rounded(self):
+        self.run_import(commit=True)
+        folder = self.changed_copy(('tb_Item.csv', ',150,250,', ',,0,'))     # 12600: cost empty, sell 0
+        with open(os.path.join(folder, 'tb_Item.csv'), encoding='utf-8-sig') as fh:
+            data = fh.read().replace(',300,450,', ',300.456,450.555,', 1)     # 12601
+        with open(os.path.join(folder, 'tb_Item.csv'), 'w', encoding='utf-8-sig') as fh:
+            fh.write(data)
+        report = self.run_import(commit=True, folder=folder)
+        mouse = ProductVariant.objects.get(store=self.store, sku2='12600')
+        self.assertEqual((mouse.cost_price, mouse.sell_price), (Decimal('150'), Decimal('250')))
+        charger = ProductVariant.objects.get(store=self.store, sku2='12601')
+        self.assertEqual((charger.cost_price, charger.sell_price), (Decimal('300.46'), Decimal('450.56')))
+        self.assertEqual(report.counts('products')['update'], 1)
+        # the linked hand-made laptop has no MinQty in 12514's row etc. — nothing drifts on a 3rd run
+        self.assertEqual(self.run_import(commit=True, folder=folder).counts('products')['update'], 0)
+
+    # 3 ── the customer/supplier key column is fixed after the first import
+    def test_party_key_column_is_not_reguessed_by_a_fresher_export(self):
+        first = self.run_import(commit=True, folder=self.folder_with(['tb_Group1', 'tb_Group2', 'tb_Cust', 'tb_Item']))
+        self.assertTrue(first.committed)
+        self.assertTrue(ExternalRef.objects.filter(store=self.store, kind='customer',
+                                                   external_key__startswith='ID:').exists())
+        # now invoices point at AccountCode-looking codes: a fresh guess would pick AccountCode
+        folder = self.folder_with(['tb_Group1', 'tb_Group2', 'tb_Cust', 'tb_Item'], {
+            'tb_InvoIn': [{'ComCode': c} for c in ('C2', 'C5', 'C6')],
+            'tb_InvoOut': [{'ComCode': c} for c in ('C1', 'C3', 'C6', 'C8', 'C9')],
+        })
+        n_cust, n_sup = Customer.objects.filter(store=self.store).count(), Supplier.objects.filter(store=self.store).count()
+        report = self.run_import(commit=True, folder=folder)
+        self.assertEqual((report.counts('customers')['add'], report.counts('suppliers')['add']), (0, 0))
+        self.assertEqual(Customer.objects.filter(store=self.store).count(), n_cust)
+        self.assertEqual(Supplier.objects.filter(store=self.store).count(), n_sup)
+        self.assertIn('tb_Cust key column: ID (kept from the first import', report.render(dry_run=False))
 
 
 class HelperTests(TestCase):

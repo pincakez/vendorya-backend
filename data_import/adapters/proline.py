@@ -22,6 +22,7 @@ The customer / supplier split — Proline has ONE table (tb_Cust) for both. Per 
 The report prints how many went each way and why, plus the values seen in the type columns.
 """
 from collections import Counter
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
@@ -93,6 +94,10 @@ BALANCE_HELP = (
     "--balances=opening ONLY if the history will NOT be imported (or the opening balance is cleared first).")
 
 
+def _money(value):
+    return None if value is None else value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
 class ProlineAdapter(Adapter):
     system = 'proline'
 
@@ -148,10 +153,29 @@ class ProlineAdapter(Adapter):
         ids = {norm_key(x.get('ID')) for x in rows} - {''}
         accs = {norm_key(x.get('AccountCode')) for x in rows} - {''}
         hit_id, hit_acc = len(used & ids), len(used & accs)
-        key_col = o.get('party_key') or ('AccountCode' if hit_acc > hit_id else 'ID')
+        guess = 'AccountCode' if hit_acc > hit_id else 'ID'
+        # Once a shop has party tags, their column is FIXED (it is written into each tag key, "ID:123"):
+        # a fresher export with different invoices must never re-guess it and add every party again.
+        stored = {k.split(':', 1)[0] for k in ExternalRef.all_objects.filter(
+            store=self.store, system=self.system, kind__in=('customer', 'supplier'))
+            .values_list('external_key', flat=True)}
+        explicit = o.get('party_key')
+        if explicit:
+            key_col, why_col = explicit, '--party-key'
+            if stored and explicit not in stored:
+                r.warnings.append(f'--party-key {explicit}: this shop\'s earlier import keyed customers/suppliers by '
+                                  f'{", ".join(sorted(stored))} — those rows will NOT be found again (new copies).')
+        elif len(stored) > 1:
+            key_col, why_col = guess, 'guessed'
+            r.blockers.append(f'Earlier imports keyed customers/suppliers by {" and ".join(sorted(stored))} — '
+                              f'give --party-key to choose one.')
+        elif stored:
+            key_col, why_col = stored.pop(), 'kept from the first import'
+        else:
+            key_col, why_col = guess, 'guessed from the invoices'
         self.party_key = key_col
-        info.line(f'tb_Cust key column: {key_col} (codes used in invoices/items: {len(used)} · found by ID '
-                  f'{hit_id} · by AccountCode {hit_acc})')
+        info.line(f'tb_Cust key column: {key_col} ({why_col} · codes used in invoices/items: {len(used)} · '
+                  f'found by ID {hit_id} · by AccountCode {hit_acc})')
         keys = ids if key_col == 'ID' else accs
         orphans = used - keys
         if orphans:
@@ -255,6 +279,9 @@ class ProlineAdapter(Adapter):
             else:
                 info.line(f'up to {need} items use the default supplier '
                           f'{self.default_supplier.name} ({self.default_supplier.code_prefix})')
+
+    def _tag_key(self, key):
+        return f'{self.party_key}:{key}'
 
     @staticmethod
     def _classify(raw):
@@ -514,7 +541,7 @@ class ProlineAdapter(Adapter):
             values = {'name': v['name'], 'phone_number': v['phone'], 'email': v['email'], 'notes': v['notes'],
                       'city': v['city']}
             with self.row(sec, sample):
-                ref, obj = self.refs.target('supplier', p['key'], Supplier)
+                ref, obj = self.refs.target('supplier', self._tag_key(p['key']), Supplier)
                 if ref is not None:
                     if obj is None or obj.is_deleted:
                         sec.skip('deleted in Vendorya — left alone', sample)
@@ -532,7 +559,7 @@ class ProlineAdapter(Adapter):
                         changes = apply_fields(obj, values, LINKED)
                         if changes:
                             obj.save()
-                        self.refs.tag('supplier', p['key'], obj, LINKED)
+                        self.refs.tag('supplier', self._tag_key(p['key']), obj, LINKED)
                         sec.link(f'{sample} → existing supplier {obj.code_prefix}'
                                  + (f' ({describe(changes)})' if changes else ''))
                     else:
@@ -542,7 +569,7 @@ class ProlineAdapter(Adapter):
                             continue
                         obj = Supplier(store=self.store, code_prefix=code, prefix_locked=True, **values)
                         obj.save()
-                        self.refs.tag('supplier', p['key'], obj, CREATED)
+                        self.refs.tag('supplier', self._tag_key(p['key']), obj, CREATED)
                         sec.add(f'{sample} → code {code}')
                 self.sup_by_key[p['key']] = obj
 
@@ -592,7 +619,7 @@ class ProlineAdapter(Adapter):
                 elif has_value(x.get('Balance')):
                     sec.note('balance of a party that is customer AND supplier — not imported')
             with self.row(sec, sample):
-                ref, obj = self.refs.target('customer', p['key'], Customer)
+                ref, obj = self.refs.target('customer', self._tag_key(p['key']), Customer)
                 if ref is not None:
                     if obj is None or obj.is_deleted:
                         sec.skip('deleted in Vendorya — left alone', sample)
@@ -610,12 +637,12 @@ class ProlineAdapter(Adapter):
                 changes = apply_fields(obj, values, origin, always)
                 if verb == 'add':
                     obj.save()
-                    self.refs.tag('customer', p['key'], obj, CREATED)
+                    self.refs.tag('customer', self._tag_key(p['key']), obj, CREATED)
                     sec.add(sample)
                 elif verb == 'link':
                     if changes:
                         obj.save()
-                    self.refs.tag('customer', p['key'], obj, LINKED)
+                    self.refs.tag('customer', self._tag_key(p['key']), obj, LINKED)
                     sec.link(f'{sample} → existing customer "{obj.name}"'
                              + (f' ({describe(changes)})' if changes else ''))
                 elif changes:
@@ -687,8 +714,14 @@ class ProlineAdapter(Adapter):
                 sec.note('barcode longer than 100 characters — not imported')
                 barcode = ''
             prod_vals = {'name': it['name'], 'category': category}
-            var_vals = {'cost_price': pr['PriceIn'] or 0, 'sell_price': pr['PriceOut1'] or 0,
-                        'reorder_level': pr['MinQty'] or 0}
+            # An empty source value never overwrites a live one (same rule as the catalog re-import):
+            # None = "no value" → left out on update; sell price 0 = no price; money rounded to 2 decimals.
+            cost, sell = _money(pr['PriceIn']), _money(pr['PriceOut1'])
+            if sell == 0:
+                sell = None
+            if sell is None:
+                sec.note('PriceOut1 empty or 0 — a new product gets 0, an existing one keeps its price')
+            var_vals = {'cost_price': cost, 'sell_price': sell, 'reorder_level': pr['MinQty']}
             with self.row(sec, sample):
                 ref, v = self.refs.target('product', code, ProductVariant)
                 origin, verb = None, None
@@ -699,18 +732,33 @@ class ProlineAdapter(Adapter):
                     self.refs.touch(ref)
                     origin, verb = ref.origin, 'update'
                 else:
-                    cand = by_sku2.get(code) if it['sku2_ok'] else None
-                    if cand is not None and cand.id in created:
-                        sec.skip('SKU2 already belongs to another imported item', sample)
-                        continue
-                    if cand is not None and (cand.is_deleted or cand.product.is_deleted
-                                             or cand.product.source != Product.Source.STORE):
+                    cand, how = None, None
+                    owner = by_sku2.get(code) if it['sku2_ok'] else None
+                    if owner is not None and owner.id in created:
+                        # e.g. the shop auto-numbers SKU2 and an earlier import gave this number to another item
+                        sec.note('code already the SKU2 of another IMPORTED product — imported without SKU2')
+                        sec.line(f'without SKU2: {code} "{it["name"]}" — {code} is already the SKU2 of imported '
+                                 f'"{owner.product.name}" (SKU {owner.sku})')
+                    elif owner is not None and (owner.is_deleted or owner.product.is_deleted
+                                                or owner.product.source != Product.Source.STORE):
                         sec.note('SKU2 held by a deleted product — imported without SKU2')
-                        cand = None
+                    elif owner is not None:
+                        cand, how = owner, 'SKU2'
                     if cand is None and by_barcode.get(code) is not None and by_barcode[code].id not in created:
-                        cand = by_barcode[code]
-                        sec.note('item code is the BARCODE of a product typed by hand — linked to that product')
+                        cand, how = by_barcode[code], 'barcode'
                     if cand is not None:
+                        # A hand-made product is linked by its code only when it IS the same product (same name,
+                        # case + spacing ignored) or the owner says so (--link-by-code): a code typed on the
+                        # wrong product must not hand that product another item's prices.
+                        same = norm_name(cand.product.name) == norm_name(it['name'])
+                        if not (same or self.options.get('link_by_code')):
+                            sec.skip('code belongs to a different product — not linked (check it, or --link-by-code)',
+                                     sample)
+                            sec.line(f'not linked: {code} "{it["name"]}" ≠ "{cand.product.name}" '
+                                     f'(SKU {cand.sku}, its {how} is {code})')
+                            continue
+                        if how == 'barcode':
+                            sec.note('item code is the BARCODE of a product typed by hand — linked to that product')
                         v, origin, verb = cand, LINKED, 'link'
                 if verb is None:
                     supplier = self.sup_by_key.get(norm_key(x.get('SourceID'))) or self.default_supplier
@@ -719,7 +767,8 @@ class ProlineAdapter(Adapter):
                         continue
                     product = Product(store=self.store, name=it['name'], category=category, supplier=supplier)
                     product.save()
-                    v = ProductVariant(product=product, **var_vals)
+                    v = ProductVariant(product=product, **{f: val if val is not None else 0
+                                                           for f, val in var_vals.items()})
                     if it['sku2_ok'] and code not in by_sku2:
                         v.sku2 = code
                     if barcode and not barcode_owner(self.store, barcode):
@@ -730,6 +779,7 @@ class ProlineAdapter(Adapter):
                     if v.sku2:
                         by_sku2[v.sku2] = v
                     self.refs.tag('product', code, v, CREATED)
+                    created.add(v.id)      # never linked again by code, in this run or later
                     touched.add(product.pk)
                     sec.add(f'{sample} → SKU {v.sku}' + (f' · SKU2 {v.sku2}' if v.sku2 else '')
                             + (f' · {category.name}' if category else ''))
