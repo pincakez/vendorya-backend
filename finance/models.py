@@ -1015,8 +1015,13 @@ def handle_sale_stock(sender, instance, **kwargs):
                         stock = StockLevel.objects.select_for_update().filter(
                             variant=item.variant, branch=instance.branch
                         ).first()
+                        # s175 money pass: a shop that sells below zero, selling at a branch that never held the product,
+                        # had no row here → the sale took NO stock off. Make the row (a service has no stock — skipped).
+                        if stock is None and item.variant.product.product_type != 'SERVICE':
+                            stock, _ = StockLevel.objects.select_for_update().get_or_create(
+                                variant=item.variant, branch=instance.branch)
                         if stock:
-                            stock.quantity -= base_qty
+                            stock.quantity = Decimal(str(stock.quantity)) - base_qty
                             stock.save()
                             # Fire low-stock notification once per variant crossing
                             # its own reorder_level threshold.

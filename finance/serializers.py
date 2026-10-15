@@ -418,7 +418,10 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
         ]
         # purchase_number is writable: blank → auto-assigned in model.save();
         # a typed value is kept as-is.
-        read_only_fields = ['id', 'total_amount', 'created_at',
+        # s175 money pass: `status` moves only through the Receive button (it checks the supplier, locks and brings the
+        # stock in once) — an edit setting RECEIVED → DRAFT → Receive again brought the stock in twice. `paid_amount` is
+        # never typed either.
+        read_only_fields = ['id', 'total_amount', 'created_at', 'status', 'paid_amount',
                             'supplier_name', 'items', 'draft_items']
         extra_kwargs = {
             'supplier': {'required': False, 'allow_null': True},
@@ -875,6 +878,9 @@ class RefundInvoiceSerializer(serializers.ModelSerializer):
         store = validated_data.get('store')
         with transaction.atomic():
             if original is not None:
+                # s175 money pass: lock the sale BEFORE counting what is left to return — two returns of one sale at the
+                # same moment (double click, two tills) both passed the count and restocked / cancelled debt twice.
+                SalesInvoice.all_objects.select_for_update().filter(pk=original.pk).first()
                 self._validate_against_original(original, items_data)
                 self._validate_return_window(store, original)
             from inventory import serials as serial_engine

@@ -171,6 +171,11 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
             enforce_quota(self.request.user.store, 'invoices')   # a manager posting by edit uses the quota too (s166)
         was_posted = serializer.instance.status == SalesInvoice.Status.POSTED
         with transaction.atomic():
+            # s175 money pass: two edits posting / voiding the same sale at once both saw the old status, so the stock
+            # moved twice. Lock it; if another request changed it meanwhile, refuse (the screen reloads).
+            current = SalesInvoice.all_objects.select_for_update().get(pk=serializer.instance.pk)
+            if current.status != serializer.instance.status:
+                raise ValidationError({'detail': 'This sale was changed meanwhile — reload it.', 'code': 'sale_changed'})
             invoice = serializer.save()
             if was_posted and invoice.status == SalesInvoice.Status.VOID:
                 from .treasury_flows import reverse_sale   # TREASURY.md: the voided sale's money leaves its boxes
@@ -196,12 +201,15 @@ class SalesInvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def void(self, request, pk=None):
         invoice = self.get_object()
-        if invoice.status == SalesInvoice.Status.VOID:
-            return Response({'detail': 'Already voided.'}, status=status.HTTP_400_BAD_REQUEST)
-        self._guard_posted(invoice)
-        refuse_void_with_returns(invoice)
-        was_draft = invoice.status == SalesInvoice.Status.DRAFT
         with transaction.atomic():
+            # s175 money pass: lock the sale first, THEN check it — two voids at the same moment (double click, two
+            # screens) both saw POSTED and put the stock back + paid the money out twice; a return racing a void too.
+            invoice = SalesInvoice.all_objects.select_for_update().get(pk=invoice.pk)
+            if invoice.status == SalesInvoice.Status.VOID:
+                return Response({'detail': 'Already voided.'}, status=status.HTTP_400_BAD_REQUEST)
+            self._guard_posted(invoice)
+            refuse_void_with_returns(invoice)
+            was_draft = invoice.status == SalesInvoice.Status.DRAFT
             invoice.status = SalesInvoice.Status.VOID
             invoice.save()
             if not was_draft:
@@ -545,18 +553,21 @@ class PurchaseInvoiceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def receive(self, request, pk=None):
         invoice = self.get_object()
-        if invoice.status != PurchaseInvoice.Status.DRAFT:
-            return Response(
-                {'detail': 'Only DRAFT invoices can be received.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if not invoice.supplier_id:
-            return Response(
-                {'detail': 'A supplier must be assigned before receiving stock.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        invoice.status = PurchaseInvoice.Status.RECEIVED
-        invoice.save()
+        with transaction.atomic():
+            # s175 money pass: lock, then check — two Receive clicks at once both saw DRAFT and brought the stock in twice.
+            invoice = PurchaseInvoice.all_objects.select_for_update().get(pk=invoice.pk)
+            if invoice.status != PurchaseInvoice.Status.DRAFT:
+                return Response(
+                    {'detail': 'Only DRAFT invoices can be received.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not invoice.supplier_id:
+                return Response(
+                    {'detail': 'A supplier must be assigned before receiving stock.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            invoice.status = PurchaseInvoice.Status.RECEIVED
+            invoice.save()
         log_activity(
             request=request,
             action=f"Received Purchase {invoice.purchase_number or str(invoice.id)[:8]}",
