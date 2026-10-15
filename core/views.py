@@ -271,9 +271,17 @@ class StoreSettingsView(APIView):
     def patch(self, request):
         if not request.user.store:
             return _NO_STORE
+        from django.db import transaction
+        from treasury import ledger
         serializer = StoreSettingsSerializer(request.user.store.settings, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        with transaction.atomic():
+            settings_obj = serializer.save()
+            # TREASURY.md § 11: turning the Treasury on makes the shop's boxes (owner + shop part, one drawer per
+            # branch, the "not sorted yet" box) — idempotent, so a later save also gives new branches their drawer.
+            # Turning it off only hides the Treasury; nothing is deleted.
+            if serializer.validated_data.get('treasury_enabled') and settings_obj.treasury_enabled:
+                ledger.setup(request.user.store, user=request.user)
         return Response(serializer.data)
 
 

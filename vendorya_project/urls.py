@@ -28,6 +28,7 @@ urlpatterns = [
     path('api/inventory/', include('inventory.urls')),
     path('api/finance/',   include('finance.urls')),
     path('api/reports/',   include('reports.urls')),
+    path('api/treasury/',  include('treasury.urls')),
 
     # Super-admin API (sudo-only)
     path('api/admin/',         include('core.api_admin_urls')),

@@ -27,6 +27,7 @@ from finance.models import (
     Expense, RefundInvoice, RefundItem, WorkShift, CustomerReceipt,
     with_refund_totals, invoice_outstanding,
 )
+from treasury.models import OtherIncome
 from inventory.models import (
     StockAdjustment, ProductVariant, StockLevel,
     StorageLocation, StorageStock, StorageMovement,
@@ -439,8 +440,17 @@ class ProfitLossView(_StoreMixin, APIView):
             .values('period')
             .annotate(expenses=Coalesce(Sum('amount'), Value(ZERO), output_field=DEC))
         )
+        # Other income (Treasury, TREASURY.md § 4.4): money in that isn't a sale — live rows by their own date.
+        # Transfers between boxes never appear here (they are neither income nor expense).
+        other_income_periods = (
+            OtherIncome.objects.filter(store=store, is_deleted=False, date__gte=df, date__lte=dt)
+            .annotate(period=_trunc(g, 'date'))
+            .values('period')
+            .annotate(other_income=Coalesce(Sum('amount'), Value(ZERO), output_field=DEC))
+        )
         periods = defaultdict(lambda: {'revenue': ZERO, 'cogs': ZERO, 'expenses': ZERO, 'returns': ZERO,
-                                       'returns_ex_tax': ZERO, 'restock_fees': ZERO, 'cogs_returned': ZERO})
+                                       'returns_ex_tax': ZERO, 'restock_fees': ZERO, 'cogs_returned': ZERO,
+                                       'other_income': ZERO})
 
         def _key(p):
             return p.isoformat() if p else None
@@ -450,6 +460,8 @@ class ProfitLossView(_StoreMixin, APIView):
             periods[_key(r['period'])]['cogs'] += Decimal(r['cogs'] or 0)
         for r in expense_periods:
             periods[_key(r['period'])]['expenses'] += Decimal(r['expenses'] or 0)
+        for r in other_income_periods:
+            periods[_key(r['period'])]['other_income'] += Decimal(r['other_income'] or 0)
         # Returns (s165, §WALK-S163 B2 — standard accounting): counted WITHOUT tax (revenue is ex-tax too),
         # less the restocking fee the shop keeps (fee = income); the cost of goods put back on the shelf
         # comes back out of COGS. So 'returns' = net returns and 'cogs' = net COGS, and the screen's
@@ -463,12 +475,13 @@ class ProfitLossView(_StoreMixin, APIView):
             v['returns'] = v['returns_ex_tax'] - v['restock_fees']
             v['cogs'] -= v['cogs_returned']
 
-        keys = ('revenue', 'cogs', 'expenses', 'returns', 'returns_ex_tax', 'restock_fees', 'cogs_returned')
+        keys = ('revenue', 'cogs', 'expenses', 'returns', 'returns_ex_tax', 'restock_fees', 'cogs_returned',
+                'other_income')
         rows = []
         tot = {k: ZERO for k in keys + ('net',)}
         for period in sorted(k for k in periods if k is not None):
             v = periods[period]
-            net = v['revenue'] - v['cogs'] - v['expenses'] - v['returns']
+            net = v['revenue'] - v['cogs'] - v['expenses'] - v['returns'] + v['other_income']
             for k in keys:
                 tot[k] += v[k]
             tot['net'] += net
@@ -483,8 +496,8 @@ class ProfitLossView(_StoreMixin, APIView):
             'gross_profit': _q(tot['revenue'] - tot['returns'] - tot['cogs']),
             'net': _q(tot['net']),
         }
-        # Reconciliation guard: revenue - cogs - expenses - returns must equal net.
-        check = tot['revenue'] - tot['cogs'] - tot['expenses'] - tot['returns']
+        # Reconciliation guard: revenue - cogs - expenses - returns + other_income must equal net.
+        check = tot['revenue'] - tot['cogs'] - tot['expenses'] - tot['returns'] + tot['other_income']
         totals['reconciles'] = (check == tot['net'])
         return Response({'granularity': g, 'date_from': df, 'date_to': dt,
                          'rows': rows, 'totals': totals})
