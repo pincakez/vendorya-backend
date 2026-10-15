@@ -53,6 +53,90 @@ def _log(request, action, details):
                  details={'area': 'treasury', **details})
 
 
+def check_can_close(box):
+    """Closing ≠ deleting — but only an empty box, never the "not sorted yet" box, never a till drawer the
+    shift flows rely on (the branch's default drawer — cash with no shift lands there — or one with an open shift).
+    Shared by the shop's Treasury and the owner level (a box of any part; the checks follow the box, not the login)."""
+    from finance.models import PaymentMethod, WorkShift
+    if box.system_role == MoneyBox.Role.UNSORTED:
+        raise TreasuryError('box_system', 'The "not sorted yet" box cannot be closed.')
+    if box.is_default_drawer:
+        raise TreasuryError('box_default_drawer', "A branch's main till drawer cannot be closed.")
+    if WorkShift.all_objects.filter(drawer=box, status=WorkShift.Status.OPEN).exists():
+        raise TreasuryError('drawer_busy', 'A shift is open on this drawer — close the shift first.')
+    # A payment method still sends its money here → the next card/e-wallet sale would be refused (box_closed).
+    users = list(PaymentMethod.all_objects.filter(lands_in=box, is_deleted=False).values_list('name', flat=True))
+    if users:
+        raise TreasuryError('box_in_use', 'A payment method still sends its money to this box — choose another box '
+                            'for it first.', methods=', '.join(users))
+    ledger._lock(box)
+    bal = ledger.balance(box)
+    if bal != 0:
+        raise TreasuryError('box_not_empty', 'Only an empty box can be closed — move its money out first.',
+                            balance=money(bal))
+
+
+def statement_dates(params):
+    """`date_from` / `date_to` (YYYY-MM-DD, both optional) → (date_from, date_to, error). `error` is the 400 body."""
+    dates = {}
+    for key in ('date_from', 'date_to'):
+        raw = (params.get(key) or '').strip()
+        try:
+            dates[key] = parse_date(raw) if raw else None
+        except ValueError:   # well-formed but impossible, e.g. 2026-02-31
+            dates[key] = None
+        if raw and dates[key] is None:
+            return None, None, {key: 'Use a date like 2026-01-31.'}
+    df, dt = dates['date_from'], dates['date_to']
+    if df and dt and df > dt:
+        return None, None, {'date_to': 'The end date is before the start date.'}
+    return df, dt, None
+
+
+# What a statement line may point at (one query for the whole statement).
+STATEMENT_RELATED = ('created_by', 'payment__invoice', 'customer_receipt__customer', 'refund',
+                     'supplier_payment__supplier', 'expense__category', 'other_income__category', 'shift__user',
+                     'reverses')
+
+
+def statement_answer(lines_qs, df, dt, box_id, make_line, counterparts):
+    """THE statement maths (shop Treasury + owner level): the lines of `lines_qs` oldest first, each with its running
+    balance; `opening_balance` = every line before date_from (local day). No dates = all. `make_line(m, running, names)`
+    shapes one line; `counterparts(moves, box_id)` names the other box of each transfer-like pair."""
+    tz = timezone.get_current_timezone()
+    opening = ZERO
+    if df:
+        start = timezone.make_aware(datetime.combine(df, time.min), tz)
+        opening = lines_qs.filter(at__lt=start).aggregate(s=Sum('amount'))['s'] or ZERO
+        lines_qs = lines_qs.filter(at__gte=start)
+    if dt:
+        lines_qs = lines_qs.filter(at__lt=timezone.make_aware(datetime.combine(dt + timedelta(days=1), time.min), tz))
+    moves = list(
+        lines_qs.select_related(*STATEMENT_RELATED)
+        .annotate(is_reversed=Exists(MoneyMove.all_objects.filter(reverses=OuterRef('pk'))))
+        .order_by('at', 'created_at', 'id'))
+    names = counterparts(moves, box_id)
+
+    running = opening
+    total_in = total_out = ZERO
+    lines = []
+    for m in moves:
+        running += m.amount
+        if m.amount > 0:
+            total_in += m.amount
+        else:
+            total_out -= m.amount
+        lines.append(make_line(m, running, names))
+    return {
+        'date_from': df, 'date_to': dt,
+        'opening_balance': money(opening),
+        'lines': lines,
+        'total_in': money(total_in),      # money in (positive)
+        'total_out': money(total_out),    # money out (positive) — closing = opening + in − out
+        'closing_balance': money(running),
+    }
+
+
 class TreasuryMixin:
     """Shared gate for every Treasury endpoint: role (role_map) → a shop → the switch on. Maps TreasuryError → 400."""
     permission_classes = [IsAuthenticated, RoleScopedPermission]
@@ -131,86 +215,21 @@ class MoneyBoxViewSet(TreasuryMixin, viewsets.ModelViewSet):
                 if not ser.validated_data['name'] and box.system_role != MoneyBox.Role.UNSORTED:
                     raise ValidationError({'name': 'Give the box a name.'})
             if box.is_active and ser.validated_data.get('is_active') is False:
-                self._check_can_close(box)
+                check_can_close(box)
             ser.save()
         return Response(self.get_serializer(self.get_queryset().get(pk=box.pk)).data)
-
-    def _check_can_close(self, box):
-        """Closing ≠ deleting — but only an empty box, never the "not sorted yet" box, never a till drawer the
-        shift flows rely on (the branch's default drawer — cash with no shift lands there — or one with an open shift)."""
-        from finance.models import WorkShift
-        if box.system_role == MoneyBox.Role.UNSORTED:
-            raise TreasuryError('box_system', 'The "not sorted yet" box cannot be closed.')
-        if box.is_default_drawer:
-            raise TreasuryError('box_default_drawer', "A branch's main till drawer cannot be closed.")
-        if WorkShift.objects.filter(store=self.store, drawer=box, status=WorkShift.Status.OPEN).exists():
-            raise TreasuryError('drawer_busy', 'A shift is open on this drawer — close the shift first.')
-        # A payment method still sends its money here → the next card/e-wallet sale would be refused (box_closed).
-        from finance.models import PaymentMethod
-        users = list(PaymentMethod.objects.filter(store=self.store, lands_in=box).values_list('name', flat=True))
-        if users:
-            raise TreasuryError('box_in_use', 'A payment method still sends its money to this box — choose another box '
-                                'for it first.', methods=', '.join(users))
-        ledger._lock(box)
-        bal = ledger.balance(box)
-        if bal != 0:
-            raise TreasuryError('box_not_empty', 'Only an empty box can be closed — move its money out first.',
-                                balance=money(bal))
 
     @action(detail=True, methods=['get'])
     def statement(self, request, pk=None):
         """GET boxes/{id}/statement/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD — the box's lines oldest first, each with
         its running balance. `opening_balance` = every line before date_from (shop's local day). No dates = all."""
         box = self.get_object()
-        dates = {}
-        for key in ('date_from', 'date_to'):
-            raw = (request.query_params.get(key) or '').strip()
-            try:
-                dates[key] = parse_date(raw) if raw else None
-            except ValueError:   # well-formed but impossible, e.g. 2026-02-31
-                dates[key] = None
-            if raw and dates[key] is None:
-                return Response({key: 'Use a date like 2026-01-31.'}, status=status.HTTP_400_BAD_REQUEST)
-        df, dt = dates['date_from'], dates['date_to']
-        if df and dt and df > dt:
-            return Response({'date_to': 'The end date is before the start date.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        tz = timezone.get_current_timezone()
+        df, dt, error = statement_dates(request.query_params)
+        if error:
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
         lines_qs = MoneyMove.objects.filter(store=self.store, box=box)
-        opening = ZERO
-        if df:
-            start = timezone.make_aware(datetime.combine(df, time.min), tz)
-            opening = lines_qs.filter(at__lt=start).aggregate(s=Sum('amount'))['s'] or ZERO
-            lines_qs = lines_qs.filter(at__gte=start)
-        if dt:
-            lines_qs = lines_qs.filter(at__lt=timezone.make_aware(datetime.combine(dt + timedelta(days=1), time.min), tz))
-        moves = list(
-            lines_qs.select_related('created_by', 'payment__invoice', 'customer_receipt__customer', 'refund',
-                                    'supplier_payment__supplier', 'expense__category', 'other_income__category',
-                                    'shift__user', 'reverses')
-            .annotate(is_reversed=Exists(MoneyMove.all_objects.filter(reverses=OuterRef('pk'))))
-            .order_by('at', 'created_at', 'id'))
-        names = transfer_counterparts(moves, box.id)
-
-        running = opening
-        total_in = total_out = ZERO
-        lines = []
-        for m in moves:
-            running += m.amount
-            if m.amount > 0:
-                total_in += m.amount
-            else:
-                total_out -= m.amount
-            lines.append(move_line(m, running, names))
-        return Response({
-            'box': self.get_serializer(box).data,
-            'date_from': df, 'date_to': dt,
-            'opening_balance': money(opening),
-            'lines': lines,
-            'total_in': money(total_in),      # money in (positive)
-            'total_out': money(total_out),    # money out (positive) — closing = opening + in − out
-            'closing_balance': money(running),
-        })
+        return Response({'box': self.get_serializer(box).data,
+                         **statement_answer(lines_qs, df, dt, box.id, move_line, transfer_counterparts)})
 
     @action(detail=True, methods=['post'], url_path='count')
     def count_box(self, request, pk=None):

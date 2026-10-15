@@ -23,6 +23,7 @@ Wave 2 — the owner level (TREASURY.md § 12), behind the second switch:
   owner_level_on(store) · owner_for_user(user) · setup_owner_level(store) · personal_part(owner) · owner_parts(owner) ·
   owner_boxes(owner) · move_between(src, dst, amount) (transfer / owner draw / put in — kinds from the two parts) ·
   loan_open / loan_more / loan_pay / loan_owed · amana_receive / amana_more / amana_return / amana_held / amanat_total ·
+  entry_create / entry_delete (business / personal income + spending) ·
   partner_put_in / partner_pay / partner_account · check_shares · part_profit · settlement_preview / settle / cancel_settlement
 """
 import uuid
@@ -438,6 +439,45 @@ def amana_return(amana, amount, box, *, user=None, note='', at=None):
     line = post(box, -amount, MoneyMove.Kind.AMANA_OUT, user=user, note=note, at=at, amana=amana)
     _sync_closed(amana, amana_held)
     return line
+
+
+# ── income / spending of a business or of personal money (PartEntry) ─────────────────────────────────────────
+ENTRY_PARTS = {OwnerPart.Kind.BUSINESS, OwnerPart.Kind.PERSONAL}
+
+
+@transaction.atomic
+def entry_create(part, direction, amount, box, *, user=None, category='', date=None, description='',
+                 owner_only=False):
+    """A PartEntry + its line, together. IN → OTHER_INCOME_IN, OUT → EXPENSE_OUT (the floor holds). A shop keeps using
+    its own expenses / other income; `owner_only` only means something in a business (partners don't carry it)."""
+    amount = _pos(amount)
+    if part.kind not in ENTRY_PARTS:
+        raise TreasuryError('entries_not_for_shop', 'A shop records its income and expenses in the shop itself.')
+    if direction not in PartEntry.Direction.values:
+        raise TreasuryError('bad_direction', 'Choose income or spending.')
+    _check_box_in_part(box, part)
+    entry = PartEntry.objects.create(owner=part.owner, part=part, direction=direction,
+                                     category=(category or '').strip(), amount=amount,
+                                     date=date or timezone.localdate(), box=box, description=description or '',
+                                     owner_only=bool(owner_only) and part.kind == OwnerPart.Kind.BUSINESS,
+                                     created_by=user)
+    if direction == PartEntry.Direction.IN:
+        post(box, amount, MoneyMove.Kind.OTHER_INCOME_IN, user=user, note=entry.description, part_entry=entry)
+    else:
+        post(box, -amount, MoneyMove.Kind.EXPENSE_OUT, user=user, note=entry.description, part_entry=entry)
+    return entry
+
+
+@transaction.atomic
+def entry_delete(entry, *, user=None, reason=''):
+    """Soft-delete the entry + reverse its line (refused — nothing changes — when income already left a cash box)."""
+    entry = PartEntry.objects.select_for_update().get(pk=entry.pk)
+    reason = (reason or '').strip() or 'Entry deleted'
+    for line in (MoneyMove.all_objects.filter(part_entry=entry, reversed_by__isnull=True)
+                 .exclude(kind=MoneyMove.Kind.REVERSAL)):
+        reverse(line, user=user, reason=reason)
+    entry.delete()   # soft
+    return entry
 
 
 # ── partners ──────────────────────────────────────────────────────────────────────────────────────────────────

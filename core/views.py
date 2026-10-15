@@ -266,7 +266,16 @@ class StoreSettingsView(APIView):
         if not IsManagerOrAbove().has_permission(request, self):
             for f in self.MANAGER_ONLY_FIELDS:
                 data.pop(f, None)
-        return Response(data)
+        return Response(self._with_owner_flag(request, data))
+
+    @staticmethod
+    def _with_owner_flag(request, data):
+        """TREASURY.md § 12.3: read-only `treasury_is_owner` — "My money" shows only to the person (owner level on AND
+        this login IS the owner)."""
+        from treasury import ledger
+        data['treasury_is_owner'] = bool(ledger.owner_level_on(request.user.store)
+                                         and ledger.owner_for_user(request.user) is not None)
+        return data
 
     def patch(self, request):
         if not request.user.store:
@@ -306,7 +315,7 @@ class StoreSettingsView(APIView):
             # …and the owner level makes the owner's ONE personal part (idempotent). Off only hides it; nothing deleted.
             if settings_obj.treasury_enabled and settings_obj.treasury_owner_level:
                 ledger.setup_owner_level(request.user.store)
-        return Response(serializer.data)
+        return Response(self._with_owner_flag(request, dict(serializer.data)))
 
 
 class CurrencyViewSet(viewsets.ModelViewSet):
