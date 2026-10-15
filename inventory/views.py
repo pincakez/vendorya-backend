@@ -1025,12 +1025,15 @@ def supplier_account_sources(store):
     purchase isn't a liability yet (matches the AP-aging report); soft-deleted rows don't count.
     s171: + returns to the supplier (POSTED only) — each takes `total − refund_amount` off the account (the money
     handed back is the part that did NOT become credit). No supplier opening balance yet — add it HERE when built.
-    Also used by the A/P aging report (reports.views.APAgingView)."""
+    Also used by the A/P aging report (reports.views.APAgingView).
+    PROLINE-IMPORT-B.md: purchases and returns IMPORTED from another system (`source_number` set) were settled there —
+    they stay out of the account (the account ignores paid_amount); the debt at switch-over is an opening figure."""
     from finance.models import PurchaseInvoice, SupplierPayment, PurchaseReturn
     purchases = PurchaseInvoice.objects.filter(
-        store=store, status=PurchaseInvoice.Status.RECEIVED, is_deleted=False)
+        store=store, status=PurchaseInvoice.Status.RECEIVED, is_deleted=False, source_number='')
     payments = SupplierPayment.objects.filter(store=store, is_deleted=False)
-    returns = PurchaseReturn.objects.filter(store=store, status=PurchaseReturn.Status.POSTED, is_deleted=False)
+    returns = PurchaseReturn.objects.filter(store=store, status=PurchaseReturn.Status.POSTED, is_deleted=False,
+                                            source_number='')
     return purchases, payments, returns
 
 

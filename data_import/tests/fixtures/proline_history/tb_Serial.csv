@@ -1,0 +1,11 @@
+﻿InvoNo,InvoDate,StoreState,ItemCode,ItemName,Serial,InvoType,SerialID,FormType,sIn,sOut,StoreCode,ItemService
+1,2023-12-01 09:00:00,,12511,,SN-A1,In,0,purchase,,,1,NO
+1,2024-01-10 10:00:00,,12511,,sn-a1,Out,0,sales,,,1,NO
+1,2023-12-01 09:00:00,,12511,,SN-A2,In,0,purchase,,,1,NO
+1,2023-12-01 09:00:00,,12511,,SN-A4,In,0,purchase,,,1,NO
+1,2024-01-10 10:00:00,,12511,,SN-A4,Out,0,sales,,,1,NO
+6,2024-02-10 15:00:00,,12511,,SN-A4,OutBack,0,sales,,,1,NO
+5,2024-01-14 14:00:00,,12606,,SN-B1,Out,0,sales,,,1,NO
+70,2024-03-01 10:00:00,دخول الصيانة,12607,,77,InServ,0,service,,,1,NO
+70,2024-03-04 10:00:00,خروج من الصيانة,12607,,77,OutServ,0,service,,,1,NO
+71,2024-03-05 10:00:00,,12607,,78,Xyz,0,other,,,1,NO

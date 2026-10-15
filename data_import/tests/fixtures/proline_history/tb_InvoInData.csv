@@ -1,0 +1,4 @@
+﻿InvoNo,Date,SN,ComCode,ComName,ItemCode,ItemName,Unit,Qty,Price,Total,Group1Code,Group2Code,SourceCode,Serial,ExDate,ExDateName,UserAdded,Motor,StoreCode,StoreName,BranshCode,BranshName,Group0Code,SerialID,MotorID,Note,PaymentTypeAr,RefCode,RefName,PriceBefore,Unit2,Qty2
+1,2023-12-01 09:00:00,,2,,12511,,بالقطعة,2,15000.0000,30000.0,,,,NO,,,,,1,,,,,,,,,,,15000.0000,,
+2,2023-12-02 09:00:00,,,,12600,,بالقطعة,10,150.0000,1500.0,,,,NO,,,,,1,,,,,,,,,,,150.0000,,
+3,2023-12-03 09:00:00,,5,,12601,,بالقطعة,5,300.0000,1500.0,,,,NO,,,,,1,,,,,,,,,,,300.0000,,

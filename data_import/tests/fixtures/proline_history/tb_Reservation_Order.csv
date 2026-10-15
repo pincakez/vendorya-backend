@@ -1,0 +1,4 @@
+﻿OrderNo,inDate,BranchCode,BranchName,StoreCode,StoreName,UserIn,UserOut,CustomerCode,CustomerName,PaymentTypeEn,PaymentTypeAr,Data,outDate,StoreState,Total,DownPayment,Remaining,PriceType,Note,UserSerID,UserSerName,UserPayID,UserPayName,RefCode,RefName,DiscountTotal
+1,2024-03-01 10:00:00,1,,1,,seller1,,1,,Cash,نقدى,,2024-03-03 10:00:00,out,250,0,250,,,,,,,,,
+2,2024-03-02 10:00:00,1,,1,,seller1,,1,,Cash,نقدى,,,in,3600,1000,2600,,,,,,,,,
+3,2024-03-03 10:00:00,1,,1,,seller1,,,,Cash,نقدى,,,in,450,0,450,,,,,,,,,

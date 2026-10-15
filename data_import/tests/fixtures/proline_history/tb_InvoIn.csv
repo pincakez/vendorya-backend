@@ -1,0 +1,4 @@
+﻿InvoNo,Date,Time,InvoID,StoreCode,StoreName,ComCode,ComName,Note,TotalNoDis,Dis,Total,Payed,Cre,InvoType,Cheeck,Visa,UserAdded,AllItem,AllItemQty,BranchCode,BranchName,RefCode,RefName,discountRate
+1,2023-12-01 09:00:00,2023-12-01 09:00:00,,1,,2,,,30000.0000,0,30000.0000,10000,,اجل,,,buyer1,,,1,,,,
+2,2023-12-02 09:00:00,2023-12-02 09:00:00,,1,,,,,1500.0000,0,1500.0000,1500.0000,,نقدى,,,buyer1,,,1,,,,
+3,2023-12-03 09:00:00,2023-12-03 09:00:00,,1,,5,,,1500,100,1400.0000,1400.0000,,نقدى,,,buyer1,,,1,,,,

@@ -177,11 +177,11 @@ class SalesInvoiceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'branch', 'customer', 'customer_name', 'invoice_number', 'status', 'date',
             'subtotal', 'tax_total', 'discount', 'grand_total', 'paid_amount', 'change_given',
-            'items', 'created_at', 'salesperson', 'salesperson_name',
+            'items', 'created_at', 'salesperson', 'salesperson_name', 'source_number',
         ]
         read_only_fields = [
             'id', 'invoice_number', 'subtotal', 'tax_total',
-            'grand_total', 'paid_amount', 'change_given', 'created_at', 'salesperson_name',
+            'grand_total', 'paid_amount', 'change_given', 'created_at', 'salesperson_name', 'source_number',
         ]
 
     def validate_salesperson(self, value):
@@ -403,7 +403,7 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'supplier', 'supplier_name', 'branch', 'purchase_number',
             'vendor_reference', 'date', 'status', 'total_amount', 'paid_amount',
-            'notes', 'items', 'draft_items', 'lines', 'created_at',
+            'notes', 'items', 'draft_items', 'lines', 'created_at', 'source_number',
         ]
         # purchase_number is writable: blank → auto-assigned in model.save();
         # a typed value is kept as-is.
