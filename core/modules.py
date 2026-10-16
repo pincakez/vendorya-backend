@@ -133,7 +133,12 @@ def enforce_plan(plan):
     from billing.models import Subscription
     done = {}
     for sub in Subscription.all_objects.filter(plan=plan).select_related('store', 'store__settings'):   # every shop
-        off = enforce(sub.store)
+        try:
+            off = enforce(sub.store)
+        except ValidationError as exc:   # name the shop — on the Plans page "this shop" says nothing
+            raise ValidationError({'code': 'shifts_open', 'store': sub.store.name,
+                                   'detail': f'{sub.store.name} has an open shift on a Treasury drawer. Its shifts must '
+                                             'be closed before this plan can drop the Treasury.'}) from exc
         if off:
             done[sub.store.name] = off
     return done
