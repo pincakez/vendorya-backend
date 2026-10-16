@@ -137,6 +137,9 @@ class Store(TimestampedModel, SoftDeleteModel):
                                  help_text=_("Currency used everywhere this store displays money."))
     timezone = models.CharField(max_length=64, default='Africa/Cairo',
                                 help_text=_("IANA timezone for rendering dates/times to the store."))
+    # s176 (Yakot 10-16, module control): sudo's per-shop exceptions to the plan — {module key: 'allow' | 'block'}.
+    # No key = follow the plan. Keys + rules: core/modules.py. The shop reads the result, never writes it.
+    module_access = models.JSONField(default=dict, blank=True)
 
     class Meta:
         verbose_name = _("Store")
@@ -332,6 +335,20 @@ class StoreSettings(TimestampedModel):
     cheques_enabled = models.BooleanField(
         _("Cheques"), default=False,
         help_text=_("Track cheques you receive from customers and give to suppliers, with due dates and reminders."))
+    # s176 (Yakot 10-15/16: every optional module gets a switch). Modules that every shop already used get ON by default, so
+    # nothing changes until the owner turns one off. Off = no menu and no NEW record; what was written stays reachable.
+    services_enabled = models.BooleanField(
+        _("Service desk / repairs"), default=True,
+        help_text=_("Take devices in for repair, track each job and print its ticket."))
+    supplier_returns_enabled = models.BooleanField(
+        _("Supplier returns"), default=True,
+        help_text=_("Send bought goods back to the supplier and get the money or credit back."))
+    serials_enabled = models.BooleanField(
+        _("Serial numbers"), default=True,
+        help_text=_("Track each unit by its own serial / IMEI, from purchase to sale and warranty."))
+    transfers_enabled = models.BooleanField(
+        _("Stock transfers"), default=True,
+        help_text=_("Move stock from one branch to another."))
     # TREASURY.md (Wave 1): money boxes — drawer, safe, bank, e-wallet… with immutable lines. OFF = Vendorya exactly as before
     # (shifts count cash the old way, expenses have no "paid from"). Turning it on runs treasury.ledger.setup().
     treasury_enabled = models.BooleanField(

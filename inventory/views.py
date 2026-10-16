@@ -1327,6 +1327,8 @@ class StockTransferViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
+        from core.modules import require_on   # s176: Stock transfers switch off → no NEW transfer; the history stays
+        require_on(self.request.user.store, 'transfers', 'Stock transfers are switched off in Settings → Modules.')
         transfer = serializer.save(
             store=self.request.user.store,
             transferred_by=self.request.user,

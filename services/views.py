@@ -98,6 +98,11 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
         return qs
 
+    def create(self, request, *args, **kwargs):
+        from core.modules import require_on   # s176: Service desk switch off → no NEW job; open ones stay reachable
+        require_on(request.user.store, 'services', 'The service desk is switched off in Settings → Modules.')
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         serializer.save(
             store=self.request.user.store,

@@ -84,6 +84,8 @@ class SubscriptionPlan(TimestampedModel, SoftDeleteModel):
 
     is_active = models.BooleanField(default=True,
                                     help_text=_("Inactive plans can't be assigned to new subscriptions."))
+    # s176 (module control): the module keys this plan includes (core/modules.py). NULL = every module (all free today, D129).
+    modules = models.JSONField(null=True, blank=True)
 
     class Meta:
         ordering = ['monthly_price', 'name']

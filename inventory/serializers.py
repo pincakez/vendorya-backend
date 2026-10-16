@@ -548,6 +548,13 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         are still on the shelf (their serials would silently stop meaning anything)."""
         inst = self.instance
         track = data.get('track_serials', inst.track_serials if inst is not None else False)
+        # s176: Serial numbers switch off → no NEW product starts tracking (products already tracked keep working).
+        if track and not (inst is not None and inst.track_serials):
+            from core.modules import is_on
+            if not is_on(self.context['request'].user.store, 'serials'):
+                raise serializers.ValidationError(
+                    {'track_serials': _('Serial numbers are switched off in Settings → Modules.'),
+                     'serial_code': 'serials_off'})
         if track:
             mode = data.get('selling_mode', inst.selling_mode if inst is not None else Product.SellingMode.UNIT)
             if mode == Product.SellingMode.WEIGHT:

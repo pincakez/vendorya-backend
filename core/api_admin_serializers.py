@@ -53,9 +53,20 @@ class AdminStoreSerializer(serializers.ModelSerializer):
             'default_language', 'timezone',
             'branches_count', 'staff_count',
             'logo_light_url', 'logo_dark_url',
+            'module_access', 'modules_allowed',   # s176 module control
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'modules_allowed']
+
+    modules_allowed = serializers.SerializerMethodField()
+
+    def get_modules_allowed(self, obj):
+        from core.modules import allowed
+        return allowed(obj)
+
+    def validate_module_access(self, value):
+        from core.modules import clean_access
+        return clean_access(value)
 
 
 class _OwnerInputSerializer(serializers.Serializer):

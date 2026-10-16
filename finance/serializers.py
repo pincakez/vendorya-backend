@@ -498,6 +498,10 @@ class PurchaseInvoiceSerializer(serializers.ModelSerializer):
         if track_expiry:
             extra['track_expiry'] = True
         if track_serials:   # New 7: a brand-new laptop / phone model tracked by serial from its first receipt
+            from core.modules import is_on   # s176: not while the Serial numbers switch is off
+            if not is_on(invoice.store, 'serials'):
+                raise serializers.ValidationError({'code': 'module_off', 'module': 'serials',
+                                                   'detail': 'Serial numbers are switched off in Settings → Modules.'})
             extra['track_serials'] = True
         product = create_product_with_variant(
             invoice.store, name=name, supplier=invoice.supplier, category=category,

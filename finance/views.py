@@ -1210,7 +1210,9 @@ class PurchaseReturnViewSet(viewsets.ReadOnlyModelViewSet):
         from inventory.models import Supplier
         from treasury.models import MoneyBox
         from .purchase_returns import create_return
+        from core.modules import require_on   # s176: Supplier returns switch off → no NEW return; written ones stay
         store = request.user.store
+        require_on(store, 'supplier_returns', 'Supplier returns are switched off in Settings → Modules.')
         d = request.data
 
         def pick(model, key, **scope):

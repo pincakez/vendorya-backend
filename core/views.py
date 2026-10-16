@@ -1,5 +1,6 @@
 import os
 import base64
+from core import modules
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from django.utils import timezone
@@ -285,6 +286,7 @@ class StoreSettingsView(APIView):
         if not request.user.store:
             return _NO_STORE
         data = StoreSettingsSerializer(request.user.store.settings).data
+        data['modules_allowed'] = modules.allowed(request.user.store)   # s176: what sudo lets this shop switch on
         if not IsManagerOrAbove().has_permission(request, self):
             for f in self.MANAGER_ONLY_FIELDS:
                 data.pop(f, None)
@@ -306,6 +308,11 @@ class StoreSettingsView(APIView):
         from treasury import ledger
         serializer = StoreSettingsSerializer(request.user.store.settings, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        # s176 module control: a module sudo hasn't allowed for this shop (its plan, or a per-shop block) can't be switched on.
+        refused = modules.refused_switches(request.user.store, serializer.validated_data)
+        if refused:
+            return Response({'code': 'module_not_allowed', 'modules': refused,
+                             'detail': 'Not included in your plan. Contact Vendorya to add it.'}, status=403)
         # Turning the Treasury ON while a shift is open would start that drawer's book at 0 under real cash (refunds and
         # cash expenses then refused as "not enough money"). Close every shift first; each drawer is counted at its next open.
         if serializer.validated_data.get('treasury_enabled') and not request.user.store.settings.treasury_enabled:
@@ -358,7 +365,9 @@ class StoreSettingsView(APIView):
             # …and the owner level makes the owner's ONE personal part (idempotent). Off only hides it; nothing deleted.
             if settings_obj.treasury_enabled and settings_obj.treasury_owner_level:
                 ledger.setup_owner_level(request.user.store)
-        return Response(self._with_owner_flag(request, dict(serializer.data)))
+        out = dict(serializer.data)
+        out['modules_allowed'] = modules.allowed(request.user.store)
+        return Response(self._with_owner_flag(request, out))
 
 
 class CurrencyViewSet(viewsets.ModelViewSet):

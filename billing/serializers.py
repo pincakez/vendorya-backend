@@ -27,10 +27,15 @@ class SubscriptionPlanSerializer(serializers.ModelSerializer):
             'id', 'name', 'description',
             'monthly_price', 'annual_price', 'currency',
             'max_users', 'max_branches', 'max_products', 'max_invoices_per_month',
+            'modules',   # s176 module control: included module keys, null = every module
             'is_active', 'active_subscriptions',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'active_subscriptions']
+
+    def validate_modules(self, value):
+        from core.modules import clean_module_list
+        return clean_module_list(value)
 
     def get_active_subscriptions(self, obj):
         return obj.subscriptions.exclude(status=Subscription.Status.CANCELLED).count()

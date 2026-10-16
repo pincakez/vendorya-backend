@@ -620,6 +620,9 @@ class ShopExportViewSet(viewsets.ViewSet):
         store = getattr(request.user, 'store', None)
         if store is None:
             raise PermissionDenied("This account has no shop to export.")
+        from core.modules import is_allowed   # s176 module control: sudo may take the export away (plan / per shop)
+        if not is_allowed(store, 'shop_export'):
+            raise PermissionDenied("Exporting the shop's data is not included in your plan.")
         fh, counts = build_shop_export(store)
         filename = export_filename(store)
         log_activity(request=request, op_type=ActivityLog.OperationType.OTHER,

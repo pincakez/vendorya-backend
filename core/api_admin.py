@@ -1,5 +1,6 @@
 import json
 from datetime import timedelta
+from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone as tz
 from django.http import HttpResponse
@@ -55,6 +56,7 @@ class AdminStoreViewSet(viewsets.ModelViewSet):
         )
         return Response(AdminStoreSerializer(store).data, status=status.HTTP_201_CREATED)
 
+    @transaction.atomic
     def perform_update(self, serializer):
         """Log suspend / reactivate to the activity log, capturing the reason.
 
@@ -63,6 +65,16 @@ class AdminStoreViewSet(viewsets.ModelViewSet):
         """
         was_active = serializer.instance.is_active
         store = serializer.save()
+        # s176 module control: a module this shop is no longer allowed is switched off (nothing deleted).
+        from core.modules import enforce
+        switched_off = enforce(store)
+        if switched_off:
+            ActivityLog.all_objects.create(
+                store=store, user=self.request.user,
+                operation_type=ActivityLog.OperationType.OTHER,
+                action=f"Vendorya switched off module(s): {', '.join(switched_off)}",
+                details={'modules': switched_off, 'by': self.request.user.username},
+            )
         if was_active and not store.is_active:
             reason = (self.request.data.get('suspend_reason') or '').strip() or 'No reason provided'
             grace_days = self.request.data.get('suspend_grace_days', 0)

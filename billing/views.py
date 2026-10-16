@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from django.core.management import call_command
+from django.db import transaction
 
 from users.permissions import IsSuperAdmin, IsOwner
 from .models import SubscriptionPlan, Subscription, BillingInvoice, BillingSettings
@@ -58,6 +59,13 @@ class AdminSubscriptionPlanViewSet(viewsets.ModelViewSet):
     filter_backends    = [filters.SearchFilter]
     search_fields      = ['name', 'description']
 
+    @transaction.atomic
+    def perform_update(self, serializer):
+        plan = serializer.save()
+        if 'modules' in serializer.validated_data:   # s176: shops on this plan lose what it no longer includes
+            from core.modules import enforce_plan
+            enforce_plan(plan)
+
 
 # ---------- Sudo: subscriptions ----------
 
@@ -68,6 +76,12 @@ class AdminSubscriptionViewSet(viewsets.ModelViewSet):
     filter_backends    = [filters.SearchFilter]
     search_fields      = ['store__name', 'store__owner__username', 'custom_label', 'plan__name']
     http_method_names  = ['get', 'patch', 'head', 'options']
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        sub = serializer.save()
+        from core.modules import enforce   # s176: a new plan may include fewer modules
+        enforce(sub.store)
 
     def get_queryset(self):
         qs = (Subscription.all_objects   # sudo: every store's subscription
