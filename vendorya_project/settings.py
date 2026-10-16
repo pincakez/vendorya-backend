@@ -255,6 +255,10 @@ REST_FRAMEWORK = {
     },
 }
 
+# s174 → s175 (Yakot 10-16): "owners must log in with Google Authenticator" is a platform switch, OFF for now — owners log in
+# with username + password like everyone; an authenticator stays opt-in (Settings → Security). On = users/twofa.py requires_2fa.
+OWNER_2FA_REQUIRED = os.environ.get('OWNER_2FA_REQUIRED', '').lower() in ('1', 'true', 'yes')
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     # 60-day refresh = Facebook-style persistent sessions (Yakot). Made safe by

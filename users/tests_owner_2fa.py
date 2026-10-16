@@ -3,7 +3,7 @@ pre-auth token that only opens the setup screens; setup finishes the login; a sa
 stops renewing; staff stay opt-in."""
 from django.conf import settings as dj_settings
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django_otp.oath import TOTP
 from django_otp.plugins.otp_totp.models import TOTPDevice
 from rest_framework.test import APIClient
@@ -21,6 +21,7 @@ def _code(device, offset=0):
     return str(t.token()).zfill(device.digits)
 
 
+@override_settings(OWNER_2FA_REQUIRED=True)   # s175: the forced flow runs only with the platform switch on
 class OwnerMustUseAuthenticatorTests(TestCase):
     def setUp(self):
         dj_settings.ALLOWED_HOSTS = ['*']
@@ -90,3 +91,26 @@ class OwnerMustUseAuthenticatorTests(TestCase):
         # s174: the cookie-clearing helper crashed (delete_cookie got `secure=`) — logout must answer, not 500
         r = self.c.post('/api/auth/logout/', {'refresh': str(RefreshToken.for_user(self.cashier))}, format='json')
         self.assertLess(r.status_code, 500)
+
+
+class OwnerAuthenticatorSwitchOffTests(TestCase):
+    """s175 (Yakot 10-16: "user and password only" for now): with the switch OFF (the default) an owner logs in with the
+    password alone, his saved session renews, and an authenticator stays opt-in — set up by choice, it is asked."""
+
+    setUp = OwnerMustUseAuthenticatorTests.setUp
+    _login = OwnerMustUseAuthenticatorTests._login
+
+    def test_owner_logs_in_with_the_password_only(self):
+        with override_settings(OWNER_2FA_REQUIRED=False):
+            r = self._login(self.owner)
+            self.assertEqual(r.status_code, 200, r.content)
+            self.assertIn('access', r.data)
+            self.assertNotIn('requires_2fa_setup', r.data)
+            refresh = self.c.post('/api/auth/token/refresh/', {}, format='json')
+            self.assertEqual(refresh.status_code, 200, refresh.content)
+            api = APIClient(); api.credentials(HTTP_AUTHORIZATION='Bearer ' + r.data['access'])
+            self.assertEqual(api.get('/api/auth/2fa/status/').data, {'enrolled': False, 'required': False})
+            # chosen by himself → asked at login
+            TOTPDevice.objects.create(user=self.owner, name='default', confirmed=True)
+            self.assertTrue(self._login(self.owner).data.get('requires_2fa'))
+

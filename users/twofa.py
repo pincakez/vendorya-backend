@@ -1,6 +1,6 @@
 """Two-factor (TOTP) helpers: requirement policy, device lookup, token matching.
 
-Policy (s174, Yakot: "not optional"): every shop **OWNER** must log in with an authenticator — the owner sees all
+Policy (s174, Yakot: "not optional"; s175 10-16: OFF for now — `settings.OWNER_2FA_REQUIRED`): every shop **OWNER** must log in with an authenticator — the owner sees all
 the money. Login gives an owner without one a short pre-auth token that only opens the setup screens, and setup
 finishes the login. Everyone else stays opt-in (prompted only once they enrolled). Sudo has its own admin login.
 A lost phone: backup codes, else sudo clears the device (admin_auth) and the next login asks to set it up again.
@@ -13,8 +13,12 @@ from .models import User
 
 
 def requires_2fa(user):
-    """A shop owner must use an authenticator (s174). The single source of truth for the login view, the token refresh,
-    the status and the disable endpoints."""
+    """A shop owner must use an authenticator (s174) — ONLY while the platform switch `OWNER_2FA_REQUIRED` is on
+    (Yakot 10-16: off for now, username + password; anyone may still turn an authenticator on for himself). The single
+    source of truth for the login view, the token refresh, the status and the disable endpoints."""
+    from django.conf import settings
+    if not getattr(settings, 'OWNER_2FA_REQUIRED', False):
+        return False
     return bool(user is not None and getattr(user, 'is_active', False)
                 and getattr(user, 'role', None) == User.Role.OWNER and not getattr(user, 'is_superadmin', False))
 
